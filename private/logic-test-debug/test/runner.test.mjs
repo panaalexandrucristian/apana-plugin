@@ -230,7 +230,8 @@ describe("confinement: the start gate and the probe", () => {
     assert.deepEqual(calls(record), []);
     assert.deepEqual(readLedger(budget.ledger), [], "a refused start leaves no ledger line");
   });
-  it("passes a probe in which every outside step is refused and the inside step works, and then opens the gate", async () => {
+  // The probe tells /tmp from $TMPDIR and checks that each is refused; on Linux they are the same folder, and the harness was only built and measured on macOS.
+  it("passes a probe in which every outside step is refused and the inside step works, and then opens the gate", { skip: process.platform !== "darwin" && "the probe separates /tmp from $TMPDIR, which are one folder on Linux" }, async () => {
     const { root, bin, budget, pluginDir } = setup();
     rmSync(join(root, "confinement.json"));
     setMode(root, "probe-confined");
