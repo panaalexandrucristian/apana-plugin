@@ -19,11 +19,11 @@ const SECTIONS = [
   ["## Read conditions", 12],
   ["## Test combinations", 12],
   ["## Debug: seven steps", 18],
-  ["## Operational adaptations", 8],
+  ["## Operational adaptations", 10],
   ["## Guardrails", 10],
-  ["## Work record", 8],
+  ["## Work record", 11],
 ];
-const RULES = ["N1", "N2", "N3", "N4", "N5", "C1", "C2", "C3", "C4", "C5", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "W1", "W2", "W3"];
+const RULES = ["N1", "N2", "N3", "N4", "N5", "C1", "C2", "C3", "C4", "C5", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "W1", "W2", "W3", "W4", "W5"];
 const EVIDENCE_HEADINGS = [
   "# Evidence for logic-test-debug",
   "## Source inventory and status",
@@ -69,7 +69,7 @@ describe("logic-test-debug SKILL.md", () => {
   it("is at most 90 lines in total", () => {
     assert.ok(lines.length <= 90, `${lines.length} lines`);
   });
-  it("has the 22 rules once each, with a label, an applicability and a statement of at most 25 words", () => {
+  it("has the 24 rules once each, with a label, an applicability and a statement of at most 25 words", () => {
     const found = [];
     for (const line of lines) {
       const match = line.match(/^([NCDW]\d) \[(CLEAR|DESCRIPTIVE|INFERENCE), (both|bug fixing)\] (.+?) Not when: .+\.$/);
@@ -85,7 +85,16 @@ describe("logic-test-debug SKILL.md", () => {
     const label = (id) => lines.find((line) => line.startsWith(`${id} `)).match(/\[(\w+),/)[1];
     for (const id of ["N1", "N2", "N3", "C1"]) assert.equal(label(id), "CLEAR", id);
     for (const id of ["N4", "N5", "C2", "C3", "C4", "C5", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9"]) assert.equal(label(id), "DESCRIPTIVE", id);
-    for (const id of ["W1", "W2", "W3"]) assert.equal(label(id), "INFERENCE", id);
+    for (const id of ["W1", "W2", "W3", "W4", "W5"]) assert.equal(label(id), "INFERENCE", id);
+  });
+  it("asks for the ranked approaches and the workarounds before the three-line record, in W4, W5 and the record block", () => {
+    assert.match(source, /^W4 \[INFERENCE, both\] Rank at most three approaches that fix the cause or meet the objective, most correct first: .*apply the first\. Not when: only one reasonable approach exists/m);
+    assert.match(source, /^W5 \[INFERENCE, both\] Workarounds avoid the symptom without fixing the cause; list them apart from the ranking, never in it, .*apply none unasked\. Not when: no workaround exists/m);
+    const record = source.slice(source.indexOf("## Work record"));
+    const order = ["\nApproaches: [", "\nWorkarounds: [", "\nScope: [", "\nMethod: [", "\nResult: ["].map((label) => record.indexOf(label));
+    assert.ok(order.every((index) => index > 0), "every label of the block is present");
+    assert.deepEqual([...order].sort((a, b) => a - b), order, "Approaches, Workarounds, then Scope, Method, Result");
+    assert.ok(record.includes('or "none found"'));
   });
   it("keeps the three-line work record with the exact labels", () => {
     assert.ok(source.includes("\nScope: [objective; relevant conditions/parameters and values].\n"));
@@ -113,7 +122,7 @@ describe("logic-test-debug reference/evidence.md", () => {
     assert.deepEqual(headings, EVIDENCE_HEADINGS);
   });
   it("indexes every rule of SKILL.md with a label, applicability and exception", () => {
-    for (const id of ["N1", "N2", "N3", "N4", "N5", "C1", "C2", "C3", "C4", "C5", "D1-D7", "D8", "D9", "W1-W3"]) {
+    for (const id of ["N1", "N2", "N3", "N4", "N5", "C1", "C2", "C3", "C4", "C5", "D1-D7", "D8", "D9", "W1-W3", "W4-W5"]) {
       assert.ok(new RegExp(`^\\| ${id} \\| (CLEAR|DESCRIPTIVE|INFERENCE)`, "m").test(evidence), `rule index row ${id}`);
     }
   });
@@ -144,11 +153,11 @@ describe("logic-test-debug reference/evidence.md", () => {
       "Repeat Step 3",
     ]) assert.ok(evidence.includes(text), text);
   });
-  it("lists the 14 guardrails and the 16 observable behaviours", () => {
+  it("lists the 14 guardrails and the 17 observable behaviours", () => {
     const guard = evidence.slice(evidence.indexOf("## Guardrails and applicability exceptions"), evidence.indexOf("## Observable behaviours"));
     assert.equal([...guard.matchAll(/^\d+\. /gm)].length, 14);
     const behaviours = evidence.slice(evidence.indexOf("## Observable behaviours"));
-    assert.equal([...behaviours.matchAll(/^\d+\. /gm)].length, 16);
+    assert.equal([...behaviours.matchAll(/^\d+\. /gm)].length, 17);
   });
   it("states the source status honestly: pre-review manuscript, unread 2004 paper, no outcome test", () => {
     assert.match(evidence, /pre-review/i);

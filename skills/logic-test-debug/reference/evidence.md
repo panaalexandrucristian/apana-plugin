@@ -34,6 +34,7 @@ Labels: **CLEAR** = a measured effect in the source, consistent in its own data.
 | D8 | DESCRIPTIVE | bug fixing | M pp11-13 §4.2 | Inputs, outputs or relevant experience are unavailable. |
 | D9 | DESCRIPTIVE | bug fixing | M pp13-16 §§4.3-5 | There is no setback, or continuation is blocked by permissions, evidence or task limits. |
 | W1-W3 | INFERENCE | both | Operationalisation of K, N, B, M | See "Operational adaptations". |
+| W4-W5 | INFERENCE | both | Ours; no source ranks approaches (D6 and D9 are the nearest) | See "Operational adaptations". |
 
 ## Baron: condition reading
 
@@ -144,6 +145,8 @@ These make the source recommendations actionable for an agent. They are decided 
 - W1: list conditions, parameters, values and constraints before combination testing; state the chosen t and the reason, then proceed without waiting. The user may override in the next prompt. The reason is grounded in the interactions found and the feasible scope; there is no universal default t and no claim of full coverage without checking. Obey a strength the user states.
 - W2: check relevant result types, short-circuiting, evaluation order, side effects and operator semantics before rewriting a condition. Necessary coercions (for example a conversion that looks like a double negation) are not removable merely because of how they look. If preservation is uncertain, keep the existing form and say why.
 - W3: report missing inputs, facilities or permission; if another pass supplies no new evidence or actionable repair, report the blocker instead of retrying unchanged work. Never fabricate a run, a cause, a coverage measurement or a successful repair. No unrelated debugging technique is added.
+- W4: for an implementation or a bug, rank at most three approaches that are really possible and that remove the cause or meet the stated objective, most correct first; one that leaves the fault in place or only makes a test pass is a workaround (W5), not an approach. The order is a design choice, not a measured result: first that the approach keeps the behaviour of working code, then that it is the smallest change that a test can check. The ranking is the agent's judgement and can be wrong; it is not padded to three and it names no approach that was not considered. The first approach is the one used.
+- W5: workarounds are listed apart from the ranking because they avoid the symptom without removing the cause (a guard, a retry, a default value, a suppressed check). Each entry says what it leaves broken. None is applied unless the user asks; "none found" is a valid entry. An approach that only avoids the symptom is a workaround and is never put in the ranking, not even as its last item.
 - Cross-language use of the C++ sub-activities, the Scope/Method/Result record, and the choice of single, pair and triple examples with actual values are INFERENCE.
 
 ## Guardrails and applicability exceptions
@@ -183,3 +186,4 @@ Operational checks for tests; they are INFERENCE, not validated study outcomes.
 14. Prohibited or unavailable execution yields an explicit blocker or "unverified" result, never fabricated passing tests.
 15. Claims keep the CLEAR, DESCRIPTIVE and INFERENCE distinctions, citations, the pre-review status and bounded assurance.
 16. All original C++ sub-activities and model branches are present in this file; language-specific execution adaptations are marked INFERENCE.
+17. Applicable tasks end with `Approaches:` (at most three real approaches, most correct first, the first one used) and `Workarounds:` (each with what it leaves broken, or none found) before `Scope:`; no invented approach pads the list and no workaround is applied unasked.

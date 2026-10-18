@@ -55,7 +55,7 @@ export function makeSessionDir(id, base = process.env.LTD_SESSIONS_BASE ?? "/tmp
  */
 export function confinementSettings({ pluginDir, nodeHome = defaultNodeHome(), sessionParent = SESSION_PLACEHOLDER }) {
   return {
-    enabledPlugins: { "jev@jev-private": false },
+    enabledPlugins: { "apana@apana-private": false, "jev@jev-private": false },
     permissions: { blockReadsOutsideWorkingDirectories: true },
     sandbox: {
       enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false,
@@ -101,7 +101,7 @@ export function buildArgs({ prompt, pluginDir, sessionId, model = "haiku", maxBu
   ];
 }
 
-/** A minimal environment: no inherited CLAUDE_* or JEV_* variable; only the OFF arm sets the switch. */
+/** A minimal environment: no inherited CLAUDE_*, JEV_* or APANA_* variable; only the OFF arm sets the switch. */
 export function buildEnv({ arm, parentEnv = process.env, cacheDir, scratch }) {
   const env = {};
   for (const key of KEEP_ENV) if (parentEnv[key] !== undefined) env[key] = parentEnv[key];
@@ -109,8 +109,7 @@ export function buildEnv({ arm, parentEnv = process.env, cacheDir, scratch }) {
     env.TMPDIR = scratch; // the CLI's own temporary files
     env.CLAUDE_CODE_TMPDIR = scratch; // the sandboxed shell's $TMPDIR
   }
-  env.JEV_FLOW_CACHE_DIR = join(cacheDir, "flow");
-  env.JEV_CONTROL_CACHE_DIR = join(cacheDir, "control");
+  env.APANA_CLASS_GRAPH_STATE_DIR = join(cacheDir, "class-graph");
   if (arm === "OFF") env.APANA_LOGIC_TEST_DEBUG = "off";
   return env;
 }
@@ -120,7 +119,7 @@ export function ensurePluginCopy({ repo = REPO, dest, ref = "HEAD" }) {
   const marker = join(dest, ".plugin-commit");
   // A full commit id that is already built is reused without asking git (the commit may have been rebased away).
   if (/^[0-9a-f]{40}$/.test(ref) && existsSync(marker) && readFileSync(marker, "utf8").trim() === ref) return { dir: dest, commit: ref };
-  const commit = spawnSync("git", ["-C", repo, "rev-parse", ref], { encoding: "utf8" }).stdout.trim();
+  const commit = spawnSync("git", ["-C", repo, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { encoding: "utf8" }).stdout.trim();
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`cannot resolve the plugin ref: ${ref}`);
   if (existsSync(marker) && readFileSync(marker, "utf8").trim() === commit) return { dir: dest, commit };
   rmSync(dest, { recursive: true, force: true });

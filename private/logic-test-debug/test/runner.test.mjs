@@ -108,7 +108,7 @@ describe("the claude command line and environment", () => {
     assert.equal(at("--output-format"), "stream-json");
     assert.equal(at("--plugin-dir"), "/plugin");
     assert.equal(at("--setting-sources"), "project,local");
-    assert.deepEqual(JSON.parse(at("--settings")).enabledPlugins, { "jev@jev-private": false });
+    assert.deepEqual(JSON.parse(at("--settings")).enabledPlugins, { "apana@apana-private": false, "jev@jev-private": false });
     assert.equal(at("--max-budget-usd"), String(LIMITS.maxBudgetUsd));
     assert.equal(args[1], "P");
   });
@@ -146,7 +146,8 @@ describe("the claude command line and environment", () => {
       assert.equal(env.PATH, "/bin");
       assert.equal(env.HOME, "/h");
       assert.ok(!("CLAUDECODE" in env) && !("CLAUDE_CODE_ENTRYPOINT" in env) && !("JEV_FLOW" in env) && !("SECRET_TOKEN" in env));
-      assert.equal(env.JEV_FLOW_CACHE_DIR, "/c/flow");
+      assert.equal(env.APANA_CLASS_GRAPH_STATE_DIR, "/c/class-graph");
+      assert.ok(!("JEV_FLOW_CACHE_DIR" in env) && !("JEV_CONTROL_CACHE_DIR" in env));
     }
     assert.ok(!("APANA_LOGIC_TEST_DEBUG" in on));
     assert.equal(off.APANA_LOGIC_TEST_DEBUG, "off");

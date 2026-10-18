@@ -54,6 +54,8 @@ Order D1 to D7; D6 sends each repair to D7; D7 repeats from D3 while the objecti
 W1 [INFERENCE, both] List conditions, parameters, values and constraints before combination testing; state chosen t and its reason as INFERENCE, then proceed without waiting. Not when: combination testing is irrelevant; obey a strength the user states.
 W2 [INFERENCE, both] Check equivalence and language-specific evaluation behaviour before condition rewrites; never change working conditions solely for style. Not when: no rewrite is proposed; if preservation is uncertain, keep the existing form.
 W3 [INFERENCE, both] Record applicable rules and actual checks; distinguish planned from executed work and pause blocked loops without claiming success. Not when: no rule applies; never fabricate a run, cause, coverage or repair.
+W4 [INFERENCE, both] Rank at most three approaches that fix the cause or meet the objective, most correct first: keeps behaviour, smallest checkable change; apply the first. Not when: only one reasonable approach exists; then say so in one line.
+W5 [INFERENCE, both] Workarounds avoid the symptom without fixing the cause; list them apart from the ranking, never in it, with what each leaves broken; apply none unasked. Not when: no workaround exists; write "none found".
 
 ## Guardrails
 
@@ -65,7 +67,9 @@ W3 [INFERENCE, both] Record applicable rules and actual checks; distinguish plan
 
 ## Work record
 
-On applicable tasks show about three lines; omit fields that do not apply; list conditions before combination testing and complete Result after the checks:
+On applicable tasks end the answer with this block; Approaches and Workarounds are always given (W4, W5), omit other fields that do not apply; list conditions before combination testing and complete Result after the checks:
+Approaches: [up to three approaches that each fix the cause or meet the objective, most correct first, each with its main risk; the first is the one used; or "one reasonable approach: ..."].
+Workarounds: [anything that passes the test or avoids the symptom but leaves the fault in place, with what each leaves broken; or "none found"].
 Scope: [objective; relevant conditions/parameters and values].
 Method: [chosen t and reason, marked INFERENCE; or debugging step/branch; or condition-reading rule].
 Result: [checks actually performed, coverage or outcome, and any blocker].

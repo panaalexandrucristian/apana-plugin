@@ -130,15 +130,15 @@ describe("classifyCodePrompt: normalisation and boundaries", () => {
     const now = () => (calls++ === 0 ? 0 : BUDGET_MS + 1);
     assert.deepEqual(classifyCodePrompt("Write a Python function.", { now }), { activate: false, reason: "budget" });
   });
-  it("keeps the directive under 400 characters", () => {
+  it("keeps the directive under 520 characters", () => {
     assert.equal(typeof LOGIC_DIRECTIVE, "string");
-    assert.ok(LOGIC_DIRECTIVE.length <= 400);
+    assert.ok(LOGIC_DIRECTIVE.length <= 520);
   });
   it("asks for the record at the end of the answer, names the skill and keeps the earlier text apart", () => {
-    for (const part of ["load the logic-test-debug skill", "Scope:, Method:, Result:", "without waiting", "report only checks you actually performed"]) {
+    for (const part of ["load the logic-test-debug skill", "Approaches:", "most correct first", "Workarounds:", "Scope:, Method:, Result:", "without waiting", "report only checks you actually performed"]) {
       assert.ok(LOGIC_DIRECTIVE.includes(part), part);
     }
-    assert.ok(EARLIER_DIRECTIVES.length >= 1);
+    assert.ok(EARLIER_DIRECTIVES.length >= 2);
     for (const earlier of EARLIER_DIRECTIVES) {
       assert.notEqual(earlier, LOGIC_DIRECTIVE);
       assert.ok(earlier.length <= 400);

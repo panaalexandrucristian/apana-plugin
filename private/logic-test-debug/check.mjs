@@ -6,13 +6,18 @@
 
 export const LOGIC_DIRECTIVE =
   "For this code task, load the logic-test-debug skill and apply its relevant rules. " +
-  "Finish your final answer with the three-line record Scope:, Method:, Result:. " +
+  "End your final answer with Approaches: (up to three real approaches, most correct first, the first is the one used) " +
+  "and Workarounds: (or none found), then the three-line record Scope:, Method:, Result:. " +
   "When you test combined conditions, state the strength t and why, without waiting. " +
   "Preserve behaviour and report only checks you actually performed.";
 
-// The directive of plugin 0.10.0. The live sessions of both campaigns ran with it; the scorer must still recognise it
-// when it reads their transcripts again.
+// The directives of earlier plugins: 0.10.0 (the live sessions of the first campaigns), 0.10.2 to 0.13.10 of the jev plugin, and apana 0.1.0. The scorer must
+// still recognise them when it reads those transcripts again.
 export const EARLIER_DIRECTIVES = [
+  "For this code task, load the logic-test-debug skill and apply its relevant rules. " +
+    "Finish your final answer with the three-line record Scope:, Method:, Result:. " +
+    "When you test combined conditions, state the strength t and why, without waiting. " +
+    "Preserve behaviour and report only checks you actually performed.",
   "For this code task, load the logic-test-debug skill and apply its relevant rules. " +
     "Use the compact Scope:/Method:/Result: record; state combination-test strength and reason without waiting. " +
     "Preserve behaviour and report checks actually performed.",

@@ -17,7 +17,7 @@ const expected = { hookSpecificOutput: { hookEventName: "UserPromptSubmit", addi
 describe("handleLogicHook", () => {
   it("adds the exact directive on an enabled code prompt, only on UserPromptSubmit", () => {
     assert.deepEqual(handleLogicHook("UserPromptSubmit", { prompt: CODE }, {}), expected);
-    assert.ok(LOGIC_DIRECTIVE.length <= 400);
+    assert.ok(LOGIC_DIRECTIVE.length <= 520);
     for (const event of ["SessionStart", "PostToolUse", "PreToolUse", "Stop", "SessionEnd", undefined]) {
       assert.equal(handleLogicHook(event, { prompt: CODE }, {}), null, String(event));
     }
