@@ -1,0 +1,20 @@
+{
+  "project": "logic-test-debug, harder tasks (second campaign)",
+  "decision": "own pool of 50 claude -p sessions for the second campaign, as the first campaign had its own pool of 50 (the earlier cap, chosen with jev_decide, own_pool_50, 0.96, after the user delegated it). The first pool has 4 sessions left, which cannot carry a campaign. The user asked for harder tasks on 2026-10-10 and can change any number here. The reserve was raised from 8 to 10 on 2026-10-10 (40 planned + 10 = the cap of 50) because the pilots required a second probe and a revised task.",
+  "sessionsCap": 50,
+  "prior": 0,
+  "usdGuard": 5,
+  "usdGuardNote": "guessed safety net. Measured on the first campaign: 0.0067 USD for a smoke session on the easy bug task, 0.23 USD for 44 sessions. The harder tasks are expected to cost several times more per session, so 40 planned sessions are guessed at 1 to 2 USD in total.",
+  "ledger": "~/Dev/jev-test-runs/logic-test-debug-hard/ledger.tsv",
+  "plan": {
+    "planned": {
+      "combos": 20,
+      "trace": 20
+    },
+    "reserve": 10
+  },
+  "reserveUse": "1 confinement probe for the new root, 4 pilot sessions (combos and trace, ON and OFF, excluded from every comparison), then, after the pilots showed a shared temporary folder, 1 more probe for the new isolation and 2 pilots of the revised trace task; 2 left for retries declared on purpose",
+  "model": "haiku alias, resolved id recorded per session",
+  "pluginRef": "111d17708bf1fcb57b38f9da172efa7dcf6b5a8b",
+  "pluginRefNote": "the plugin as committed in 111d177, the same directive and skill as the first campaign, so the arms differ only in the harder tasks"
+}

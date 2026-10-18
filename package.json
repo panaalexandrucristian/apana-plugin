@@ -1,0 +1,21 @@
+{
+  "name": "apana-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The apana plugin for Claude Code: skills and hooks that do not call Jev.",
+  "license": "MIT",
+  "author": "Alexandru-Cristian Pana",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panaalexandrucristian/apana-plugin.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test private/*/test/*.mjs skills/*/scripts/test/*.mjs",
+    "test:omlx": "python3 -B -W ignore::ResourceWarning -m unittest discover -s skills/omlx/scripts -p 'test_*.py'",
+    "test:claude-auto": "(cd skills/install-claude-auto/assets && python3 -B -W ignore test_claude_auto.py) && (cd skills/install-claude-auto/scripts && python3 -B -W ignore test_setup.py)"
+  }
+}

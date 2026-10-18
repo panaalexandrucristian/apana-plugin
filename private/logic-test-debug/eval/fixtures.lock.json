@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "promptsHash": "f45af8d94b2da7a2ab2a4607554ecb9631fc99df24903d7de81eba577a3f4248",
+  "hardPromptsHash": "2d59c4e240878b386257d31a2034feeaea9f12ec26f62043e100a7f9217e2b24",
+  "scenarios": {
+    "activation": {
+      "files": {
+        "package.json": "51807e49b435cbf327181872bd4f38c058303335c29913e12e36b57ff2542fc2",
+        "src/condition.js": "204ad4409fdf15cd49d2bc9e507890e44af25af6e4f8e0011ab0debf3b593fcc"
+      },
+      "allowedEdits": []
+    },
+    "conditions": {
+      "files": {
+        "package.json": "421b5a9023581af5d840a825910488f13908db4c8820b7ec93bee374dda4c49e",
+        "SPEC.md": "2ddac65ac2b52fec0018ab2ab05c44b21233ee6872e952ca7476e55e286dba39",
+        "src/access.js": "20f6c2a89cc43aaf9de60978ced2a540cf8586a880fab04c18cf6eec3c0113b2",
+        "test/access.test.mjs": "4ff518f6dfc26607243d55b8d8dc35776928d86a9440af0ecabfbba9551e3f03"
+      },
+      "allowedEdits": [
+        "src/access.js",
+        "test/access.test.mjs"
+      ],
+      "helperHash": "3155d65093cd2b7b6f93a030e9cabc7e1c992c496d9fdf4fe821d2ba8d838744"
+    },
+    "bug": {
+      "files": {
+        "package.json": "80f8b01f4754a34e502880784821cc48de3f07e4d692b62fdb65e34ceec2e7b9",
+        "SPEC.md": "5f0fe292e16810d498cd1ca343e83e8dea00f9456abc6cf9b453b875cdf49d10",
+        "src/shipping.js": "f331b4d5a2cb7db1324137a38e593cfc8e0b4ea6560348ff66ce5ec36ac30e24",
+        "test/shipping.test.mjs": "35827497729447ffebcf6f9d91ce29d62799f1e02d60923f74f5020c875d0b02"
+      },
+      "allowedEdits": [
+        "src/shipping.js",
+        "test/shipping.test.mjs"
+      ],
+      "helperHash": "3b26779a8fdb64c2c2a9f74b9632b3b2b05baf278d16374194c4a5191a6e77b9"
+    },
+    "combos": {
+      "files": {
+        "package.json": "dcc3f369b1070f3e774a348620c0cdd4746a2c59cbf49b7b0b588dabbe67608f",
+        "SPEC.md": "8477f2b7b9814b9ffabffc74cbaf0bd67a180b12cb4192970457b834704a9fae",
+        "src/pricing.js": "7a2f8141a5a323f3bf2e6c1f81384f4ee1e58de74b01052d1d8e72c383ba58f9",
+        "test/pricing.test.mjs": "82cfe3945be977a5d4b5d24c3b047c51f4cae1fe2c0253b184453dec995dc777"
+      },
+      "allowedEdits": [
+        "test/pricing.test.mjs"
+      ],
+      "helperHash": "b9043a0fbeffe8916078da2bd965201822c681e264ff8faaa0038d6ef9b95577"
+    },
+    "trace": {
+      "files": {
+        "package.json": "72de21f10893afb72592949694e21ca0b5aef6588da0b5dc5adc6942a3a31b1c",
+        "SPEC.md": "3619e30dba96a5f5c45064b38882257207134c89df6b84e7f6ffaefde4918f4a",
+        "src/fees.js": "510048fb3039725cf5fe2921bf0fda31ce08d6cafc6722d7886b4c7b3ae79e59",
+        "src/route.js": "c73623406246a1a48b33d73fdd5a353418264ae8629f68ada3d257a6df96d76e",
+        "src/rules.js": "2550eb89ca76682e5a220e36ee98ae8cbd09461fab4fbccb44725ae3588b220f",
+        "src/zones.js": "ff5011bc3151eb3fe234e90178cdddf2adc1addf71b91040eaa9d5bd3a36c615",
+        "test/route.test.mjs": "82535c4fea40224b242df899542a4a51b9ff8fef007dc8adfe4c13d3d2a1851f"
+      },
+      "allowedEdits": [
+        "src/route.js",
+        "src/rules.js",
+        "src/zones.js",
+        "src/fees.js",
+        "test/route.test.mjs"
+      ],
+      "helperHash": "4a8a422fe972a401945bf4f9b66f97786e6b9c77ca4c7fbf20759bc7b38c8055"
+    }
+  }
+}

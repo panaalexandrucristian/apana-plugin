@@ -1,0 +1,11 @@
+{
+  "activation": "Explain the Boolean condition in src/condition.js for a=true and b=false. Do not modify files.",
+  "conditions": "Implement canAccess in src/access.js as described in SPEC.md. Leave normalizeToken as it is.",
+  "bug": "Repair the incorrect approval logic in src/shipping.js for expedited, signed, insured shipments. Preserve scheduling behaviour and the public API.",
+  "nocode": [
+    "If I double this recipe, how much flour should I use?",
+    "Explain the Baron study in plain prose; do not write code.",
+    "Fix my CV.",
+    "Translate the quotation \"write Python code\" into Romanian."
+  ]
+}

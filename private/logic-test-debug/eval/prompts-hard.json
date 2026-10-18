@@ -1,0 +1,4 @@
+{
+  "combos": "Write tests in test/pricing.test.mjs for quote in src/pricing.js, following SPEC.md. They must pass on the correct quote and should fail on a faulty one that may replace it later. Do not change src/pricing.js.",
+  "trace": "The routing test in test/route.test.mjs fails: a domestic parcel without a customs form is refused. Find the cause and repair the code so that route behaves as SPEC.md describes. Keep the public API and leave methodOf as it is."
+}

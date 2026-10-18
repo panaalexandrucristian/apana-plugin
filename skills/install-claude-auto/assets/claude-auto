@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+"""claude-auto: run `claude` and, when the context reaches a threshold, continue in a NEW session started from a
+compact-handoff note, in the same terminal window. Claude Code's own compaction is not involved.
+
+    claude-auto [claude args...]    run claude (interactive); every argument goes to claude unchanged
+    claude-auto __hook              internal: the Stop / PostToolUse hook that claude-auto adds with --settings
+
+How it works
+  1. The wrapper writes a settings file with a Stop and a PostToolUse hook and runs `claude --settings <file> ...` in the
+     foreground of this terminal. Those hooks are added to your own; ~/.claude/settings.json is never touched, and
+     sessions started with plain `claude` are not affected (the hook acts only when CLAUDE_AUTO_RUN is set).
+  2. The hook reads the context size of the last request from the transcript (input + cache_read + cache_creation
+     tokens). Under the threshold it does nothing. At or over it, it runs the compact-handoff skill's make_context.py,
+     saves what the transcript does not hold yet (pending/ next to HANDOFF.md) and drops run/signal.json.
+  3. PostToolUse also answers continue:false, so the old session does no more work. The wrapper sees signal.json, ends
+     claude (SIGTERM, then SIGKILL), restores the terminal and runs `claude "Citește …/HANDOFF.md …"` in the same window.
+  Not wrapped (run as plain claude): -p/--print, --version, --help, --bg and the claude subcommands (mcp, doctor, ...).
+
+The transcript is written AFTER the hooks of an event (measured: a Bash tool_result showed up 9 s after the call), so the
+last tool result (PostToolUse) or the last reply (Stop) comes from the hook's own payload and is saved, whole and in pieces
+one Read can open, in pending/ next to HANDOFF.md. Hooks of parallel tool calls that lose the claim save theirs too. The
+first Stop of a run sees 0 tokens (no usage record is in the transcript yet), so a Stop handoff needs a second turn.
+A --settings of your own is merged with the hooks (claude uses only the last --settings it gets).
+
+Env (all optional)
+  CLAUDE_AUTO_TOKENS         threshold in tokens (default 150000)
+  CLAUDE_AUTO_NEXT_ARGS      flags for the follow-up sessions, e.g. "--permission-mode acceptEdits". Default: the
+                             --model/--permission-mode/--effort/... flags you started with (see STICKY)
+  CLAUDE_AUTO_MAX            handoffs per run (default 0 = unlimited); after that claude runs without the hook
+  CLAUDE_AUTO_COOLDOWN       seconds between two handoffs of one run (default 600: stops a loop if the new session
+                             is itself over the threshold because the note is large)
+  CLAUDE_AUTO_DIR            where notes and auto.log go (default ~/.claude/handoffs/auto)
+  CLAUDE_AUTO_CLAUDE         the claude binary (default: claude from PATH)
+  CLAUDE_AUTO_MAKE_CONTEXT   path to make_context.py (default: the newest apana plugin copy)
+  CLAUDE_AUTO_GRACE          seconds between the signal and ending claude (default 1.0: the last reply stays on screen)
+  CLAUDE_AUTO_KILL_WAIT      seconds claude gets after SIGTERM before SIGKILL (default 5; also when you SIGTERM claude-auto)
+  CLAUDE_AUTO_REAP_WAIT      seconds the processes claude left behind get after SIGTERM before SIGKILL (default 1)
+  CLAUDE_AUTO_DEBUG=1        log every hook check
+Every hook failure is logged to auto.log and the hook exits 0: it never breaks a session.
+"""
+import fcntl, glob, hashlib, json, os, shlex, shutil, signal, subprocess, sys, tempfile, time
+
+try:
+    import termios
+except ImportError:      # not a POSIX terminal; nothing to restore
+    termios = None
+
+FIELDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+PASSTHROUGH_FLAGS = {"-p", "--print", "-v", "--version", "-h", "--help", "--bg"}
+SUBCOMMANDS = {"agents", "attach", "auth", "auto-mode", "doctor", "gateway", "import", "install", "logs", "mcp",
+               "plugin", "plugins", "purge", "respawn", "rm", "setup-token", "stop", "kill", "ultrareview",
+               "update", "upgrade"}
+STICKY = {"--model": 1, "--permission-mode": 1, "--effort": 1, "--fallback-model": 1, "--agent": 1,
+          "--dangerously-skip-permissions": 0, "--allow-dangerously-skip-permissions": 0, "--verbose": 0,
+          "--chrome": 0, "--no-chrome": 0, "--ide": 0}
+# What a terminal UI may leave on after it is killed: cursor, bracketed paste, focus reports, kitty keyboard, mouse.
+TERMINAL_RESET = "\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[<u\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
+PENDING_CHUNK = 24000    # characters per pending file: one Read in the next session must open it (25000-token cap)
+PENDING_LINE = 1800      # the Read tool cuts lines longer than 2000 characters
+PENDING_MAX = 30         # pending files per run; more than that is an event storm, not tool results
+FAILED_RETRY = 60        # do not retry a failing make_context.py on every tool call
+
+
+def env_num(name, default, cast=int):
+    try:
+        return cast(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def base_dir():
+    return os.environ.get("CLAUDE_AUTO_DIR") or os.path.expanduser("~/.claude/handoffs/auto")
+
+
+def log(msg):
+    line = "%s claude-auto: %s" % (time.strftime("%F %T"), msg)
+    try:
+        os.makedirs(base_dir(), exist_ok=True)
+        with open(os.path.join(base_dir(), "auto.log"), "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+    return line
+
+
+def say(msg):
+    sys.stderr.write("[claude-auto] %s\n" % msg)
+    sys.stderr.flush()
+
+
+# ---------------------------------------------------------------- hook
+
+def last_usage(lines):
+    """Tokens sent with the last main-thread request; records without usage (synthetic) are skipped."""
+    for line in reversed(lines):
+        if '"usage"' not in line:
+            continue
+        try:
+            r = json.loads(line)
+            if r.get("type") != "assistant" or r.get("isSidechain"):
+                continue
+            u = (r.get("message") or {}).get("usage") or {}
+            n = sum(int(u.get(k) or 0) for k in FIELDS)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if n:
+            return n
+    return 0
+
+
+def context_tokens(path, tail=1 << 20):
+    """Reads only the end of the transcript (it grows to many MB); the whole file only if the tail has no usage."""
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        f.seek(max(0, size - tail))
+        data = f.read().decode("utf-8", "replace")
+    lines = data.split("\n")          # not splitlines(): a raw U+2028 inside a JSON string is not a line break
+    if size > tail:
+        lines = lines[1:]             # the first line is cut at the seek point
+    n = last_usage(lines)
+    if n or size <= tail:
+        return n
+    with open(path, errors="replace") as f:
+        return last_usage(f.read().split("\n"))
+
+
+def find_make_context():
+    p = os.environ.get("CLAUDE_AUTO_MAKE_CONTEXT")
+    if p:
+        return p
+    found = glob.glob(os.path.expanduser("~/.claude/plugins/cache/*/apana/*/skills/compact-handoff/scripts/make_context.py"))
+    found.sort(key=lambda f: [int(x) if x.isdigit() else 0 for x in f.split("/apana/")[1].split("/")[0].split(".")])
+    return found[-1] if found else None
+
+
+def safe(s):
+    return "".join(c for c in s if c.isalnum() or c in "-_")
+
+
+def age(path):
+    try:
+        return time.time() - os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+HELD = []        # lock files this hook process holds; the OS drops the flock when the process ends, however it ends
+
+
+def done_file(run, sid):
+    return os.path.join(run, "done-" + safe(sid))
+
+
+def locked(run, sid):
+    """This session was already handed off: the claude behind it has been (or is being) ended."""
+    return os.path.exists(done_file(run, sid))
+
+
+def claim(run, sid):
+    """Only one hook process (parallel tool calls) writes the handoff of a session. The claim is an OS lock (flock) held for
+    the life of this process: a hook that dies leaves nothing behind to time out, so there is no stale lock to take over."""
+    f = open(os.path.join(run, "lock-" + safe(sid)), "a")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return False
+    if locked(run, sid):             # another hook finished the whole handoff between our check and our lock
+        f.close()
+        return False
+    HELD.append(f)
+    return True
+
+
+def give_up(run, sid):
+    """Release the claim so a later trigger may retry, but not within FAILED_RETRY seconds."""
+    open(os.path.join(run, "failed-" + safe(sid)), "w").close()
+    while HELD:
+        HELD.pop().close()
+
+
+def cooled_down(run):
+    a = age(os.path.join(run, "last-handoff"))
+    return a is None or a >= env_num("CLAUDE_AUTO_COOLDOWN", 600)
+
+
+def render(v):
+    """A tool input or result as text a person can read: strings raw (real newlines), dict keys as [name] headers."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict) and v:
+        return "\n".join("[%s]\n%s" % (k, render(x)) for k, x in v.items())
+    return json.dumps(v, ensure_ascii=False, indent=1)
+
+
+def pending_text(d):
+    """What the transcript does not hold yet for this event, or None."""
+    if d.get("hook_event_name") == "PostToolUse" and d.get("tool_response") is not None:
+        return "Apel de unealtă: %s (tool_use_id %s), încă nescris în transcript.\n--- input ---\n%s\n--- rezultat ---\n%s\n" % (
+            d.get("tool_name"), d.get("tool_use_id"), render(d.get("tool_input")), render(d.get("tool_response")))
+    if d.get("hook_event_name") == "Stop" and d.get("last_assistant_message"):
+        return "Ultimul răspuns al asistentului, încă nescris în transcript:\n%s\n" % d["last_assistant_message"]
+    return None
+
+
+def split_pending(text):
+    """Lines of at most PENDING_LINE characters, grouped into pieces of about PENDING_CHUNK. Nothing is dropped."""
+    lines = []
+    for line in text.split("\n"):
+        while len(line) > PENDING_LINE:
+            lines.append(line[:PENDING_LINE])
+            line = line[PENDING_LINE:]
+        lines.append(line)
+    parts, cur, size = [], [], 0
+    for line in lines:
+        if cur and size + len(line) + 1 > PENDING_CHUNK:
+            parts.append("\n".join(cur) + "\n")
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line) + 1
+    parts.append("\n".join(cur))
+    return parts
+
+
+def save_pending(run, d):
+    """Saves what the transcript does not hold yet for this event into run/pending/, whole, in pieces. Any hook of the
+    session calls it: the one that writes the handoff and the ones that lose the claim to it. Returns the files written."""
+    text = pending_text(d)
+    if text is None:
+        return 0
+    pdir = os.path.join(run, "pending")
+    os.makedirs(pdir, exist_ok=True)
+    if len(os.listdir(pdir)) >= PENDING_MAX:
+        log("%d pending files already; this event was not saved" % PENDING_MAX)
+        return 0
+    parts = split_pending(text)
+    base = "pending-%s-%019d-%s" % (safe(d.get("session_id") or ""), time.time_ns(),
+                                    safe(str(d.get("tool_use_id") or d.get("hook_event_name"))))
+    for i, body in enumerate(parts, 1):
+        name = base + (".txt" if len(parts) == 1 else "-part%02dof%02d.txt" % (i, len(parts)))
+        tmp = os.path.join(pdir, "." + name)
+        with open(tmp, "w", encoding="utf-8", errors="replace") as f:
+            f.write(body)
+        os.replace(tmp, os.path.join(pdir, name))        # atomic: the wrapper never moves half a file
+    return len(parts)
+
+
+def handoff_dir(sid):
+    """handoff-<8 hex>-<date>-<random>: unique, and the shape make_context.py looks for when a later handoff keeps this
+    one as its parent."""
+    h = "".join(c for c in sid[:8].lower() if c in "0123456789abcdef")
+    if len(h) < 8:
+        h = hashlib.sha1(sid.encode("utf-8", "replace")).hexdigest()[:8]
+    os.makedirs(base_dir(), exist_ok=True)
+    return tempfile.mkdtemp(prefix="handoff-%s-%s-" % (h, time.strftime("%Y%m%d")), dir=base_dir())
+
+
+def write_signal(run, data):
+    tmp = os.path.join(run, "signal.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, os.path.join(run, "signal.json"))      # atomic: the wrapper never reads half a file
+
+
+def handle(d):
+    run = os.environ.get("CLAUDE_AUTO_RUN")
+    event, sid, transcript = d.get("hook_event_name"), d.get("session_id") or "", d.get("transcript_path") or ""
+    if not run or not os.path.isdir(run):
+        return None                      # not a claude-auto session
+    if event not in ("Stop", "PostToolUse") or not sid or not os.path.isfile(transcript):
+        return None
+    if os.path.exists(os.path.join(run, "signal.json")):
+        save_pending(run, d)             # a handoff is waiting for the wrapper; this event will not reach the transcript either
+        return None
+    tokens, threshold = context_tokens(transcript), env_num("CLAUDE_AUTO_TOKENS", 150000)
+    if os.environ.get("CLAUDE_AUTO_DEBUG"):
+        log("%s %s: %d tokens (threshold %d)" % (event, sid[:8], tokens, threshold))
+    if tokens < threshold:
+        return None
+    if locked(run, sid):
+        return None                      # this session was already handed off
+    if not cooled_down(run):
+        log("%s: %d tokens but the last handoff is younger than %ds; skipped" % (
+            sid[:8], tokens, env_num("CLAUDE_AUTO_COOLDOWN", 600)))
+        return None
+    failed = age(os.path.join(run, "failed-" + safe(sid)))
+    if failed is not None and failed < FAILED_RETRY:
+        return None
+    script = find_make_context()
+    if not script or not os.path.isfile(script):
+        log("make_context.py not found; skipped")
+        return None
+    if not claim(run, sid):
+        save_pending(run, d)             # another hook is writing the handoff right now; this event is not in its copy
+        return None
+    out = handoff_dir(sid)
+    try:
+        r = subprocess.run([sys.executable, script, transcript, out], capture_output=True, text=True,
+                           timeout=env_num("CLAUDE_AUTO_MAKE_TIMEOUT", 90))
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log("make_context.py failed: %s" % e)
+        shutil.rmtree(out, ignore_errors=True)
+        give_up(run, sid)
+        return None
+    handoff = os.path.join(out, "HANDOFF.md")
+    if r.returncode != 0 or not os.path.isfile(handoff):
+        log("make_context.py exit %s: %s" % (r.returncode, (r.stderr or r.stdout)[-300:].strip()))
+        shutil.rmtree(out, ignore_errors=True)
+        give_up(run, sid)
+        return None
+    saved = save_pending(run, d)
+    if event == "PostToolUse" and not saved:
+        log("PostToolUse payload has no tool_response (keys: %s); the last tool result will be missing" % sorted(d))
+    write_signal(run, {"event": event, "session_id": sid, "tokens": tokens, "handoff": handoff, "cwd": d.get("cwd")})
+    open(done_file(run, sid), "w").close()
+    open(os.path.join(run, "last-handoff"), "w").close()
+    log("%s: %d tokens >= %d; handoff %s" % (sid[:8], tokens, threshold, handoff))
+    msg = "Handoff automat la %d tokeni de context: %s. Sesiunea nouă pornește din el." % (tokens, handoff)
+    if event == "PostToolUse":
+        return {"continue": False, "stopReason": msg, "systemMessage": msg}
+    return {"systemMessage": msg}
+
+
+def hook_main():
+    try:
+        res = handle(json.load(sys.stdin))
+        if res:
+            json.dump(res, sys.stdout, ensure_ascii=False)
+    except Exception as e:  # a hook must never break the session
+        log("unexpected error: %r" % (e,))
+    return 0
+
+
+# ---------------------------------------------------------------- wrapper
+
+def collect_pending(run, sig):
+    """Moves the pending files of the session that was handed off next to its HANDOFF.md, in arrival order."""
+    src, dst = os.path.join(run, "pending"), os.path.join(os.path.dirname(sig["handoff"]), "pending")
+    prefix = "pending-%s-" % safe(sig.get("session_id") or "")
+    try:
+        names = sorted(n for n in os.listdir(src) if n.startswith(prefix))
+    except OSError:
+        return []
+    moved = []
+    for n in names:
+        try:
+            os.makedirs(dst, exist_ok=True)
+            os.replace(os.path.join(src, n), os.path.join(dst, n))
+            moved.append(os.path.join(dst, n))
+        except OSError as e:
+            log("pending file %s not moved: %s" % (n, e))
+    return moved
+
+
+def new_session_prompt(sig):
+    files = sig.get("pending") or []
+    if len(files) > 12:
+        which = "toate cele %d fișiere din %s, în ordinea numelui" % (len(files), os.path.dirname(files[0]))
+    else:
+        which = ", ".join(files)
+    return ("Citește %s și urmează instrucțiunile din el. Sesiunea precedentă a fost oprită automat la ~%dk tokeni de "
+            "context, ca lucrul să continue în această sesiune nouă. Excepție de la regula „răspunde și așteaptă”: după ce "
+            "ai citit nota, reia imediat lucrul din punctul în care a rămas (ultimul lucru din transcript), fără să repeți "
+            "acțiuni deja terminate. Dacă pasul următor este ireversibil sau cere decizia mea, oprește-te și întreabă.%s"
+            % (sig["handoff"], int(sig.get("tokens") or 0) // 1000,
+               " Citește și, în ordine, %s: conțin ultimele evenimente ale sesiunii precedente, încă nescrise în "
+               "transcript (un eveniment împărțit în părți se citește în întregime)." % which if files else ""))
+
+
+def sticky_args(args):
+    """The session-shaping flags of the first run, for the follow-up sessions (never a prompt, --resume, --continue).
+    After `--` everything is prompt text."""
+    kept, i = [], 0
+    while i < len(args) and args[i] != "--":
+        a = args[i]
+        name, eq, _ = a.partition("=")
+        if name in STICKY:
+            n = STICKY[name]
+            if n and eq:
+                kept.append(a)
+            elif n and i + 1 < len(args) and args[i + 1] != "--":
+                kept += [a, args[i + 1]]
+                i += 1
+            elif not n:
+                kept.append(a)
+        i += 1
+    return kept
+
+
+def passthrough(args):
+    head = args[:args.index("--")] if "--" in args else args
+    return any(a in PASSTHROUGH_FLAGS for a in head) or (bool(head) and head[0] in SUBCOMMANDS)
+
+
+def split_settings(args):
+    """Takes --settings out of `args`. claude uses only the LAST --settings it gets, so one of the user's would silence the
+    hooks claude-auto adds; the hooks are merged into it instead. Returns (args without it, its content or None, error)."""
+    kept, value, i = [], None, 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            kept += args[i:]
+            break
+        name, eq, rest = a.partition("=")
+        if name == "--settings" and eq:
+            value = rest
+        elif name == "--settings" and i + 1 < len(args) and args[i + 1] != "--":
+            value = args[i + 1]
+            i += 1
+        else:
+            kept.append(a)
+        i += 1
+    if value is None:
+        return kept, None, None
+    try:
+        if value.lstrip().startswith("{"):
+            data = json.loads(value)
+        else:
+            with open(os.path.expanduser(value), encoding="utf-8") as f:
+                data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+            raise ValueError("not a settings object")
+    except (OSError, ValueError) as e:
+        return args, None, "%s: %s" % (value[:60], e)
+    return kept, data, None
+
+
+def write_settings(path, user=None):
+    """The settings file claude-auto passes with --settings: the hooks, merged into the user's own --settings if any."""
+    command = "%s %s __hook" % (shlex.quote(sys.executable), shlex.quote(os.path.realpath(__file__)))
+    hooks = [{"type": "command", "command": command, "timeout": 150}]
+    ours = {"Stop": [{"hooks": hooks}], "PostToolUse": [{"matcher": "*", "hooks": hooks}]}
+    data = dict(user or {})
+    merged = dict(data.get("hooks") or {})
+    for event, entries in ours.items():
+        old = merged.get(event)
+        merged[event] = (old if isinstance(old, list) else []) + entries
+    data["hooks"] = merged
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+class Terminal:
+    """claude puts the terminal in raw mode; a killed claude cannot undo it, so the wrapper does."""
+
+    def __init__(self):
+        self.fd, self.saved = None, None
+        if termios and sys.stdin.isatty():
+            try:
+                self.fd, self.saved = sys.stdin.fileno(), termios.tcgetattr(sys.stdin.fileno())
+            except termios.error:
+                self.fd = None
+
+    def restore(self, reset_modes):
+        if self.fd is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+            except termios.error:
+                pass
+        if reset_modes and sys.stdout.isatty():
+            sys.stdout.write(TERMINAL_RESET)
+            sys.stdout.flush()
+
+
+class Child:
+    proc = None
+    stop = False
+    stop_at = 0.0
+    signum = 0
+
+
+def on_term_signal(signum, frame):
+    if not Child.stop:
+        Child.stop, Child.stop_at, Child.signum = True, time.time(), signum
+    if Child.proc and Child.proc.poll() is None:
+        Child.proc.terminate()
+
+
+def process_table():
+    """pid -> (ppid, start time) of every process. The start time tells a reused pid from the one we saw."""
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart="], capture_output=True, text=True).stdout
+    table = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = (int(parts[1]), parts[2].strip())
+    return table
+
+
+def descendants(pid):
+    """pid -> start time of everything below `pid`, found before it is ended (afterwards they are orphans)."""
+    table, kids = process_table(), {}
+    for p, (pp, _) in table.items():
+        kids.setdefault(pp, []).append(p)
+    found, todo = {}, [pid]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            found[c] = table[c][1]
+            todo.append(c)
+    return found
+
+
+def reap(found):
+    """Ends what claude's tools left running after claude was ended (SIGTERM, then SIGKILL). Only processes that still have
+    the start time we recorded; a reused pid is not touched."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        table = process_table()
+        alive = [p for p, started in found.items() if p in table and table[p][1] == started]
+        if not alive:
+            return
+        for p in alive:
+            try:
+                os.kill(p, sig)
+            except OSError:
+                pass
+        if sig == signal.SIGTERM:
+            time.sleep(env_num("CLAUDE_AUTO_REAP_WAIT", 1.0, float))
+
+
+def end_claude(proc):
+    below = descendants(proc.pid)
+    proc.terminate()
+    try:
+        proc.wait(env_num("CLAUDE_AUTO_KILL_WAIT", 5.0, float))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    reap(below)
+
+
+def run_once(cmd, env, cwd, run):
+    """Returns (exit code, signal). The signal is returned only if claude-auto ended claude because of it."""
+    if Child.stop:
+        return 128 + Child.signum, None          # we were asked to stop before this session started: do not start it
+    proc = Child.proc = subprocess.Popen(cmd, env=env, cwd=cwd)
+    if Child.stop:
+        proc.terminate()                         # the signal came while Popen ran, when the handler saw no child yet
+    poll, grace = env_num("CLAUDE_AUTO_POLL", 0.2, float), env_num("CLAUDE_AUTO_GRACE", 1.0, float)
+    while True:
+        try:
+            return proc.wait(poll), None
+        except subprocess.TimeoutExpired:
+            pass
+        if Child.stop:                           # SIGTERM was sent once by the handler; a claude that ignores it is killed
+            if time.time() - Child.stop_at >= env_num("CLAUDE_AUTO_KILL_WAIT", 5.0, float):
+                end_claude(proc)
+                return proc.returncode, None
+            continue
+        sig = None
+        if run:
+            try:
+                with open(os.path.join(run, "signal.json")) as f:
+                    sig = json.load(f)
+            except (OSError, ValueError):
+                sig = None
+        if sig:
+            try:
+                return proc.wait(grace), None        # the user quit by themselves: no new session
+            except subprocess.TimeoutExpired:
+                end_claude(proc)
+                return proc.returncode, sig
+
+
+def wrapper(args):
+    claude = shutil.which(os.environ.get("CLAUDE_AUTO_CLAUDE") or "claude")
+    if not claude:
+        say("claude not found in PATH")
+        return 127
+    claude = os.path.abspath(claude)             # a follow-up session may start in another directory
+    if passthrough(args):
+        os.execv(claude, [claude] + args)
+    try:
+        env_next = shlex.split(os.environ["CLAUDE_AUTO_NEXT_ARGS"]) if "CLAUDE_AUTO_NEXT_ARGS" in os.environ else None
+    except ValueError as e:
+        say("CLAUDE_AUTO_NEXT_ARGS is not valid shell syntax (%s); nothing was started" % e)
+        return 2
+    first_args, user, err = split_settings(args)
+    if env_next is None:
+        next_args, next_user, nerr = sticky_args(first_args), user, None
+    else:
+        next_args, next_user, nerr = split_settings(env_next)
+    for e in (err, nerr):
+        if e:
+            say("--settings %s cannot be merged with the claude-auto hooks; it overrides them in that session" % e)
+    terminal, maximum = Terminal(), env_num("CLAUDE_AUTO_MAX", 0)
+    try:
+        os.makedirs(base_dir(), exist_ok=True)
+        run = tempfile.mkdtemp(prefix="run-", dir=base_dir())
+    except OSError as e:
+        say("cannot create the run folder in %s (%s); nothing was started" % (base_dir(), e))
+        return 1
+    try:
+        settings = os.path.join(run, "settings.json")
+        write_settings(settings, user)
+        settings_next = settings
+        if env_next is not None:
+            settings_next = os.path.join(run, "settings-next.json")
+            write_settings(settings_next, next_user)
+        plain = None
+        if next_user:                            # after CLAUDE_AUTO_MAX handoffs the hooks go, the user's settings stay
+            plain = os.path.join(run, "settings-plain.json")
+            with open(plain, "w") as f:
+                json.dump(next_user, f)
+        signal.signal(signal.SIGINT, lambda *a: None)      # Ctrl-C goes to claude (same process group); a handler, not
+        signal.signal(signal.SIGTERM, on_term_signal)      # SIG_IGN, which the child would inherit
+        signal.signal(signal.SIGHUP, on_term_signal)
+        handoffs, cwd, argv = 0, None, first_args
+        while True:
+            hooked = not maximum or handoffs < maximum
+            env = dict(os.environ)
+            env.pop("CLAUDE_AUTO_RUN", None)
+            if hooked:
+                env["CLAUDE_AUTO_RUN"] = run
+            use = (settings if handoffs == 0 else settings_next) if hooked else plain
+            cmd = [claude] + (["--settings", use] if use else []) + argv
+            rc, sig = run_once(cmd, env, cwd, run if hooked else None)
+            # claude resets the terminal modes it set when it exits by itself; killed (by us, by a signal) it cannot
+            terminal.restore(reset_modes=bool(sig) or Child.stop or rc < 0)
+            if not sig or Child.stop:
+                return rc if rc >= 0 else 128 - rc      # killed by a signal: 128 + signal, as a shell reports it
+            os.remove(os.path.join(run, "signal.json"))
+            sig["pending"] = collect_pending(run, sig)
+            handoffs += 1
+            if sig.get("cwd") and os.path.isdir(sig["cwd"]):
+                cwd = sig["cwd"]
+            argv = next_args + ["--", new_session_prompt(sig)]      # `--`: a variadic option must not swallow the prompt
+            say("%dk tokeni de context; nota: %s. Pornesc sesiunea nouă în aceeași fereastră." % (
+                int(sig.get("tokens") or 0) // 1000, sig["handoff"]))
+            log("handoff %d: claude ended (exit %s), new session from %s (cwd %s, %d pending file(s))" % (
+                handoffs, rc, sig["handoff"], cwd or os.getcwd(), len(sig["pending"])))
+    except BaseException:
+        terminal.restore(reset_modes=True)
+        raise
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def main(argv):
+    if argv[:1] == ["__hook"]:
+        return hook_main()
+    return wrapper(argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

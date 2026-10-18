@@ -1,0 +1,211 @@
+{
+  "version": 1,
+  "note": "Specification of the prompts the skill must and must not start on. Expected outcomes are proposals to be checked in live sessions, not measured results.",
+  "positive": [
+    {
+      "id": "P01",
+      "language": "en",
+      "prompt": "Which classes use ShoppingObservables directly? Give file:line evidence.",
+      "expected": "Skill starts; class-graph with --up 1 --down 0; direct matches reported by declaration kind."
+    },
+    {
+      "id": "P02",
+      "language": "en",
+      "prompt": "What does ProductSuperFiltersBottomSheetViewModel depend on, directly and indirectly?",
+      "expected": "Skill starts; class-graph with --up 0, default down depth; drill down only for needed evidence."
+    },
+    {
+      "id": "P03",
+      "language": "en",
+      "prompt": "If I change ShoppingObservables' public API, which classes could be affected?",
+      "expected": "Skill starts; class-graph with --down 0, default up depth; potential exposure is not called proven breakage."
+    },
+    {
+      "id": "P04",
+      "language": "en",
+      "prompt": "Which screens could be affected indirectly by changing ProductSuperFiltersBottomSheetViewModel?",
+      "expected": "Skill starts; upward traversal; every evidenced link to each screen is given."
+    },
+    {
+      "id": "P05",
+      "language": "en",
+      "prompt": "Find a directed dependency chain from ProductSuperFiltersBottomSheetViewModel to ProductSuperFiltersItemViewHolder.",
+      "expected": "Skill starts; path workflow, at most 4 levels and 6 analysis calls; shortest evidenced chain, never claimed globally shortest."
+    },
+    {
+      "id": "P06",
+      "language": "en",
+      "prompt": "How many classes directly use UserSessionManager? Show five examples.",
+      "expected": "Skill starts; --up 1 --down 0; export if needed; count unique non-root [class] declarations only."
+    },
+    {
+      "id": "P07",
+      "language": "en",
+      "prompt": "Who uses the top-level asInt function declared in utilities/CommonUtils.kt?",
+      "expected": "Skill starts; the path suffix is resolved with rg --files before the query; upward direct query."
+    },
+    {
+      "id": "P08",
+      "language": "en",
+      "prompt": "Where is DgBaseFragment.screenName used? Separate certain, likely and ambiguous matches.",
+      "expected": "Skill starts; find-usages on the resolved Kotlin file and member; tiers preserved."
+    },
+    {
+      "id": "P09",
+      "language": "ro",
+      "prompt": "Cine folosește direct ShoppingObservables? Dă-mi fișierul și linia.",
+      "expected": "Skill starts; direct upward graph; answer in Romanian."
+    },
+    {
+      "id": "P10",
+      "language": "ro",
+      "prompt": "De ce depinde ShoppingObservables și ce se poate strica dacă îi schimb API-ul?",
+      "expected": "Skill starts; default two levels both directions; dependencies and impact are separated."
+    },
+    {
+      "id": "P11",
+      "language": "ro",
+      "prompt": "Există un lanț între clase, de la A la B, în care fiecare o folosește pe următoarea?",
+      "expected": "Skill starts; A and B are resolved, ambiguous declarations are clarified, the directed path workflow is used."
+    },
+    {
+      "id": "P12",
+      "language": "en",
+      "prompt": "Who uses ShoppingListManager, and then rename it to ShoppingCartManager?",
+      "expected": "Skill starts for the users only; the rename is done by normal editing tools; the skill adds no edit authorisation."
+    },
+    {
+      "id": "P13",
+      "language": "ro",
+      "prompt": "Cine apelează funcția getCategoryDetails din ShoppingObservables?",
+      "expected": "Skill starts as the first action; find-usages or class-graph on the declaration; callers reported with file:line."
+    },
+    {
+      "id": "F01",
+      "language": "en",
+      "prompt": "At which lines does getCategoryDetails start and end in ShoppingObservables.kt?",
+      "expected": "Skill first; resolve file; named find-def; report range, not callers."
+    },
+    {
+      "id": "F02",
+      "language": "ro",
+      "prompt": "Unde începe și se termină funcția getCategoryDetails din ShoppingObservables.kt?",
+      "expected": "Skill first; named find-def; answer in Romanian."
+    },
+    {
+      "id": "F03",
+      "language": "en",
+      "prompt": "Show the body of getCategoryDetails in ShoppingObservables.kt.",
+      "expected": "Skill first; named find-def, then Read of the selected range."
+    },
+    {
+      "id": "F04",
+      "language": "en",
+      "prompt": "List the named functions in ShoppingObservables.kt with their line ranges.",
+      "expected": "Skill first; no-name find-def with head -n 80; signatures distinguished from bodies."
+    }
+  ],
+  "negative": [
+    {
+      "id": "N01",
+      "language": "en",
+      "prompt": "Read ShoppingObservables.kt and summarize its responsibilities.",
+      "expected": "No skill; read and summarise the file."
+    },
+    {
+      "id": "N02",
+      "language": "en",
+      "prompt": "Rename Foo to Bar everywhere.",
+      "expected": "No skill; normal editing tools; no unsolicited impact scan."
+    },
+    {
+      "id": "N03",
+      "language": "en",
+      "prompt": "Change DEFAULT_TIMEOUT to 30.",
+      "expected": "No skill; locate and edit the declaration."
+    },
+    {
+      "id": "N04",
+      "language": "en",
+      "prompt": "What is the inferred type of x in this expression?",
+      "expected": "No skill; the graph has no type inference."
+    },
+    {
+      "id": "N05",
+      "language": "en",
+      "prompt": "Why does this Fragment crash when I rotate the device?",
+      "expected": "No skill; debug from the trace and the lifecycle code."
+    },
+    {
+      "id": "N06",
+      "language": "en",
+      "prompt": "Explain how Retrofit's @GET annotation works.",
+      "expected": "No skill; explain or consult the library documentation."
+    },
+    {
+      "id": "N07",
+      "language": "en",
+      "prompt": "Find all TODO comments under app/src.",
+      "expected": "No skill; Grep/rg for literal text."
+    },
+    {
+      "id": "N08",
+      "language": "en",
+      "prompt": "Locate CommonUtils.kt.",
+      "expected": "No skill; file discovery only."
+    },
+    {
+      "id": "N09",
+      "language": "en",
+      "prompt": "What does dependency injection mean?",
+      "expected": "No skill; explain the concept."
+    },
+    {
+      "id": "N10",
+      "language": "en",
+      "prompt": "Who calls parse_config in this Python repository?",
+      "expected": "No skill; not Kotlin/Java."
+    },
+    {
+      "id": "N11",
+      "language": "en",
+      "prompt": "How is authentication organised in this app?",
+      "expected": "No skill at first; Explore/Read for broad discovery; the skill only for a later supported relationship subquestion."
+    },
+    {
+      "id": "N12",
+      "language": "en",
+      "prompt": "Read lines 193-230 of ShoppingObservables.kt and explain the code.",
+      "expected": "No skill solely to rediscover a known range; ordinary Read."
+    },
+    {
+      "id": "N13",
+      "language": "en",
+      "prompt": "At which lines is a constructor implemented in Foo.kt?",
+      "expected": "Ordinary search/Read, not find-def."
+    },
+    {
+      "id": "N14",
+      "language": "en",
+      "prompt": "Find the implementation range of foo in Foo.java.",
+      "expected": "Ordinary search/Read, not find-def."
+    }
+  ],
+  "explicit": [
+    {
+      "id": "E01",
+      "prompt": "/apana:class-graph Who directly uses ShoppingObservables?",
+      "expected": "Skill loads and runs the direct-user workflow."
+    },
+    {
+      "id": "E02",
+      "prompt": "/apana:class-graph Explain Kotlin covariance.",
+      "expected": "Skill loads, runs no graph, gives one scope sentence and asks what to look up, in the user's language."
+    },
+    {
+      "id": "E03",
+      "prompt": "/apana:class-graph ShoppingObservables",
+      "expected": "Skill loads; a bare target with no direction established: ask what the user wants to know."
+    }
+  ]
+}

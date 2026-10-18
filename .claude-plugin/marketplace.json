@@ -1,0 +1,17 @@
+{
+  "name": "apana-private",
+  "description": "Private marketplace for the apana plugin.",
+  "owner": {
+    "name": "Alexandru-Cristian Pana",
+    "url": "https://github.com/panaalexandrucristian"
+  },
+  "plugins": [
+    {
+      "name": "apana",
+      "version": "0.1.0",
+      "source": "./",
+      "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, android-ui-step and the claude-auto installer and uninstaller.",
+      "category": "productivity"
+    }
+  ]
+}

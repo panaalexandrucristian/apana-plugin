@@ -1,0 +1,28 @@
+{
+  "description": "logic-test-debug directive on code prompts and class-graph nudge on text searches for a class or member name. Context only, never a decision. Local work only; no tests and no model calls.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/apana-hook.mjs\" UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/apana-hook.mjs\" PreToolUse",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

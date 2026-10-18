@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # ripgrep is what find-usages and class-graph shell out to.
+      - run: sudo apt-get install -y ripgrep
+      # Node suite: hooks, skills, the self tests and the end-to-end test of compact-handoff. Offline: no model, no network.
+      - name: Node suite
+        run: npm test
+      # Offline Python suite of the omlx skill: fake servers on 127.0.0.1, temporary directories, real sleep processes.
+      - name: omlx (offline Python suite)
+        run: npm run test:omlx
+      # Offline Python suites of the claude-auto wrapper and of its installer and uninstaller (a fake `claude`, a temporary HOME).
+      - name: claude-auto (offline Python suites)
+        run: npm run test:claude-auto

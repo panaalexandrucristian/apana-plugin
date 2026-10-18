@@ -1,0 +1,18 @@
+{
+  "name": "apana",
+  "version": "0.1.0",
+  "displayName": "Apana",
+  "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, android-ui-step and the claude-auto installer and uninstaller.",
+  "author": {
+    "name": "Alexandru-Cristian Pana",
+    "url": "https://github.com/panaalexandrucristian"
+  },
+  "repository": "https://github.com/panaalexandrucristian/apana-plugin",
+  "license": "MIT",
+  "keywords": [
+    "handoff",
+    "kotlin",
+    "android",
+    "hooks"
+  ]
+}

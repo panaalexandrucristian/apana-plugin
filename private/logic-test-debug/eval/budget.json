@@ -1,0 +1,25 @@
+{
+  "project": "logic-test-debug",
+  "decision": "own pool of 50 claude -p sessions, chosen with jev_decide on 2026-10-10 (own_pool_50, confidence 0.96) after the user delegated the cap; the user can change any number here",
+  "sessionsCap": 50,
+  "prior": 0,
+  "usdGuard": 5,
+  "usdGuardNote": "guessed safety net. Measured: the first session (activation, ON) cost 0.0033 USD; another campaign measured 0.038 USD per haiku session on larger tasks. All 44 planned sessions together cost 0.23 USD (measured), so the guard is far above the real cost.",
+  "ledger": "~/Dev/jev-test-runs/logic-test-debug/ledger.tsv",
+  "plan": {
+    "planned": {
+      "activation": 8,
+      "conditions": 16,
+      "bug": 16,
+      "nocode": 4
+    },
+    "reserve": 6
+  },
+  "openCode": {
+    "sessions": 4,
+    "tracked": "separately, not claude -p sessions"
+  },
+  "model": "haiku alias, resolved id recorded per session",
+  "pluginRef": "111d17708bf1fcb57b38f9da172efa7dcf6b5a8b",
+  "pluginRefNote": "every session uses the plugin as committed in 111d177 (a git archive of that commit, MCP server removed), so later commits cannot change the plugin under test"
+}
