@@ -16,6 +16,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:compact-handoff` | Writes a compact handoff of the current session (or of a named OpenCode session) for a new session to continue from. |
 | `apana:class-graph` | Kotlin/Java: where a function starts and ends, who uses a class or member, dependency chains between classes. |
 | `apana:logic-test-debug` | Rules for reading Boolean conditions, testing combined conditions and debugging; started by a hook on code prompts. |
+| `apana:variant-check` | Before a matcher or filter over text is written or changed: lists every distinct variant of the matched token in the real data (script with counts) and requires a before/after diff. |
 | `apana:explica-clar` | A mode, switched on by the user, in which every explanation is clear. |
 | `apana:omlx` | Runs a local model on an Apple Silicon Mac with oMLX. |
 | `apana:android-ui-step` | Taps a label on an Android emulator and prints a digest of the new screen. |

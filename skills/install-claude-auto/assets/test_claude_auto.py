@@ -501,6 +501,7 @@ class Wrapper(unittest.TestCase):
                         CLAUDE_AUTO_COOLDOWN="0", FAKE_CWD=self.cwd2)
         for k in ("CLAUDE_AUTO_RUN", "CLAUDE_AUTO_NEXT_ARGS", "CLAUDE_AUTO_MAX", "CLAUDE_AUTO_TOKENS"):
             self.env.pop(k, None)
+        self.env["CLAUDE_AUTO_RULE"] = "off"       # the tests below pin positions in argv; SystemPromptRule tests the rule
 
     def wrap(self, *args, cwd=None, **env):
         e = dict(self.env, **env)
@@ -938,6 +939,61 @@ class Sticky(unittest.TestCase):
         for args, want in cases:
             with self.subTest(args=args):
                 self.assertEqual(m.sticky_args(args), want)
+
+
+class SystemPromptRule(unittest.TestCase):
+    """The variant-check rule appended to the system prompt of every session claude-auto starts."""
+    wrap, calls = Wrapper.wrap, Wrapper.calls
+
+    def setUp(self):
+        Wrapper.setUp(self)
+        self.env.pop("CLAUDE_AUTO_RULE", None)       # the default: on
+
+    def test_rule_args_for_every_switch_and_own_flag(self):
+        # t = 2 over the only two inputs, exhaustive (6 x 5 = 30 cases): the switch and the user's own system prompt flag
+        m = load()
+        rule = ["--append-system-prompt", m.VARIANT_RULE]
+        own = [([], False), (["--append-system-prompt", "mine"], True), (["--append-system-prompt=mine"], True),
+               (["--append-system-prompt-file", "f.txt"], True),
+               (["--", "--append-system-prompt", "mine"], False)]      # after `--` it is prompt text, not a flag
+        for switch, off in ((None, False), ("on", False), ("ON", False), ("off", True), ("OFF", True), ("0", True)):
+            for flags, has_own in own:
+                with self.subTest(switch=switch, flags=flags), mock.patch.dict(os.environ):
+                    os.environ.pop("CLAUDE_AUTO_RULE", None)
+                    if switch is not None:
+                        os.environ["CLAUDE_AUTO_RULE"] = switch
+                    self.assertEqual(m.rule_args(["--model", "opus"] + flags), [] if off or has_own else rule)
+        with mock.patch.dict(os.environ):                              # the flag may be in either list of a run
+            os.environ.pop("CLAUDE_AUTO_RULE", None)
+            self.assertEqual(m.rule_args(["--model", "opus"], ["--append-system-prompt", "mine"]), [])
+            self.assertEqual(m.rule_args(["--append-system-prompt", "mine"], []), [])
+            self.assertEqual(m.rule_args(["--model", "opus"], []), rule)
+
+    def test_every_session_gets_the_rule_before_the_flags_and_the_prompt(self):
+        m = load()
+        self.wrap("--model", "opus", "do the task", FAKE_MODE="handoff")
+        c = self.calls()
+        self.assertEqual(len(c), 2)
+        for call in c:
+            self.assertEqual(call["argv"][0], "--settings")
+            self.assertEqual(call["argv"][2:4], ["--append-system-prompt", m.VARIANT_RULE])
+            self.assertEqual(call["argv"].count("--append-system-prompt"), 1)
+        self.assertEqual(c[0]["argv"][4:], ["--model", "opus", "do the task"])
+        self.assertEqual(c[1]["argv"][4:-2], ["--model", "opus"])
+        self.assertEqual(c[1]["argv"][-2], "--")
+
+    def test_off_and_the_users_own_flag_leave_the_arguments_alone(self):
+        self.wrap("--model", "opus", FAKE_MODE="exit7", CLAUDE_AUTO_RULE="off")
+        self.assertEqual(self.calls()[0]["argv"][2:], ["--model", "opus"])
+        shutil.rmtree(self.state), os.makedirs(self.state)
+        self.wrap("--append-system-prompt", "mine", "--model", "opus", FAKE_MODE="handoff")
+        c = self.calls()
+        self.assertEqual(c[0]["argv"][2:], ["--append-system-prompt", "mine", "--model", "opus"])
+        self.assertNotIn("--append-system-prompt", c[1]["argv"])     # decided per run: the follow-up gets no rule either
+
+    def test_passthrough_stays_plain_with_the_rule_on(self):
+        self.wrap("-p", "say hi", FAKE_MODE="exit7")
+        self.assertEqual(self.calls()[0]["argv"], ["-p", "say hi"])
 
 
 if __name__ == "__main__":

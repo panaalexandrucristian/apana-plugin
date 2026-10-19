@@ -1,6 +1,6 @@
 {
   "name": "apana",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "displayName": "Apana",
   "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, android-ui-step and the claude-auto installer and uninstaller.",
   "author": {
