@@ -3,7 +3,8 @@
 
 prepare.py builds the chunks for VERIFICATION: it leaves out what a verifier must not count as source (the skill's own calls and results, the 'runs' that follow a note, the note's own edits). For a start context that continues the work those exclusions delete real conversation: every turn in which the skill's files were read, run or edited disappears with its answer. This wrapper switches the two exclusion functions off in this process only and then runs prepare.py unchanged (sanitization and chunking stay). It changes no file of the skill.
 prepare.py appends the transcripts of the session's subagents after the main conversation, so the END of the chunks is then subagent work, not the last thing the main conversation did, and their text
-(for example the payload of a batch they sent to a tool) is mostly noise for whoever continues. What a subagent found comes back to the main conversation as its result. So they are left out unless --with-subagents."""
+(for example the payload of a batch they sent to a tool) is mostly noise for whoever continues. What a subagent found comes back to the main conversation as its result. So they are left out unless --with-subagents.
+A message that the user typed while the model was working is an `attachment` record, which prepare.py does not read: it is turned into a user record before prepare.py loads the transcript (see _typed_while_busy)."""
 import os, sys
 def _hv_scripts():
     """handoff-verify's scripts: HV_SCRIPTS, else the copy of them next to this file (handoff_verify/, see its VENDORED.md)."""
@@ -19,5 +20,16 @@ if "--with-subagents" in sys.argv: sys.argv.remove("--with-subagents")
 else: discover.subagent_files = lambda session_path: []
 O.common_exclusions = lambda records, note=None: set()
 O.generated_events = lambda records: set()
+def _typed_while_busy(d):
+    """A message that the user typed while the model was working is stored as an `attachment` record (type queued_command, origin human, commandMode prompt, the text in `prompt`), and often nowhere else.
+    prepare.py reads only the user and assistant records, so it would drop it; here that record becomes an ordinary user record. Any other queued_command (a task notification, a message of a peer session,
+    an origin that is missing) and a blank text stay as they were."""
+    a = d.get("attachment")
+    if d.get("type") != "attachment" or not isinstance(a, dict) or a.get("type") != "queued_command": return d
+    o, p = a.get("origin"), a.get("prompt")
+    if not (isinstance(o, dict) and o.get("kind") == "human" and a.get("commandMode") == "prompt" and isinstance(p, str) and p.strip()): return d
+    return dict({k: v for k, v in d.items() if k != "attachment"}, type="user", message={"role": "user", "content": p})
+_load_jsonl = discover.load_jsonl
+discover.load_jsonl = lambda path: [_typed_while_busy(d) for d in _load_jsonl(path)]
 import prepare
 sys.exit(prepare.main())

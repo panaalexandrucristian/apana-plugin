@@ -5,7 +5,7 @@ description: "Installs claude-auto, the wrapper that starts `claude`, writes a c
 
 # install-claude-auto
 
-`claude-auto` is a Python wrapper you start instead of `claude`. When the context of the running session reaches the threshold (150000 tokens), it writes a handoff note with the apana plugin's compact-handoff skill, ends that session and starts a fresh `claude` that reads the note, all in the same terminal window. Sessions started with plain `claude` are never affected: the hooks reach only the session the wrapper starts (through `--settings`), and `~/.claude/settings.json` stays untouched.
+`claude-auto` is a Python wrapper you start instead of `claude`. When the context of the running session reaches the threshold (150000 tokens), it writes a handoff note with the apana plugin's compact-handoff skill, ends that session and starts a fresh `claude` that reads the note, all in the same terminal window. Sessions started with plain `claude` are never affected: the hooks reach only the session the wrapper starts (through `--settings`), and `~/.claude/settings.json` stays untouched. A subagent that is working holds the handoff back (up to 30000 tokens above the threshold, `CLAUDE_AUTO_DEFER_EXTRA`): ending `claude` would end it without an answer.
 
 This skill puts it in place. The bundled `scripts/install.py` does the work, so run it instead of copying files or editing `~/.zshrc` by hand. It is idempotent, and it saves the original rc once as `~/.zshrc.claude-auto.bak`.
 

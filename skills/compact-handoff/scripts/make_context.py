@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """make_context.py --marker                        (prints a unique marker; use it with --current in the next command)
-make_context.py SESSION | --current MARKER  [OUT] [--cut] [--keep] [--no-readonly] [--with-subagents] [--keep-work] [--no-goal] [--opencode-db PATH] [--no-opencode]
+make_context.py SESSION | --current MARKER  [OUT] [--cut] [--keep] [--no-readonly] [--with-subagents] [--keep-work] [--no-goal] [--no-skills] [--opencode-db PATH] [--no-opencode]
 make_context.py --opencode DB.sqlite [OUT] [--session ID] [--keep] [--no-readonly] [--keep-work]      (an OpenCode session; see below)
 make_context.py --list-opencode [--opencode-db PATH] [--limit N] [--match TEXT]      (the sessions of OpenCode's database, newest first; see below)
 
@@ -20,14 +20,17 @@ One command from a session transcript to a start context for a NEW session.
            and needs exactly ONE session across the Claude transcripts and the OpenCode sessions. A missing database file is skipped; one that exists but cannot be read stops the command with an error that names --no-opencode,
            which skips the OpenCode search (the Claude transcripts alone decide).
   --no-goal  do not carry a /goal that is still active in the session (by default it is: see below).
+  --no-skills  do not ask the new session to load again the skills this session loaded (by default it does: see below).
   --keep   put the result in a DURABLE place instead of /tmp: ~/.claude/handoffs/ (nothing deletes it by itself). An OUT outside /tmp counts as durable too.
 ACTIVE GOAL: a /goal that is neither achieved nor cleared at the end of a Claude Code transcript (goal_status records, see goal_of) gets a section "Goal activ" in the introduction (condition, state, last unmet reason, what the new
 session does with it), an `active goal:` line, and the LAST line printed is then `claude '/goal <condition> (…read HANDOFF.md…)'`, which starts the new session with the same goal set (the line before it is the plain command). An OpenCode session has no goal.
+SKILLS: the skills that a Claude Code transcript loaded (a Skill tool call, or a slash command; see skills_loaded) are listed in a section of the introduction and in a `skills to reload:` line; the new session loads them
+again with its Skill tool before it answers, so that their instructions are in its context (the text of a loaded skill is only a marker in the transcript). compact-handoff itself is never listed. An OpenCode session lists none.
 Default mode: OUT/HANDOFF.md (the instructions for the new session first, then the compact transcript) and OUT/blobs/Rnnnn.txt. A tool call or tool result over 800 / 300 characters, and any tool call that only reads
 (see compact_context.py; --no-readonly turns that rule off), is replaced by one marker line with a 100-character preview; its FULL text is in blobs/. Check: expand(HANDOFF.md + blobs) == the prepared chunks, byte for byte.
 --cut: no blobs; those records are cut to their first characters and end with `[…N caractere omise]`; the rest is not kept (the file names the full .jsonl). Check: every message identical, every cut a true prefix.
 NO ABSOLUTE PATHS: the text of the handoff points to `blobs/…` and `parents/…` relative to the folder of HANDOFF.md, so a folder can be copied or moved whole and still works.
-Steps: prepare_all.py (the chunks of handoff-verify's prepare.py without its verification exclusions; the transcripts of subagents are left out unless --with-subagents) -> compact_context.py. Nothing leaves the machine.
+Steps: prepare_all.py (the chunks of handoff-verify's prepare.py without its verification exclusions; the transcripts of subagents are left out unless --with-subagents; a message the user typed while the model was working is kept as a user message) -> compact_context.py. Nothing leaves the machine.
 If the session itself started from a handoff (it Read a /tmp/handoff-*.md at its start), that PARENT handoff is kept whole: copied next to the new one (OUT/parents/, or <file>-parents/ with --cut) with its own
 parents. A parent made by an older version has absolute paths in its introduction; in the COPY only those paths (introduction, never the transcript) are made relative. Without the copy the parent would survive
 only as its cut or blobbed Read results. The last line printed is the command that starts the new session.
@@ -49,7 +52,7 @@ Fișierul are {lines} de linii. O citire prea mare este refuzată de unealta Rea
 ## Ce conține
 {what}
 
-{parents}## Ce faci după ce l-ai citit
+{parents}{skills}## Ce faci după ce l-ai citit
 Răspunde în maximum 8 rânduri, fără să faci altceva:
 1. ce s-a terminat,
 2. ce așteaptă decizia mea,
@@ -108,12 +111,12 @@ def reading_plan(lines, budget=READ_BUDGET, prefix=8, max_lines=400):
     return chunks
 
 
-def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False, notices=False, opencode=None, sdks=False, goal=""):
+def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), skills=False, notices=False, opencode=None, sdks=False, goal="", reload=""):
     """The introduction with every instruction. It names no absolute path of the handoff itself (only the source transcript, which is durable).
-    `goal`: the section about an active /goal (goal_paragraph), "" without one. `opencode`: None for a Claude Code transcript; for an OpenCode session (blob mode) a pair (has compaction `recent` texts in blobs, has image files in blobs), and `sid` is then the full ses_ id."""
+    `goal`: the section about an active /goal (goal_paragraph), "" without one. `reload`: the section about the skills to load again (skills_paragraph), "" without one. `opencode`: None for a Claude Code transcript; for an OpenCode session (blob mode) a pair (has compaction `recent` texts in blobs, has image files in blobs), and `sid` is then the full ses_ id."""
     plan = ", ".join("%d:%d" % c for c in chunks)
     oc_clause = "" if opencode is None else OC_EVENTS + (OC_RECENT if opencode[0] else "") + (OC_IMAGES if opencode[1] else "") + "."
-    return (INTRO if opencode is None else INTRO_OC).format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, goal=goal, temp=TEMP_NOTE[(bool(kept), bool(cut))],
+    return (INTRO if opencode is None else INTRO_OC).format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, skills=reload, goal=goal, temp=TEMP_NOTE[(bool(kept), bool(cut))],
                         what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "") + (" " + SDK_CLAUSE + " " + SDK_ANSWERS if sdks else "") + oc_clause), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
 
 
@@ -149,6 +152,56 @@ def skill_meta_uuids(sess):
         if isinstance(c, list): c = next((it.get("text") for it in c if isinstance(it, dict) and it.get("type") == "text"), None)
         if isinstance(c, str) and c.startswith(cc.SKILL_PREFIX): out.add(o["uuid"])
     return frozenset(out)
+
+
+SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,59}(?::[A-Za-z0-9][A-Za-z0-9_.-]{0,59})?")   # `skill` or `plugin:skill`: no space, quote or line break can come with a name
+SKILL_COMMAND = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
+SKILL_LEFT_OUT = frozenset(["compact-handoff"])   # the last part of a name: the skill that makes this very handoff is of no use to the session that continues
+
+
+def skills_loaded(sess):
+    """-> [(name, chars)]: the skills the transcript loaded, in the order of their first load, once each. A load is a record the harness injected with the text of a skill (the same records as skill_meta_uuids; `chars` is
+    the length of that text). Its name is the `skill` of the Skill tool call that `sourceToolUseID` points to, or, for a slash command, the `<command-name>` of the user record that is its parent. A record of a subagent
+    (isSidechain), one with no name found, one whose name is not a plain `skill` or `plugin:skill`, and compact-handoff itself count for nothing. Lines that do not parse are skipped."""
+    calls, commands, found = {}, {}, {}
+    for line in open(sess, encoding="utf-8", errors="replace"):
+        try: o = json.loads(line)
+        except Exception: continue
+        if not isinstance(o, dict) or o.get("isSidechain") is True: continue
+        c = (o.get("message") or {}).get("content")
+        if o.get("type") == "assistant" and isinstance(c, list):
+            for it in c:
+                if isinstance(it, dict) and it.get("type") == "tool_use" and it.get("name") == "Skill" and isinstance(it.get("id"), str) and isinstance((it.get("input") or {}).get("skill"), str): calls[it["id"]] = it["input"]["skill"]
+            continue
+        if o.get("type") != "user": continue
+        if isinstance(c, list): c = next((it.get("text") for it in c if isinstance(it, dict) and it.get("type") == "text"), None)
+        if not isinstance(c, str): continue
+        if o.get("isMeta") is not True:
+            m = SKILL_COMMAND.search(c)
+            if m and isinstance(o.get("uuid"), str): commands[o["uuid"]] = m.group(1)
+        elif c.startswith(cc.SKILL_PREFIX):
+            name = calls.get(o.get("sourceToolUseID")) or commands.get(o.get("parentUuid"))
+            name = name.strip().lstrip("/") if isinstance(name, str) else ""
+            if SKILL_NAME.fullmatch(name) and name.split(":")[-1] not in SKILL_LEFT_OUT and name not in found: found[name] = len(c)
+    return list(found.items())
+
+
+SKILLS_HEAD = "## Skill-uri de încărcat din nou\n"
+SKILLS_MANY = ("Sesiunea sursă a încărcat skill-urile, în ordinea încărcării: {names}. În transcript textul lor este doar un marcaj, deci nu ai instrucțiunile lor. "
+               "După ce ai citit tot fișierul, înainte să răspunzi, încarcă-le în această ordine, câte unul, cu unealta `Skill` (parametrul `skill` = numele din listă, fără `args`). "
+               "Le încarci doar ca să ai instrucțiunile lor în context pentru lucrul care continuă: nu porni sarcina pentru care fuseseră încărcate și nu urma pașii lor de început. ")
+SKILLS_ONE = ("Sesiunea sursă a încărcat skill-ul {names}. În transcript textul lui este doar un marcaj, deci nu ai instrucțiunile lui. "
+              "După ce ai citit tot fișierul, înainte să răspunzi, încarcă-l cu unealta `Skill` (parametrul `skill` = numele de mai sus, fără `args`). "
+              "Îl încarci doar ca să ai instrucțiunile lui în context pentru lucrul care continuă: nu porni sarcina pentru care fusese încărcat și nu urma pașii lui de început. ")
+SKILLS_TAIL = ("Dacă unealta spune că un skill nu există sau nu poate fi încărcat, scrie asta în răspuns și mergi mai departe. "
+               "Este singura acțiune pe care ți-o cer înainte de răspuns, o excepție de la „Nu repeta nimic” din „Reguli”; restul din „Reguli” rămâne în picioare. "
+               "Skill-urile încărcate nu schimbă primul răspuns: rămân cele 4 puncte de la „Ce faci după ce l-ai citit”, în maximum 8 rânduri, fără alt format.\n\n")
+
+
+def skills_paragraph(skills):
+    """The section that asks the new session to load `skills` ([(name, chars)] from skills_loaded) again with its Skill tool ("" without any). The names are plain words (SKILL_NAME), so none can carry an instruction or a line `---`."""
+    if not skills: return ""
+    return SKILLS_HEAD + (SKILLS_ONE if len(skills) == 1 else SKILLS_MANY).format(names=", ".join("`%s`" % n for n, _ in skills)) + SKILLS_TAIL
 
 
 def notice_uuids_of(sess):
@@ -479,6 +532,8 @@ def main():
     for fp, cp, ok in copies: print("parent handoff:", fp, "->", cp if ok else "MISSING (not copied)")
     goal = None if "--no-goal" in a else goal_of(sess)
     if goal: print("active goal: %s | unmet checks: %d%s | set %s" % (goal_oneline(goal["condition"], 100), goal["checks"], " | paused" if goal["paused"] else "", goal["since"][:16].replace("T", " ") + " UTC" if goal["since"] else "?"))
+    reloads = [] if "--no-skills" in a else skills_loaded(sess)
+    if reloads: print("skills to reload: %s | %d characters of skill text (--no-skills leaves them out)" % (", ".join(n for n, _ in reloads), sum(c for _, c in reloads)))
     work = tempfile.mkdtemp(prefix="make_context_")
     try:
         run([sys.executable, "-B", os.path.join(HERE, "prepare_all.py"), sess, "--cwd", work, "--out", os.path.join(work, "out")] + (["--with-subagents"] if "--with-subagents" in a else []))
@@ -488,23 +543,23 @@ def main():
         chunk_text = cc.read_chunks(os.path.join(work, "out"))
         notices = cc.count_moved_notices(chunk_text, notes, cc.DEFAULT_LIMITS, not cut) > 0   # the clause only when the compaction will really move one
         sdks = cc.count_moved_sdk(chunk_text, sdk, cc.DEFAULT_LIMITS, not cut) > 0   # the same for the prompts of the SDK
-        ts = now.strftime("%Y-%m-%d %H:%M"); paragraph = parents_paragraph(copies, base); gpar = goal_paragraph(goal, now.astimezone())
-        ro = "--no-readonly" not in a
+        ts = now.strftime("%Y-%m-%d %H:%M"); paragraph = parents_paragraph(copies, base); gpar = goal_paragraph(goal, now.astimezone()); rpar = skills_paragraph(reloads)
+        ro ="--no-readonly" not in a
         def compact(intro, dest):   # -> (printed check line, passed)
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", not cut, meta, notes, sdk_uuids=sdk)
             return buf.getvalue().strip(), ok
-        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills, notices=notices, sdks=sdks, goal=gpar)
+        draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, skills=skills, notices=notices, sdks=sdks, goal=gpar, reload=rpar)
         chunks, lines = ((1, 1),), 0
         for attempt in range(3):   # the plan changes only numbers inside one line, so the line count settles at once; the loop is a safeguard
             scratch = os.path.join(work, "draft%d" % attempt); line, ok = compact(draft, scratch)
             text_lines = open(os.path.join(scratch, "HANDOFF.md"), encoding="utf-8").read().split("\n")
             new_chunks = tuple(reading_plan(text_lines)); new_lines = len(text_lines)
             if (new_chunks, new_lines) == (chunks, lines): break
-            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills, notices, sdks=sdks, goal=gpar)
-        dest = os.path.join(work, "res") if cut else folder
+            chunks, lines = new_chunks, new_lines; draft = build_intro(cut, sid[:8], ts, sess, kept, paragraph, lines, chunks, skills, notices, sdks=sdks, goal=gpar, reload=rpar)
+        dest =os.path.join(work, "res") if cut else folder
         line, ok = compact(draft, dest)
         print(line)
         if not ok: sys.exit("the check did not pass")
@@ -545,7 +600,7 @@ def selftest_opencode():
     assert back == INTRO and len(OC_SUBS) == 2; n += 2   # the third substitution (the clause after WHAT_BLOBS) is checked below
     args = ("ses_0123456789abcdefAAAAAA", "2026-01-01 10:00", "/x/db.sqlite", False, "", 1996, ((1, 300), (301, 280)))
     plain = build_intro(False, *args)
-    assert plain == INTRO.format(sid=args[0], ts=args[1], lines=1996, n=2, plan="1:300, 301:280", parents="", goal="", temp=TEMP_NOTE[(False, False)], what=WHAT_BLOBS, missing=MISSING_BLOBS); n += 1   # the Claude introduction is as it was
+    assert plain == INTRO.format(sid=args[0], ts=args[1], lines=1996, n=2, plan="1:300, 301:280", parents="", skills="", goal="", temp=TEMP_NOTE[(False, False)], what=WHAT_BLOBS, missing=MISSING_BLOBS); n += 1   # the Claude introduction is as it was
     for comp, imgs in itertools.product((False, True), (False, True)):   # 4 combinations of the optional clauses
         intro = build_intro(False, *args, opencode=(comp, imgs)); n += 1
         assert "Sesiunea sursă: sesiune OpenCode `ses_0123456789abcdefAAAAAA`, generat 2026-01-01 10:00." in intro and "`Read` în Claude Code, `read` în OpenCode, cu parametrii `offset` și `limit`" in intro
@@ -823,6 +878,39 @@ def selftest():
              rec("assistant", "a-prefix", P + "/s/e", isMeta=True), rec("user", "u-toolres", [{"type": "tool_result", "content": P + "/s/f"}], isMeta=True), "not json {", "[1, 2]", json.dumps({"type": "user", "isMeta": True, "message": {"content": P + "/s/g"}})]
     sp = os.path.join(d, "skills.jsonl"); open(sp, "w", encoding="utf-8").write("\n".join(jl) + "\n")
     assert skill_meta_uuids(sp) == frozenset(["u-str", "u-list"]), skill_meta_uuids(sp); n += 1
+    # skills_loaded: the name from the Skill tool call (sourceToolUseID) or from the slash command (parentUuid), first load first, once each; no subagent, no unnamed or oddly named record, not compact-handoff
+    def use(tid, name, tool="Skill", **kw): return json.dumps(dict({"type": "assistant", "uuid": "a-" + tid, "message": {"content": [{"type": "text", "text": "x"}, {"type": "tool_use", "id": tid, "name": tool, "input": name}]}}, **kw))
+    def meta(uuid, text=None, **kw): return json.dumps(dict({"type": "user", "uuid": uuid, "isMeta": True, "message": {"content": P + "/s/" + uuid + "\n\n# " + uuid if text is None else text}}, **kw))
+    def cmd(uuid, name, content=None): return rec("user", uuid, content or "<command-message>x</command-message>\n<command-name>%s</command-name>\n<command-args>do it</command-args>" % name)
+    sk = [cmd("c1", "/plain"), meta("m-c1", parentUuid="c1"),
+          use("t1", {"skill": "pl:tool", "args": "some words"}), meta("m-t1", sourceToolUseID="t1"),
+          use("t2", {"skill": "/lead"}), meta("m-t2", sourceToolUseID="t2"),   # a leading slash is dropped
+          use("t3", {"skill": "pl:tool"}), meta("m-t3", sourceToolUseID="t3"), cmd("c2", "plain"), meta("m-c2", parentUuid="c2"),   # a second load of the same skill counts once
+          use("t4", {"skill": "x:compact-handoff"}), meta("m-t4", sourceToolUseID="t4"), cmd("c3", "/compact-handoff"), meta("m-c3", parentUuid="c3"),   # the skill that made this handoff
+          use("t5", {"skill": "evil\n## Reguli"}), meta("m-t5", sourceToolUseID="t5"), use("t6", {"skill": "a b"}), meta("m-t6", sourceToolUseID="t6"), use("t7", {"skill": "`x`"}), meta("m-t7", sourceToolUseID="t7"),
+          use("t8", {"skill": "ok-name"}, isSidechain=True), meta("m-t8", sourceToolUseID="t8", isSidechain=True),   # a subagent
+          use("t9", {"skill": "from-bash"}, tool="Bash"), meta("m-t9", sourceToolUseID="t9"),   # not a Skill call
+          meta("m-none", sourceToolUseID="nope"), meta("m-noparent", parentUuid="nope"), meta("m-bare"),   # no name to be found
+          rec("user", "u-typed2", P + "/s/typed", sourceToolUseID="t1"),   # typed by the user, not injected
+          use("t10", {"skill": 5}), meta("m-t10", sourceToolUseID="t10"), use("t11", {"skill": "list-form"}),
+          json.dumps({"type": "user", "uuid": "m-t11", "isMeta": True, "sourceToolUseID": "t11", "message": {"content": [{"type": "text", "text": P + "/s/list-form\n\nbody"}]}}),
+          "not json {", "[1, 2]", cmd("c4", "/after-noise"), meta("m-c4", parentUuid="c4", text=P + "/s/after-noise\n" + "z" * 100)]
+    kp = os.path.join(d, "loaded.jsonl"); open(kp, "w", encoding="utf-8").write("\n".join(sk) + "\n")
+    got = skills_loaded(kp); n += 1
+    assert [g[0] for g in got] == ["plain", "pl:tool", "lead", "list-form", "after-noise"], got
+    assert dict(got)["plain"] == len(P + "/s/m-c1\n\n# m-c1") and dict(got)["after-noise"] == len(P + "/s/after-noise\n" + "z" * 100), got; n += 1
+    empty = os.path.join(d, "none.jsonl"); open(empty, "w", encoding="utf-8").write("not json\n" + rec("user", "u1", "hello") + "\n")
+    assert skills_loaded(empty) == [] and skills_paragraph([]) == ""; n += 1
+    # the section: the names in backticks, one or several, never a line `---` or a brace left to format; the introduction with it, in the 4 modes
+    for sks in ([("a", 1)], [("pl:a", 1), ("b.c", 2), ("d_e-f", 3)]):
+        rp = skills_paragraph(sks); n += 1
+        assert rp.startswith("## Skill-uri de încărcat din nou\n") and rp.endswith("\n\n") and "\n---\n" not in rp and "{" not in rp and "`Skill`" in rp and "fără `args`" in rp, rp
+        assert all("`%s`" % nm in rp for nm, _ in sks) and (("skill-ul " in rp) == (len(sks) == 1)) and ((", ".join("`%s`" % nm for nm, _ in sks) + ".") in rp), rp
+    for cut, kept in itertools.product((False, True), (False, True)):
+        args = ("abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "PARENTS\n\n", 1996, ((1, 300), (301, 280)))
+        rp = skills_paragraph([("pl:a", 1), ("b", 2)]); with_sk = build_intro(cut, *args, reload=rp); without = build_intro(cut, *args); n += 1
+        assert with_sk.replace(rp, "") == without and without == build_intro(cut, *args, reload="") and with_sk.count("\n---\n") == 1, (cut, kept)
+        assert with_sk.index("PARENTS") < with_sk.index("## Skill-uri de încărcat") < with_sk.index("## Ce faci după ce l-ai citit") < with_sk.index("## Reguli") < with_sk.index("\n---\n"), (cut, kept)
     # the introduction: the skill clause only in blob mode and only with skills; it is short; the contract phrases are there in every case
     for cut, kept, skills in itertools.product((False, True), (False, True), (False, True)):
         intro = build_intro(cut, "abcd1234", "2026-01-01 10:00", "/home/u/.claude/projects/p/s.jsonl", kept, "", 1996, ((1, 300), (301, 280)), skills); n += 1
@@ -932,7 +1020,7 @@ def selftest():
     assert goal_oneline("a  b\n c", 3) == "a…" and goal_oneline("a  b", 4) == "a b" and goal_oneline("a  b\n c") == "a b c"; n += 1
     n += selftest_opencode()
     print("make_context selftest OK: %d cases (an OpenCode session: the introduction as the Claude one with three substitutions and its four clause combinations, a session with every message type and content kind converted from a database built here, session picking, legacy, a parent handoff, --current over all sources and its fail-closed and skip cases; --list-opencode and the titled list in the error of --opencode; relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
-          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; the life of a /goal in a transcript (17 transcripts), its section in the introduction, its start command; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
+          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; naming the skills a transcript loaded (a Skill call or a slash command; once each, no subagent, no odd name, not compact-handoff) and the section that asks for them again, in 4 introduction modes;collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; the life of a /goal in a transcript (17 transcripts), its section in the introduction, its start command; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
 
 
 if "--selftest" in sys.argv: selftest()

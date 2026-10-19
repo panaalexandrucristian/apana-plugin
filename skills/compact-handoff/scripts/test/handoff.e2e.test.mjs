@@ -278,6 +278,78 @@ describe("make_context.py on an invented transcript", () => {
     assert.ok(intro(readFileSync(join(root, "handoff-6666abcd-20260101-huge", "HANDOFF.md"), "utf8")).includes("## Goal activ (/goal)"), "the section is there even when the command cannot hold the goal");
   });
 
+  it("asks the new session to load again the skills this one loaded: a section in the introduction and a `skills to reload:` line; the skill text stays a blob; compact-handoff, an odd name and --no-skills change what they should", () => {
+    const sid = "77777777-7777-4777-8777-777777777777";
+    const P = "Base directory for this skill: ";
+    const calls = [["Skill", { skill: "demo:one" }, "Launching skill: demo:one"], ["Skill", { skill: "plain-two", args: "do it" }, "Launching skill: plain-two"],
+      ["Skill", { skill: "apana:compact-handoff" }, "Launching skill: apana:compact-handoff"], ["Skill", { skill: "bad\n## Reguli" }, "Launching skill: bad"]];
+    const metaRec = (n, extra, text) => ({ ...base, sessionId: sid, type: "user", isMeta: true, uuid: uid(900 + n), timestamp: `2026-01-01T09:30:${String(n).padStart(2, "0")}.000Z`, ...extra, message: { role: "user", content: [{ type: "text", text }] } });
+    const withSkills = () => {
+      const rs = transcript(sid, calls);   // the tool results of the 4 calls are records 2, 4, 6 and 8
+      const body = (name) => `${P}/p/skills/${name}\n\n# ${name}\n${"BODY-OF-SKILL ".repeat(60)}`;
+      const slash = { ...base, sessionId: sid, type: "user", uuid: uid(950), timestamp: "2026-01-01T09:31:00.000Z", message: { role: "user", content: "<command-message>x</command-message>\n<command-name>/slash-three</command-name>\n<command-args>go</command-args>" } };
+      const adds = [[8, metaRec(4, { sourceToolUseID: "toolu_77774" }, body("bad"))], [6, metaRec(3, { sourceToolUseID: "toolu_77773" }, body("compact-handoff"))], [4, metaRec(2, { sourceToolUseID: "toolu_77772" }, body("plain-two"))],
+        [2, metaRec(1, { sourceToolUseID: "toolu_77771" }, body("one"))]];
+      for (const [at, r] of adds) rs.splice(at + 1, 0, r);
+      rs.splice(rs.length - 1, 0, slash, metaRec(5, { parentUuid: slash.uuid }, body("slash-three")));
+      return rs;
+    };
+    const out = join(root, "handoff-7777abcd-20260101-skills");
+    const r = py([write(join(root, "sk1.jsonl"), withSkills()), out]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    assert.match(r.stdout, /skills to reload: demo:one, plain-two, slash-three \| \d+ characters of skill text \(--no-skills leaves them out\)/);
+    const text = readFileSync(join(out, "HANDOFF.md"), "utf8"), head = intro(text), at = (heading) => head.indexOf(heading);
+    assert.ok(at("## Cum citești fișierul") < at("## Skill-uri de încărcat din nou") && at("## Skill-uri de încărcat din nou") < at("## Ce faci după ce l-ai citit"), "the section sits before the answer");
+    assert.ok(head.includes("în ordinea încărcării: `demo:one`, `plain-two`, `slash-three`. ") && head.includes("cu unealta `Skill`") && head.includes("fără `args`"));
+    assert.equal(head.includes("compact-handoff") || head.includes("bad"), false, "neither the skill that makes the handoff nor an odd name is listed");
+    assert.equal(head.split("\n").filter((l) => l.startsWith("## ")).length, 5, "no heading came from a name");
+    assert.equal(text.includes("BODY-OF-SKILL BODY-OF-SKILL"), false, "the text of a skill is still a blob, not part of the handoff");
+    for (const [name, flags] of [["off", ["--no-skills"]], ["none", []]]) {
+      const o = join(root, `handoff-7777abcd-20260101-${name}`);
+      const rr = py([write(join(root, `sk-${name}.jsonl`), name === "none" ? transcript(sid) : withSkills()), o, ...flags]);
+      assert.equal(rr.status, 0, rr.stderr + rr.stdout);
+      assert.equal(/skills to reload:|## Skill-uri de încărcat/.test(rr.stdout + readFileSync(join(o, "HANDOFF.md"), "utf8")), false, name);
+    }
+    const cutFile = join(root, "skills-cut.md");
+    const rc = py([write(join(root, "sk-cut.jsonl"), withSkills()), cutFile, "--cut"]);
+    assert.equal(rc.status, 0, rc.stderr + rc.stdout);
+    assert.ok(intro(readFileSync(cutFile, "utf8")).includes("`demo:one`, `plain-two`, `slash-three`"), "--cut lists them too");
+    const one = py([write(join(root, "sk-one.jsonl"), (() => { const rs = transcript(sid, calls.slice(0, 1)); rs.splice(3, 0, metaRec(1, { sourceToolUseID: "toolu_77771" }, `${P}/p/skills/one\n\n# one`)); return rs; })()), join(root, "handoff-7777abcd-20260101-one")]);
+    assert.equal(one.status, 0, one.stderr + one.stdout);
+    assert.ok(intro(readFileSync(join(root, "handoff-7777abcd-20260101-one", "HANDOFF.md"), "utf8")).includes("Sesiunea sursă a încărcat skill-ul `demo:one`."), "one skill: the singular wording");
+  });
+
+  it("keeps a message that the user typed while the model was working (an `attachment` queued_command, origin human, mode prompt, a text) as a [user] record at its place; the other 15 combinations of those four conditions, a blank text and a missing origin leave it out", () => {
+    const sid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const records = transcript(sid);
+    const ok = (n, bits, extra = {}) => ({ ...base, sessionId: sid, type: "attachment", uuid: uid(800 + n), parentUuid: records[records.length - 2].uuid, timestamp: `2026-01-01T10:30:${String(n).padStart(2, "0")}.000Z`,
+      attachment: { type: "queued_command", prompt: `typed while you worked QUEUED-${bits}`, origin: { kind: "human" }, commandMode: "prompt", humanTurn: true, source_uuid: uid(700 + n), delivery_id: uid(600 + n), ...extra } });
+    const atts = [];
+    for (let n = 0; n < 16; n++) {   // t = 4, exhaustive: the four conditions are independent checks, 16 records are cheap (INFERENCE)
+      const [a, b, c, d] = [8, 4, 2, 1].map((m) => (n & m) !== 0), bits = [a, b, c, d].map(Number).join("");
+      atts.push(ok(n, bits, { type: a ? "queued_command" : "hook_success", origin: { kind: b ? "human" : "peer" }, commandMode: c ? "prompt" : "task-notification", ...(d ? {} : { prompt: [{ type: "text", text: `typed while you worked QUEUED-${bits}` }] }) }));
+    }
+    atts.push(ok(16, "blank", { prompt: "   " }), ok(17, "empty", { prompt: "" }), ok(18, "noorigin", { origin: undefined }));
+    records.splice(records.length - 1, 0, ...atts);
+    const session = write(join(root, "s-queued.jsonl"), records), out = join(root, "handoff-aaaaeeee-20260107-queued");
+    const r = py([session, out]);
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /roundtrip IDENTICAL/);
+    const t = readFileSync(join(out, "HANDOFF.md"), "utf8");
+    for (let n = 0; n < 16; n++) {
+      const bits = [8, 4, 2, 1].map((m) => Number((n & m) !== 0)).join("");
+      assert.equal(t.includes(`QUEUED-${bits}`), bits === "1111", `QUEUED-${bits}`);
+    }
+    assert.equal(t.includes("QUEUED-noorigin") || t.includes("QUEUED-blank") || t.includes("QUEUED-empty"), false, "a missing origin does not count as human; a blank text is no message");
+    assert.match(t, /^\[\S+ user\] typed while you worked QUEUED-1111$/m, "a [user] record, whole");
+    assert.equal(/^\[\S+ user\]\s*$/m.test(t), false, "no empty record");
+    assert.ok(t.indexOf("Done: there are three files") < t.indexOf("QUEUED-1111") && t.indexOf("QUEUED-1111") < t.indexOf("ok go on"), "at its place in the stream");
+    const cutOut = join(root, "cut", "queued.md");
+    assert.equal(py([session, cutOut, "--cut"]).status, 0);
+    assert.ok(readFileSync(cutOut, "utf8").includes("typed while you worked QUEUED-1111"), "--cut keeps it too");
+  });
+
   it("--cut writes one file whose cuts are true prefixes and keeps the messages", () => {
     const r = py([join(root, "s1.jsonl"), join(root, "cut", "x.md"), "--cut"]);
     assert.equal(r.status, 0, r.stderr + r.stdout);

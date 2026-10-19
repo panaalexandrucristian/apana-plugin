@@ -59,6 +59,12 @@ describe("the active goal", () => {
   });
 });
 
+describe("the skills to load again", () => {
+  it("is explained in SKILL.md: the option that switches it off, the printed line and its size, how a name is found, what is left out and who loads them", () => {
+    for (const part of ["`--no-skills`", "`skills to reload:` line", "`sourceToolUseID`", "`<command-name>`", "never compact-handoff itself", "\"Skill-uri de încărcat din nou\"", "without `args`", "an OpenCode session lists none"]) assert.ok(body.includes(part), part);
+  });
+});
+
 describe("the OpenCode section", () => {
   const section = /\n## În OpenCode\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
   it("exists, names the option that skips a broken database and says to report the error to the user first", () => {

@@ -3,12 +3,13 @@
 compact-handoff note, in the same terminal window. Claude Code's own compaction is not involved.
 
     claude-auto [claude args...]    run claude (interactive); every argument goes to claude unchanged
-    claude-auto __hook              internal: the Stop / PostToolUse hook that claude-auto adds with --settings
+    claude-auto __hook              internal: the hook that claude-auto adds with --settings
 
 How it works
-  1. The wrapper writes a settings file with a Stop and a PostToolUse hook and runs `claude --settings <file> ...` in the
-     foreground of this terminal. Those hooks are added to your own; ~/.claude/settings.json is never touched, and
-     sessions started with plain `claude` are not affected (the hook acts only when CLAUDE_AUTO_RUN is set).
+  1. The wrapper writes a settings file with the Stop, PostToolUse, SubagentStart and SubagentStop hooks and runs
+     `claude --settings <file> ...` in the foreground of this terminal. Those hooks are added to your own;
+     ~/.claude/settings.json is never touched, and sessions started with plain `claude` are not affected (the hook
+     acts only when CLAUDE_AUTO_RUN is set).
   2. The hook reads the context size of the last request from the transcript (input + cache_read + cache_creation
      tokens). Under the threshold it does nothing. At or over it, it runs the compact-handoff skill's make_context.py,
      saves what the transcript does not hold yet (pending/ next to HANDOFF.md) and drops run/signal.json.
@@ -21,6 +22,12 @@ last tool result (PostToolUse) or the last reply (Stop) comes from the hook's ow
 one Read can open, in pending/ next to HANDOFF.md. Hooks of parallel tool calls that lose the claim save theirs too. The
 first Stop of a run sees 0 tokens (no usage record is in the transcript yet), so a Stop handoff needs a second turn.
 A --settings of your own is merged with the hooks (claude uses only the last --settings it gets).
+Subagents: their hook events carry an agent_id and the session's own session_id and transcript_path, and ending claude ends
+them. So an event with an agent_id never starts a handoff; SubagentStart/SubagentStop and each tool call of a subagent keep
+run/agents/<agent_id> up to date, and while one was active within CLAUDE_AUTO_AGENT_IDLE seconds the handoff waits (one line
+in auto.log) for the next event of the session after the last SubagentStop, up to CLAUDE_AUTO_DEFER_EXTRA tokens above the
+threshold. A background launch and a SendMessage that resumes a finished subagent mark it, and TaskStop unmarks it (claude sends
+no SubagentStop for that), each at its own PostToolUse. Not covered: a background subagent whose finish has not reached the transcript yet, and processes that are not subagents.
 
 Env (all optional)
   CLAUDE_AUTO_TOKENS         threshold in tokens (default 150000)
@@ -32,6 +39,9 @@ Env (all optional)
   CLAUDE_AUTO_MAX            handoffs per run (default 0 = unlimited); after that claude runs without the hook
   CLAUDE_AUTO_COOLDOWN       seconds between two handoffs of one run (default 600: stops a loop if the new session
                              is itself over the threshold because the note is large)
+  CLAUDE_AUTO_AGENT_IDLE     seconds without any event of a subagent after which it no longer holds the handoff back (default 900)
+  CLAUDE_AUTO_DEFER_EXTRA    tokens above the threshold up to which a running subagent holds the handoff back (default 30000);
+                             at that size claude-auto hands off anyway and the subagent ends with the old session
   CLAUDE_AUTO_DIR            where notes and auto.log go (default ~/.claude/handoffs/auto)
   CLAUDE_AUTO_CLAUDE         the claude binary (default: claude from PATH)
   CLAUDE_AUTO_MAKE_CONTEXT   path to make_context.py (default: the newest apana plugin copy)
@@ -137,8 +147,10 @@ def find_make_context():
     p = os.environ.get("CLAUDE_AUTO_MAKE_CONTEXT")
     if p:
         return p
-    found = glob.glob(os.path.expanduser("~/.claude/plugins/cache/*/apana/*/skills/compact-handoff/scripts/make_context.py"))
-    found.sort(key=lambda f: [int(x) if x.isdigit() else 0 for x in f.split("/apana/")[1].split("/")[0].split(".")])
+    cache = os.path.expanduser("~/.claude/plugins/cache")
+    found = glob.glob(os.path.join(cache, "*/apana/*/skills/compact-handoff/scripts/make_context.py"))
+    # the version is the 3rd folder under the cache (<marketplace>/apana/<version>); a split on "/apana/" would also match a home folder named apana
+    found.sort(key=lambda f: [int(x) if x.isdigit() else 0 for x in os.path.relpath(f, cache).split("/")[2].split(".")])
     return found[-1] if found else None
 
 
@@ -191,6 +203,67 @@ def give_up(run, sid):
 def cooled_down(run):
     a = age(os.path.join(run, "last-handoff"))
     return a is None or a >= env_num("CLAUDE_AUTO_COOLDOWN", 600)
+
+
+def agent_marker(run, agent):
+    return os.path.join(run, "agents", safe(agent))
+
+
+def mark_agent(run, agent):
+    """A subagent is running: its marker is created at SubagentStart and refreshed by each of its tool calls."""
+    path = agent_marker(run, agent)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "a").close()
+    os.utime(path, None)
+
+
+def unmark_agent(run, agent):
+    try:
+        os.remove(agent_marker(run, agent))
+    except OSError:
+        pass
+
+
+def track_subagent_tool(run, d):
+    """What a tool call of the main session says about subagents, applied at its PostToolUse so that the order of that event and
+    the subagent's own SubagentStart/SubagentStop does not matter. A background launch (isAsync/agentId) and a SendMessage that
+    resumes a finished subagent (resumedAgentId; its SubagentStart comes at the same moment) mark it; TaskStop ends one with
+    no SubagentStop, so it unmarks it."""
+    resp, name = d.get("tool_response"), d.get("tool_name")
+    if not isinstance(resp, dict):
+        return
+    started = resp.get("agentId") if resp.get("isAsync") else resp.get("resumedAgentId") if name == "SendMessage" else None
+    if isinstance(started, str) and safe(started):
+        mark_agent(run, started)
+    given = d.get("tool_input")
+    stopped = (given.get("task_id") if isinstance(given, dict) else None) or resp.get("task_id")
+    if name == "TaskStop" and isinstance(stopped, str) and safe(stopped):
+        unmark_agent(run, stopped)
+
+
+def running_agents(run):
+    """Markers of subagents that were active within CLAUDE_AUTO_AGENT_IDLE seconds: one whose SubagentStop never came
+    (killed, crashed) stops holding the handoff back after that."""
+    idle, found = env_num("CLAUDE_AUTO_AGENT_IDLE", 900), []
+    for name in sorted(os.listdir(os.path.join(run, "agents"))) if os.path.isdir(os.path.join(run, "agents")) else []:
+        a = age(os.path.join(run, "agents", name))
+        if a is not None and a < idle:
+            found.append(name)
+    return found
+
+
+def deferral_logged(run, agents):
+    """True if auto.log already says that this set of subagents holds the handoff back (one line per change, not per event)."""
+    path = os.path.join(run, "deferred")
+    try:
+        with open(path) as f:
+            if f.read() == ",".join(agents):
+                return True
+    except OSError:
+        pass
+    with open(path, "w") as f:
+        f.write(",".join(agents))
+    return False
 
 
 def render(v):
@@ -274,13 +347,25 @@ def write_signal(run, data):
 def handle(d):
     run = os.environ.get("CLAUDE_AUTO_RUN")
     event, sid, transcript = d.get("hook_event_name"), d.get("session_id") or "", d.get("transcript_path") or ""
+    agent = d.get("agent_id")
     if not run or not os.path.isdir(run):
         return None                      # not a claude-auto session
+    named = isinstance(agent, str) and bool(safe(agent))
+    if event == "SubagentStop":
+        if named:
+            unmark_agent(run, agent)
+        return None
+    if event == "SubagentStart" or agent:
+        if named:
+            mark_agent(run, agent)       # still running
+        return None                      # a subagent's event never starts a handoff: continue:false would end that subagent
     if event not in ("Stop", "PostToolUse") or not sid or not os.path.isfile(transcript):
         return None
     if os.path.exists(os.path.join(run, "signal.json")):
         save_pending(run, d)             # a handoff is waiting for the wrapper; this event will not reach the transcript either
         return None
+    if event == "PostToolUse":
+        track_subagent_tool(run, d)
     tokens, threshold = context_tokens(transcript), env_num("CLAUDE_AUTO_TOKENS", 150000)
     if os.environ.get("CLAUDE_AUTO_DEBUG"):
         log("%s %s: %d tokens (threshold %d)" % (event, sid[:8], tokens, threshold))
@@ -295,6 +380,15 @@ def handle(d):
     failed = age(os.path.join(run, "failed-" + safe(sid)))
     if failed is not None and failed < FAILED_RETRY:
         return None
+    busy, limit = running_agents(run), threshold + env_num("CLAUDE_AUTO_DEFER_EXTRA", 30000)
+    if busy and tokens < limit:
+        if not deferral_logged(run, busy):
+            log("%s: %d tokens >= %d but %d subagent(s) still running (%s); handoff deferred" % (
+                sid[:8], tokens, threshold, len(busy), ", ".join(busy)))
+        return None
+    if busy:
+        log("%s: %d tokens >= %d with %d subagent(s) running; handing off anyway, they end with this session" % (
+            sid[:8], tokens, limit, len(busy)))
     script = find_make_context()
     if not script or not os.path.isfile(script):
         log("make_context.py not found; skipped")
@@ -450,7 +544,8 @@ def write_settings(path, user=None):
     """The settings file claude-auto passes with --settings: the hooks, merged into the user's own --settings if any."""
     command = "%s %s __hook" % (shlex.quote(sys.executable), shlex.quote(os.path.realpath(__file__)))
     hooks = [{"type": "command", "command": command, "timeout": 150}]
-    ours = {"Stop": [{"hooks": hooks}], "PostToolUse": [{"matcher": "*", "hooks": hooks}]}
+    ours = {"Stop": [{"hooks": hooks}], "PostToolUse": [{"matcher": "*", "hooks": hooks}],
+            "SubagentStart": [{"hooks": hooks}], "SubagentStop": [{"hooks": hooks}]}
     data = dict(user or {})
     merged = dict(data.get("hooks") or {})
     for event, entries in ours.items():
@@ -641,6 +736,9 @@ def wrapper(args):
             if not sig or Child.stop:
                 return rc if rc >= 0 else 128 - rc      # killed by a signal: 128 + signal, as a shell reports it
             os.remove(os.path.join(run, "signal.json"))
+            shutil.rmtree(os.path.join(run, "agents"), ignore_errors=True)      # the subagents ended with that claude
+            if os.path.exists(os.path.join(run, "deferred")):
+                os.remove(os.path.join(run, "deferred"))
             sig["pending"] = collect_pending(run, sig)
             handoffs += 1
             if sig.get("cwd") and os.path.isdir(sig["cwd"]):

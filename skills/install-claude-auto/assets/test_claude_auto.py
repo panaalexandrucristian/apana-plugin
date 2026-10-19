@@ -304,6 +304,18 @@ class HookMatrix(unittest.TestCase):
             self.skipTest("the apana plugin is not installed")
         self.assertTrue(found.endswith("/skills/compact-handoff/scripts/make_context.py") and os.path.isfile(found))
 
+    def test_newest_plugin_copy_is_by_version_whatever_the_home_folder_is_called(self):
+        for user in ("apana", "bob"):                            # a home folder named apana put every version at the same key
+            home = os.path.join(self.tmp, "home-" + user, "Users", user)
+            for v in ("0.1.2", "0.10.2", "0.1.0", "0.1.1", "0.9.9"):
+                d = os.path.join(home, ".claude", "plugins", "cache", "apana-private", "apana", v, "skills", "compact-handoff", "scripts")
+                os.makedirs(d)
+                open(os.path.join(d, "make_context.py"), "w").close()
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                os.environ.pop("CLAUDE_AUTO_MAKE_CONTEXT", None)
+                found = self.m.find_make_context()
+            self.assertIn("/apana/0.10.2/", found, user)         # 0.10.2 is newer than 0.9.9 and 0.1.2: compared as numbers
+
     def test_claim_is_exclusive_and_needs_no_timeout(self):
         run = os.path.join(self.tmp, "lockrun")
         os.makedirs(run)
@@ -341,6 +353,226 @@ class HookMatrix(unittest.TestCase):
                      for _ in range(12)]
             results = [q.communicate(timeout=60)[0].strip() for q in procs]
             self.assertEqual(results.count("WON"), 1, results)
+
+
+class Subagents(unittest.TestCase):
+    """A subagent is not the session: its events never start a handoff, and a handoff waits for it to stop."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.stubs = make_stubs(cls.tmp)
+        cls.m = load()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, True)
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(dir=self.tmp)
+        self.run = os.path.join(self.root, "run")
+        os.makedirs(self.run)
+        self.calls = os.path.join(self.root, "calls")
+        self.env = {"CLAUDE_AUTO_DIR": os.path.join(self.root, "base"), "CLAUDE_AUTO_TOKENS": "100000",
+                    "CLAUDE_AUTO_RUN": self.run, "CLAUDE_AUTO_MAKE_CONTEXT": self.stubs["ok"], "STUB_CALLS": self.calls}
+        self.tokens = 110000                # over the threshold (100000), under its ceiling (130000)
+
+    def send(self, event, **extra):
+        payload = dict({"hook_event_name": event, "session_id": "sess", "cwd": "/w", "tool_name": "Bash",
+                        "tool_response": {"stdout": "files"},
+                        "transcript_path": transcript(os.path.join(self.root, "t.jsonl"), self.tokens)}, **extra)
+        with mock.patch.dict(os.environ, self.env):
+            res = self.m.handle(payload)
+        while self.m.HELD:
+            self.m.HELD.pop().close()
+        return res
+
+    def made(self):
+        return os.path.exists(os.path.join(self.run, "signal.json"))
+
+    def marker(self, agent):
+        return os.path.join(self.run, "agents", agent)
+
+    def log(self):
+        p = os.path.join(self.root, "base", "auto.log")
+        return open(p).read() if os.path.exists(p) else ""
+
+    def test_a_tool_call_of_a_subagent_never_starts_the_handoff(self):
+        for event in ("PostToolUse", "Stop"):
+            with self.subTest(event=event):
+                self.assertIsNone(self.send(event, agent_id="a1", agent_type="general-purpose"))
+        self.assertFalse(self.made())
+        self.assertFalse(os.path.exists(self.calls), "make_context ran for a subagent's event")
+        self.assertFalse(os.path.exists(os.path.join(self.run, "pending")), "a subagent's event was kept as pending")
+        self.assertTrue(os.path.exists(self.marker("a1")))
+
+    def test_the_session_waits_for_a_running_subagent_and_hands_off_when_it_stops(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.assertTrue(os.path.exists(self.marker("a1")))
+        for event in ("PostToolUse", "Stop", "PostToolUse"):
+            self.assertIsNone(self.send(event))
+        self.assertFalse(self.made())
+        self.assertEqual(self.log().count("handoff deferred"), 1, self.log())      # one line, not one per event
+        self.send("SubagentStop", agent_id="a1")
+        self.assertFalse(os.path.exists(self.marker("a1")))
+        res = self.send("PostToolUse")
+        self.assertIs(res["continue"], False)
+        self.assertTrue(self.made())
+
+    def test_every_running_subagent_holds_the_handoff_back(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("SubagentStart", agent_id="a2")
+        self.send("SubagentStop", agent_id="a1")
+        self.assertIsNone(self.send("PostToolUse"))
+        self.assertFalse(self.made())
+        self.send("SubagentStop", agent_id="a2")
+        self.send("PostToolUse")
+        self.assertTrue(self.made())
+
+    def test_a_subagent_that_went_quiet_without_stopping_stops_holding_it_back(self):
+        self.send("SubagentStart", agent_id="a1")
+        old = time.time() - 1000
+        os.utime(self.marker("a1"), (old, old))
+        self.send("PostToolUse")
+        self.assertTrue(self.made())
+        os.remove(os.path.join(self.run, "signal.json"))
+        self.env["CLAUDE_AUTO_AGENT_IDLE"] = "2000"      # the limit is a setting
+        for name in ("done-sess", "last-handoff"):
+            os.remove(os.path.join(self.run, name))
+        self.send("PostToolUse")
+        self.assertFalse(self.made())
+
+    def test_each_tool_call_of_a_subagent_keeps_it_marked_as_running(self):
+        self.send("SubagentStart", agent_id="a1")
+        old = time.time() - 1000
+        os.utime(self.marker("a1"), (old, old))
+        self.send("PostToolUse", agent_id="a1")
+        self.assertLess(time.time() - os.path.getmtime(self.marker("a1")), 5)
+        self.send("PostToolUse")
+        self.assertFalse(self.made())
+
+    def test_a_late_stop_of_a_resumed_subagent_is_healed_by_its_next_tool_call(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("SubagentStop", agent_id="a1")          # arrives after the resumed run started: the marker is gone while it works
+        self.assertFalse(os.path.exists(self.marker("a1")))
+        self.send("PostToolUse", agent_id="a1")            # its next tool call marks it again
+        self.assertTrue(os.path.exists(self.marker("a1")))
+        self.assertIsNone(self.send("PostToolUse"))
+        self.assertFalse(self.made())
+
+    def test_launching_a_background_subagent_marks_it_before_its_own_start_event_arrives(self):
+        launched = {"isAsync": True, "status": "async_launched", "agentId": "a9", "description": "x"}
+        self.assertIsNone(self.send("PostToolUse", tool_name="Agent", tool_response=launched))      # over the threshold
+        self.assertFalse(self.made())
+        self.assertTrue(os.path.exists(self.marker("a9")))
+        self.send("SubagentStop", agent_id="a9")
+        for resp in ({"isAsync": True, "agentId": 5}, {"isAsync": False, "agentId": "a8"}, {"agentId": "a8"}, "text", None):
+            with self.subTest(resp=resp):
+                self.send("PostToolUse", tool_response=resp)
+                self.assertFalse(os.path.exists(self.marker("a8")))
+                self.assertTrue(self.made())          # nothing was marked: the session handed off
+                os.remove(os.path.join(self.run, "signal.json"))
+                for name in ("done-sess", "last-handoff"):
+                    os.remove(os.path.join(self.run, name))
+
+    # SendMessage to a subagent that has finished: the payloads of a real run (claude 2.1.303, haiku)
+    RESUME = {"tool_name": "SendMessage", "tool_input": {"to": "a1", "message": "again"},
+              "tool_response": {"success": True, "message": "Resuming agent a1", "resumedAgentId": "a1"}}
+
+    def test_a_resume_whose_start_event_arrives_before_the_send_message_event_holds_the_handoff_back(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("SubagentStop", agent_id="a1")
+        self.send("SubagentStart", agent_id="a1")                          # the resumed run
+        self.assertIsNone(self.send("PostToolUse", **self.RESUME))
+        self.assertFalse(self.made())
+
+    def test_a_resume_whose_send_message_event_arrives_before_its_start_event_does_not_lose_the_subagent(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("SubagentStop", agent_id="a1")
+        self.assertIsNone(self.send("PostToolUse", **self.RESUME))        # SubagentStart of the resumed run comes after it
+        self.assertFalse(self.made())
+
+    def test_a_subagent_ended_with_task_stop_does_not_hold_the_handoff_back(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("PostToolUse", tool_name="TaskStop", tool_input={"task_id": "a1"},
+                  tool_response={"message": "Successfully stopped task: a1 (x)", "task_id": "a1", "task_type": "local_agent"})
+        self.assertTrue(self.made())
+
+    def test_task_stop_and_send_message_cannot_touch_anything_outside_the_agents_folder(self):
+        open(os.path.join(self.run, "x"), "w").close()
+        self.send("PostToolUse", tool_name="SendMessage", tool_response={"resumedAgentId": "../y"})
+        self.assertFalse(os.path.exists(os.path.join(self.run, "y")))
+        self.assertEqual(os.listdir(os.path.join(self.run, "agents")), ["y"])      # the name is cleaned, inside agents/
+        self.send("PostToolUse", tool_name="TaskStop", tool_input={"task_id": "../x"}, tool_response={"task_id": "../x"})
+        self.assertTrue(os.path.exists(os.path.join(self.run, "x")))
+        self.assertFalse(self.made())      # y still holds the handoff back
+
+    def test_send_message_marks_only_a_resumed_subagent_and_task_stop_only_what_it_names(self):
+        self.send("SubagentStart", agent_id="a1")
+        for resp in ({"success": True, "message": "Message sent"}, {"resumedAgentId": 5}, "text", None):
+            with self.subTest(resp=resp):
+                self.send("PostToolUse", tool_name="SendMessage", tool_response=resp)
+                self.assertEqual(os.listdir(os.path.join(self.run, "agents")), ["a1"])
+        self.send("PostToolUse", tool_name="SendMessage", tool_response={"resumedAgentId": "a2"}, tool_input={"task_id": "a1"})
+        self.assertEqual(sorted(os.listdir(os.path.join(self.run, "agents"))), ["a1", "a2"])      # a SendMessage never unmarks
+        self.send("PostToolUse", tool_name="TaskStop", tool_input={"task_id": "a2"}, tool_response={"task_id": "a2"})
+        self.assertEqual(os.listdir(os.path.join(self.run, "agents")), ["a1"])
+        self.send("PostToolUse", tool_name="Bash", tool_input={"task_id": "a1"}, tool_response={"task_id": "a1"})
+        self.assertEqual(os.listdir(os.path.join(self.run, "agents")), ["a1"])      # only TaskStop unmarks
+
+    def test_the_wait_has_a_ceiling_in_tokens(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.tokens = 129999
+        self.send("PostToolUse")
+        self.assertFalse(self.made())
+        self.tokens = 130000                  # threshold 100000 + 30000
+        self.send("PostToolUse")
+        self.assertTrue(self.made())
+        self.assertIn("handing off anyway", self.log())
+
+    def test_the_wait_can_be_switched_off_and_a_setting_that_is_not_a_number_means_the_default(self):
+        for setting, handed_off in (({"CLAUDE_AUTO_DEFER_EXTRA": "0"}, True), ({"CLAUDE_AUTO_AGENT_IDLE": "0"}, True),
+                                    ({"CLAUDE_AUTO_DEFER_EXTRA": "abc"}, False), ({"CLAUDE_AUTO_AGENT_IDLE": "abc"}, False)):
+            with self.subTest(setting=setting):
+                self.env.update(setting)
+                self.send("SubagentStart", agent_id="a1")
+                self.send("PostToolUse")
+                self.assertEqual(self.made(), handed_off)
+                for name in ("signal.json", "done-sess", "last-handoff"):
+                    if os.path.exists(os.path.join(self.run, name)):
+                        os.remove(os.path.join(self.run, name))
+                shutil.rmtree(os.path.join(self.run, "agents"), True)
+                for key in setting:
+                    self.env.pop(key)
+
+    def test_a_subagent_event_after_the_handoff_was_decided_is_not_kept_as_pending(self):
+        open(os.path.join(self.run, "signal.json"), "w").write("{}")
+        self.send("PostToolUse")                                  # the session's own event: kept, it is not in the transcript
+        self.send("PostToolUse", agent_id="a1")                   # a subagent's: never in the session's transcript, not kept
+        self.send("Stop", agent_id="a1")
+        self.assertEqual(len(os.listdir(os.path.join(self.run, "pending"))), 1)
+
+    def test_a_session_without_subagents_hands_off_as_before(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("SubagentStop", agent_id="a1")
+        self.send("SubagentStop", agent_id="never-started")      # no marker: nothing to fail on
+        self.send("PostToolUse")
+        self.assertTrue(self.made())
+
+    def test_an_agent_id_that_is_not_a_name_cannot_reach_outside_the_run_folder(self):
+        for agent in (7, ["a"], "../../x", "/etc/x"):
+            with self.subTest(agent=agent):
+                self.send("SubagentStart", agent_id=agent)
+                self.send("SubagentStop", agent_id=agent)
+                self.send("PostToolUse", agent_id=agent)
+        self.assertFalse(self.made())
+        self.assertEqual(sorted(os.listdir(self.run)), ["agents"] if os.path.isdir(os.path.join(self.run, "agents")) else [])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "x")))
+
+    def test_nothing_happens_outside_a_claude_auto_run(self):
+        self.env.pop("CLAUDE_AUTO_RUN")
+        self.assertIsNone(self.send("SubagentStart", agent_id="a2"))
+        self.assertFalse(os.path.exists(self.marker("a2")))
 
 
 class HookProcess(unittest.TestCase):
@@ -431,6 +663,7 @@ FAKE_CLAUDE = """
     if os.isatty(0):
         rec["lflag"] = termios.tcgetattr(0)[3]
         rec["echo_icanon"] = bool(rec["lflag"] & termios.ECHO and rec["lflag"] & termios.ICANON)
+    rec["run_files"] = sorted(os.listdir(rec["run"])) if rec["run"] and os.path.isdir(rec["run"]) else None
     json.dump(rec, open(os.path.join(state, "call-%d" % n), "w"))
 
     def fire(sid):
@@ -454,6 +687,15 @@ FAKE_CLAUDE = """
             if mode == "tty":
                 tty.setraw(0)
                 sys.stdout.write("\\x1b[?2004h\\x1b[?25l"); sys.stdout.flush()
+            fire("s0")
+            time.sleep(60)
+    elif mode == "handoff_after_subagents":
+        if n == 0:   # a subagent whose SubagentStop never came (old marker, so it does not hold the handoff back) and the deferral line
+            os.makedirs(os.path.join(rec["run"], "agents"))
+            marker = os.path.join(rec["run"], "agents", "a1")
+            open(marker, "w").close()
+            os.utime(marker, (1, 1))
+            open(os.path.join(rec["run"], "deferred"), "w").write("a1")
             fire("s0")
             time.sleep(60)
     elif mode == "ignore_term_sleep":
@@ -530,10 +772,10 @@ class Wrapper(unittest.TestCase):
         self.assertTrue(c[0]["run"] and c[0]["run"].startswith(self.base))
         self.assertEqual([d for d in os.listdir(self.base) if d.startswith("run-")], [])      # run folder removed
 
-    def test_settings_file_has_both_hooks_with_a_quoted_command(self):
+    def test_settings_file_has_the_hooks_with_a_quoted_command(self):
         self.wrap(FAKE_MODE="exit7")
         s = json.loads(self.calls()[0]["settings"])
-        self.assertEqual(sorted(s["hooks"]), ["PostToolUse", "Stop"])
+        self.assertEqual(sorted(s["hooks"]), ["PostToolUse", "Stop", "SubagentStart", "SubagentStop"])
         self.assertEqual(s["hooks"]["PostToolUse"][0]["matcher"], "*")
         cmd = s["hooks"]["Stop"][0]["hooks"][0]["command"]
         self.assertEqual(cmd, s["hooks"]["PostToolUse"][0]["hooks"][0]["command"])
@@ -571,6 +813,15 @@ class Wrapper(unittest.TestCase):
                 self.assertIn("[claude-auto]", r.stderr)
                 self.assertIn(handoff, r.stderr)
                 self.assertEqual([d for d in os.listdir(self.base) if d.startswith("run-")], [])
+
+    def test_what_the_subagents_left_in_the_run_folder_does_not_reach_the_next_session(self):
+        r = self.wrap("do the task", FAKE_MODE="handoff_after_subagents")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        c = self.calls()
+        self.assertEqual(len(c), 2, r.stderr)               # the old marker did not hold the handoff back
+        self.assertEqual(c[0]["run"], c[1]["run"])          # the run folder is shared by the chained sessions
+        for leftover in ("agents", "deferred"):
+            self.assertNotIn(leftover, c[1]["run_files"])
 
     def run_folders(self):
         return [d for d in os.listdir(self.base) if d.startswith("run-")]
@@ -899,7 +1150,7 @@ class Settings(unittest.TestCase):
         p = os.path.join(self.tmp, "o.json")
         self.m.write_settings(p, None)
         plain = json.load(open(p))
-        self.assertEqual(sorted(plain["hooks"]), ["PostToolUse", "Stop"])
+        self.assertEqual(sorted(plain["hooks"]), ["PostToolUse", "Stop", "SubagentStart", "SubagentStop"])
         user = {"env": {"A": "1"}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "u"}]}],
                                               "PreToolUse": [{"matcher": "Bash", "hooks": []}], "PostToolUse": "oops"}}
         self.m.write_settings(p, user)
