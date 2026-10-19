@@ -209,19 +209,45 @@ def agent_marker(run, agent):
     return os.path.join(run, "agents", safe(agent))
 
 
-def mark_agent(run, agent):
-    """A subagent is running: its marker is created at SubagentStart and refreshed by each of its tool calls."""
+def is_background(path):
+    try:
+        with open(path) as f:
+            return f.read(2) == "bg"
+    except OSError:
+        return False
+
+
+def mark_agent(run, agent, background=False):
+    """A subagent is running: its marker is created at SubagentStart and refreshed by each of its tool calls. The marker of a
+    background subagent (launch or resume seen in the session's own PostToolUse) also says "bg" in it."""
     path = agent_marker(run, agent)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    open(path, "a").close()
+    with open(path, "a") as f:
+        if background and not is_background(path):
+            f.write("bg")
     os.utime(path, None)
 
 
-def unmark_agent(run, agent):
+def unmark_agent(run, agent, stopped=False):
+    """SubagentStop removes the marker. A background one stays as a file, old, so that a SubagentStop that comes late (before
+    the next tool call of a resumed subagent) does not make it look like a foreground one; TaskStop (stopped) removes it."""
+    path = agent_marker(run, agent)
     try:
-        os.remove(agent_marker(run, agent))
+        if is_background(path) and not stopped:
+            os.utime(path, (0, 0))
+        else:
+            os.remove(path)
     except OSError:
         pass
+
+
+def end_foreground_agents(run):
+    """At the Stop of the session: a foreground subagent cannot be running, the turn waited for it. One that is still marked
+    was interrupted (Esc ends it with no SubagentStop), so it no longer holds the handoff back."""
+    folder = os.path.join(run, "agents")
+    for name in os.listdir(folder) if os.path.isdir(folder) else []:
+        if not is_background(os.path.join(folder, name)):
+            unmark_agent(run, name)
 
 
 def track_subagent_tool(run, d):
@@ -234,11 +260,11 @@ def track_subagent_tool(run, d):
         return
     started = resp.get("agentId") if resp.get("isAsync") else resp.get("resumedAgentId") if name == "SendMessage" else None
     if isinstance(started, str) and safe(started):
-        mark_agent(run, started)
+        mark_agent(run, started, background=True)
     given = d.get("tool_input")
     stopped = (given.get("task_id") if isinstance(given, dict) else None) or resp.get("task_id")
     if name == "TaskStop" and isinstance(stopped, str) and safe(stopped):
-        unmark_agent(run, stopped)
+        unmark_agent(run, stopped, stopped=True)
 
 
 def running_agents(run):
@@ -366,6 +392,8 @@ def handle(d):
         return None
     if event == "PostToolUse":
         track_subagent_tool(run, d)
+    else:
+        end_foreground_agents(run)
     tokens, threshold = context_tokens(transcript), env_num("CLAUDE_AUTO_TOKENS", 150000)
     if os.environ.get("CLAUDE_AUTO_DEBUG"):
         log("%s %s: %d tokens (threshold %d)" % (event, sid[:8], tokens, threshold))

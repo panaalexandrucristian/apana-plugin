@@ -408,13 +408,14 @@ class Subagents(unittest.TestCase):
 
     def test_the_session_waits_for_a_running_subagent_and_hands_off_when_it_stops(self):
         self.send("SubagentStart", agent_id="a1")
+        self.send("PostToolUse", tool_name="Agent", tool_response={"isAsync": True, "agentId": "a1"})      # launched in the background
         self.assertTrue(os.path.exists(self.marker("a1")))
         for event in ("PostToolUse", "Stop", "PostToolUse"):
             self.assertIsNone(self.send(event))
         self.assertFalse(self.made())
         self.assertEqual(self.log().count("handoff deferred"), 1, self.log())      # one line, not one per event
         self.send("SubagentStop", agent_id="a1")
-        self.assertFalse(os.path.exists(self.marker("a1")))
+        self.assertEqual(os.path.getmtime(self.marker("a1")), 0)          # kept as an old file: it no longer holds anything
         res = self.send("PostToolUse")
         self.assertIs(res["continue"], False)
         self.assertTrue(self.made())
@@ -519,6 +520,48 @@ class Subagents(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.join(self.run, "agents")), ["a1"])
         self.send("PostToolUse", tool_name="Bash", tool_input={"task_id": "a1"}, tool_response={"task_id": "a1"})
         self.assertEqual(os.listdir(os.path.join(self.run, "agents")), ["a1"])      # only TaskStop unmarks
+
+    # A foreground subagent cannot outlive the turn of the session; Esc ends it with no SubagentStop (live, claude 2.1.303,
+    # haiku: the marker stayed and the handoff was deferred for the whole run, n=2). A background one outlives the turn.
+    LAUNCHED = {"isAsync": True, "status": "async_launched", "agentId": "a9", "description": "x"}
+
+    def test_the_stop_of_the_session_ends_a_foreground_subagent_that_never_sent_its_stop(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("PostToolUse", agent_id="a1")
+        res = self.send("Stop")                       # the answer to the message typed after Esc
+        self.assertTrue(self.made())
+        self.assertFalse(os.path.exists(self.marker("a1")))
+        self.assertIn("systemMessage", res)
+
+    def test_the_stop_of_the_session_does_not_end_a_background_subagent(self):
+        self.send("SubagentStart", agent_id="a9")
+        self.send("PostToolUse", tool_name="Agent", tool_response=self.LAUNCHED)
+        self.assertIsNone(self.send("Stop"))
+        self.assertFalse(self.made())
+        self.assertTrue(os.path.exists(self.marker("a9")))
+        self.send("SubagentStop", agent_id="a9")
+        self.send("Stop")
+        self.assertTrue(self.made())
+
+    def test_the_stop_of_the_session_ends_only_the_foreground_ones(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("PostToolUse", tool_name="Agent", tool_response=self.LAUNCHED)
+        self.assertIsNone(self.send("Stop"))
+        self.assertEqual(os.listdir(os.path.join(self.run, "agents")), ["a9"])
+
+    def test_the_stop_of_the_session_does_not_end_a_resumed_subagent_whose_late_stop_removed_its_marker(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("PostToolUse", **self.RESUME)
+        self.send("SubagentStop", agent_id="a1")          # arrives after the resumed run started
+        self.send("PostToolUse", agent_id="a1")            # its next tool call heals the marker
+        self.assertIsNone(self.send("Stop"))
+        self.assertFalse(self.made())
+
+    def test_the_stop_of_a_subagent_is_not_the_stop_of_the_session(self):
+        self.send("SubagentStart", agent_id="a1")
+        self.send("Stop", agent_id="a2")
+        self.assertTrue(os.path.exists(self.marker("a1")))
+        self.assertFalse(self.made())
 
     def test_the_wait_has_a_ceiling_in_tokens(self):
         self.send("SubagentStart", agent_id="a1")
