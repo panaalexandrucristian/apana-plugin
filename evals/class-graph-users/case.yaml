@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: class-graph-users
+context:
+  scaffold_script: fixture.sh
