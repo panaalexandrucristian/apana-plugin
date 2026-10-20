@@ -20,6 +20,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:explica-clar` | A mode, switched on by the user, in which every explanation is clear. |
 | `apana:omlx` | Runs a local model on an Apple Silicon Mac with oMLX. |
 | `apana:android-ui-step` | Taps a label on an Android emulator and prints a digest of the new screen. |
+| `apana:android-emulator-low-ram` | Measures Android Emulator memory and safely tunes a dedicated low-RAM AVD. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
 
 OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.

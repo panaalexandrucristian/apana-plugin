@@ -8,9 +8,9 @@
   "plugins": [
     {
       "name": "apana",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "source": "./",
-      "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, android-ui-step and the claude-auto installer and uninstaller.",
+      "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, android-ui-step, android-emulator-low-ram and the claude-auto installer and uninstaller.",
       "category": "productivity"
     }
   ]
