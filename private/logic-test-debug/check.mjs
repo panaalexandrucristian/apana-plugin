@@ -27,12 +27,13 @@ export const MAX_PROMPT_BYTES = 65536;
 export const BUDGET_MS = 25;
 
 /**
- * APANA_LOGIC_TEST_DEBUG: absent means ON. A present value is trimmed and lowercased: on, 1 and true mean ON;
+ * APANA_LOGIC_TEST_DEBUG (legacy override), else CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: absent means ON.
+ * A present value is trimmed and lowercased: on, 1 and true mean ON;
  * off, 0, false and every unrecognised value (an empty value included) mean OFF. Unlike the opt-in JEV_FLOW,
  * the default is ON because the user asked for automatic activation.
  */
-export function logicEnabled(env) {
-  const raw = env?.APANA_LOGIC_TEST_DEBUG;
+export function logicEnabled(env, { includePluginOption = true } = {}) {
+  const raw = env?.APANA_LOGIC_TEST_DEBUG ?? (includePluginOption ? env?.CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG : undefined);
   if (raw === undefined) return true;
   return ["on", "1", "true"].includes(String(raw).trim().toLowerCase());
 }

@@ -49,6 +49,19 @@ describe("scripts/apana-hook.mjs with the class-graph nudge", () => {
     call("UserPromptSubmit", { session_id: "seam2", prompt: "/apana:class-graph" });
     const off = call("PreToolUse", { session_id: "seam2", tool_name: "Bash", tool_input: { command: "rg -n 'BetaSecond' app/src" } }, undefined, { APANA_CLASS_GRAPH_NUDGE: "off" });
     assert.equal(off.out, null);
+    const configuredOff = call("PreToolUse", { session_id: "seam2", tool_name: "Bash", tool_input: { command: "rg -n 'GammaThird' app/src" } }, undefined, { CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "off" });
+    assert.equal(configuredOff.out, null);
+  });
+  it("honours reminder-only and nudge-only in the real adapter subprocess", () => {
+    const reminderEnv = { CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "reminder-only" };
+    call("UserPromptSubmit", { session_id: "seam-reminder", prompt: "/apana:class-graph" }, undefined, reminderEnv);
+    assert.match(call("UserPromptSubmit", { session_id: "seam-reminder", prompt: "continue" }, undefined, reminderEnv).out.hookSpecificOutput.additionalContext, /class-graph is ON/);
+    assert.equal(call("PreToolUse", { session_id: "seam-reminder", tool_name: "Grep", tool_input: { pattern: "ReminderTarget", glob: "*.kt" } }, undefined, reminderEnv).out, null);
+
+    const nudgeEnv = { CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "nudge-only" };
+    call("UserPromptSubmit", { session_id: "seam-nudge", prompt: "/apana:class-graph" }, undefined, nudgeEnv);
+    assert.equal(call("UserPromptSubmit", { session_id: "seam-nudge", prompt: "continue" }, undefined, nudgeEnv).out, null);
+    assert.match(call("PreToolUse", { session_id: "seam-nudge", tool_name: "Grep", tool_input: { pattern: "NudgeTarget", glob: "*.kt" } }, undefined, nudgeEnv).out.hookSpecificOutput.additionalContext, /class-graph\.mjs NudgeTarget/);
   });
   it("leaves the rest of the hook working when the nudge module is missing", () => {
     const fake = join(dir, "fake");

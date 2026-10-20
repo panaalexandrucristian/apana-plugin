@@ -1,6 +1,6 @@
 {
   "name": "apana",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "displayName": "Apana",
   "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, android-ui-step and the claude-auto installer and uninstaller.",
   "author": {
@@ -9,6 +9,22 @@
   },
   "repository": "https://github.com/panaalexandrucristian/apana-plugin",
   "license": "MIT",
+  "userConfig": {
+    "logic_test_debug": {
+      "type": "string",
+      "title": "Logic test and debug guidance",
+      "description": "Add logic-test-debug guidance automatically to code prompts.",
+      "options": ["on", "off"],
+      "default": "on"
+    },
+    "class_graph_nudge": {
+      "type": "string",
+      "title": "Class graph reminders",
+      "description": "After /apana:class-graph, remind Claude to use the relationship tools instead of text search.",
+      "options": ["both", "nudge-only", "reminder-only", "off"],
+      "default": "both"
+    }
+  },
   "keywords": [
     "handoff",
     "kotlin",

@@ -15,16 +15,19 @@ export const MODE_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_NUDGES = 3;
 
 /**
- * APANA_CLASS_GRAPH_NUDGE: absent or "on" = reminder and nudge; "a" = nudge only; "b" = reminder only; any other value = off.
+ * APANA_CLASS_GRAPH_NUDGE is the legacy override; otherwise CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE is read.
+ * Absent, "on" or "both" = reminder and nudge; "a"/"nudge-only" = nudge only;
+ * "b"/"reminder-only" = reminder only; any other value = off.
  * The mode itself (the bare slash) is always recorded, so the parts can be switched without losing it.
  */
 export function nudgeParts(env) {
-  const raw = env?.APANA_CLASS_GRAPH_NUDGE;
+  const legacy = env?.APANA_CLASS_GRAPH_NUDGE;
+  const raw = legacy ?? env?.CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE;
   if (raw === undefined) return { reminder: true, nudge: true };
   const value = String(raw).trim().toLowerCase();
-  if (value === "on" || value === "1" || value === "true" || value === "ab") return { reminder: true, nudge: true };
-  if (value === "a") return { reminder: false, nudge: true };
-  if (value === "b") return { reminder: true, nudge: false };
+  if (["on", "1", "true", "ab", "both"].includes(value)) return { reminder: true, nudge: true };
+  if (value === "a" || value === "nudge-only") return { reminder: false, nudge: true };
+  if (value === "b" || value === "reminder-only") return { reminder: true, nudge: false };
   return { reminder: false, nudge: false };
 }
 

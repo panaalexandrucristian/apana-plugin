@@ -220,6 +220,18 @@ describe("switch", () => {
       assert.deepEqual(logs, []);
     }
   });
+  it("ignores the Claude Code plugin option and remains controlled only by APANA_LOGIC_TEST_DEBUG", async () => {
+    const fake = fakeCtx();
+    const { report } = await setup(fake, { CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "off" });
+    assert.ok(report.registered.includes("skill"));
+    assert.ok(report.registered.includes("hook:prompt"));
+    fake.registered.prompt({ sessionID: "plugin-option-ignored", prompt: CODE });
+    assert.deepEqual(deliver(fake, "plugin-option-ignored"), [{ type: "text", text: LOGIC_DIRECTIVE }]);
+
+    const off = fakeCtx();
+    const stopped = await setup(off, { APANA_LOGIC_TEST_DEBUG: "off", CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "on" });
+    assert.deepEqual(stopped.report, { registered: [], degraded: [] });
+  });
   it("is independent of JEV_FLOW and rechecks the switch inside the callbacks", async () => {
     const env = { JEV_FLOW: "off" };
     const fake = fakeCtx();

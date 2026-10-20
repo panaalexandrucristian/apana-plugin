@@ -11,6 +11,14 @@ describe("APANA_LOGIC_TEST_DEBUG switch", () => {
   it("is on for on, 1 and true, trimmed and case-insensitive", () => {
     for (const value of ["on", "1", "true", "ON", " True ", "\tOn\n"]) assert.equal(logicEnabled({ APANA_LOGIC_TEST_DEBUG: value }), true, value);
   });
+  it("reads the plugin configuration option when the legacy variable is absent", () => {
+    assert.equal(logicEnabled({ CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "on" }), true);
+    assert.equal(logicEnabled({ CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "off" }), false);
+  });
+  it("keeps an explicit legacy variable as the backwards-compatible override", () => {
+    assert.equal(logicEnabled({ APANA_LOGIC_TEST_DEBUG: "off", CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "on" }), false);
+    assert.equal(logicEnabled({ APANA_LOGIC_TEST_DEBUG: "on", CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "off" }), true);
+  });
   it("is off for off, 0, false, an empty value and every unrecognised value", () => {
     for (const value of ["off", "0", "false", "OFF", " False ", "", "   ", "no", "yes", "enabled", "2", "garbage"]) {
       assert.equal(logicEnabled({ APANA_LOGIC_TEST_DEBUG: value }), false, JSON.stringify(value));
