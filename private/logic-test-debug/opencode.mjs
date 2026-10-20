@@ -108,7 +108,7 @@ export async function setupLogicTestDebug(ctx, env = process.env, options = {}) 
     diagnose(key);
   };
   try {
-    if (!logicEnabled(env)) return report;
+    if (!logicEnabled(env, { includePluginOption: false })) return report;
 
     let collision = false;
     // Skill registration.
@@ -153,7 +153,7 @@ export async function setupLogicTestDebug(ctx, env = process.env, options = {}) 
           if (input?.agent === "jev-locator") return;
           const sessionID = validSession(input?.sessionID);
           if (!sessionID || !pending.has(sessionID)) return;
-          if (!logicEnabled(env)) {
+          if (!logicEnabled(env, { includePluginOption: false })) {
             pending.delete(sessionID);
             return;
           }
@@ -186,7 +186,7 @@ export async function setupLogicTestDebug(ctx, env = process.env, options = {}) 
             return;
           }
           pending.delete(sessionID);
-          if (!logicEnabled(env)) return;
+          if (!logicEnabled(env, { includePluginOption: false })) return;
           const text = extractPromptText(input);
           if (text === null) {
             diagnose("payload");

@@ -10,7 +10,7 @@ Rule IDs below (N, C, D, W) map to sources, pages and exceptions in [`reference/
 ## Activation and scope
 
 Applies to code work: writing or changing code, reading Boolean conditions, designing tests for combined conditions, fixing bugs. Not for non-code requests.
-It starts automatically through a prompt-start directive on code prompts (off with `APANA_LOGIC_TEST_DEBUG=off`); the description alone is not a guarantee.
+It starts automatically through a prompt-start directive on code prompts. Claude Code users can switch it off in the Apana plugin configuration; `APANA_LOGIC_TEST_DEBUG=off` remains the backwards-compatible override. The description alone is not a guarantee.
 Apply only the rules that fit the task. Never say "studies prove": no rule below is a validated result for this skill as a whole.
 
 ## Evidence labels

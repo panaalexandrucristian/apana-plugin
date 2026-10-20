@@ -33,6 +33,15 @@ OpenCode: clone this repository, add its absolute path to the `plugins` array of
 
 `opencode-plugin.js` sets `logic-test-debug` up on OpenCode.
 
+## Configuration
+
+Claude Code 2.1.271 or newer shows two Apana options in `/config` and in the plugin's **Configure** panel:
+
+- **Logic test and debug guidance:** `on` (default) or `off`.
+- **Class graph reminders:** `both` (default), `nudge-only`, `reminder-only` or `off`.
+
+The existing environment variables remain compatible and take precedence when explicitly set: `APANA_LOGIC_TEST_DEBUG` and `APANA_CLASS_GRAPH_NUDGE` (`on`/`a`/`b`/`off`). OpenCode continues to use the environment variables because plugin `userConfig` is a Claude Code feature.
+
 ## Tests
 
     npm test                  # node suite: hooks, skills, self tests, end to end

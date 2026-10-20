@@ -112,6 +112,9 @@ describe("scripts/apana-hook.mjs seam", () => {
   it("emits nothing for other events or with the switch off", () => {
     assert.equal(run("SessionStart", { prompt: CODE }).out, "");
     assert.equal(run("UserPromptSubmit", { prompt: CODE }, { APANA_LOGIC_TEST_DEBUG: "off" }).out, "");
+    assert.equal(run("UserPromptSubmit", { prompt: CODE }, { CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "off" }).out, "");
+    assert.equal(run("UserPromptSubmit", { prompt: CODE }, { APANA_LOGIC_TEST_DEBUG: "off", CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "on" }).out, "");
+    assert.match(run("UserPromptSubmit", { prompt: CODE }, { APANA_LOGIC_TEST_DEBUG: "on", CLAUDE_PLUGIN_OPTION_LOGIC_TEST_DEBUG: "off" }).out, /logic-test-debug/);
   });
   it("joins the directive with the class-graph reminder of a session whose mode was recorded", () => {
     run("UserPromptSubmit", { session_id: "joined", prompt: "/apana:class-graph" });

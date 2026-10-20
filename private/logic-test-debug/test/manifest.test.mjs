@@ -8,13 +8,27 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const read = (...parts) => readFileSync(join(ROOT, ...parts), "utf8");
 
 describe("logic-test-debug is wired into the plugin", () => {
-  it("both manifests carry 0.1.4 and the plugin declares no MCP server", () => {
+  it("both manifests carry 0.1.5 and the plugin declares no MCP server", () => {
     const plugin = JSON.parse(read(".claude-plugin", "plugin.json"));
     const market = JSON.parse(read(".claude-plugin", "marketplace.json"));
-    assert.equal(plugin.version, "0.1.4");
-    assert.equal(market.plugins.find((p) => p.name === "apana").version, "0.1.4");
+    assert.equal(plugin.version, "0.1.5");
+    assert.equal(market.plugins.find((p) => p.name === "apana").version, "0.1.5");
     assert.equal(plugin.name, "apana");
     assert.equal(plugin.mcpServers, undefined, "no Jev MCP server entry");
+    assert.deepEqual(plugin.userConfig?.logic_test_debug, {
+      type: "string",
+      title: "Logic test and debug guidance",
+      description: "Add logic-test-debug guidance automatically to code prompts.",
+      options: ["on", "off"],
+      default: "on",
+    });
+    assert.deepEqual(plugin.userConfig?.class_graph_nudge, {
+      type: "string",
+      title: "Class graph reminders",
+      description: "After /apana:class-graph, remind Claude to use the relationship tools instead of text search.",
+      options: ["both", "nudge-only", "reminder-only", "off"],
+      default: "both",
+    });
   });
   it("calls the adapter from hooks/hooks.json: one UserPromptSubmit entry, the command and the 10 s timeout", () => {
     const hooks = JSON.parse(read("hooks", "hooks.json")).hooks;

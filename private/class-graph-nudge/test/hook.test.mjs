@@ -26,6 +26,16 @@ describe("nudgeParts", () => {
     assert.deepEqual(nudgeParts({ APANA_CLASS_GRAPH_NUDGE: "b" }), { reminder: true, nudge: false });
     for (const v of ["off", "0", "", "banana"]) assert.deepEqual(nudgeParts({ APANA_CLASS_GRAPH_NUDGE: v }), { reminder: false, nudge: false }, v);
   });
+  it("reads the plugin configuration option when the legacy variable is absent", () => {
+    assert.deepEqual(nudgeParts({ CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "both" }), { reminder: true, nudge: true });
+    assert.deepEqual(nudgeParts({ CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "nudge-only" }), { reminder: false, nudge: true });
+    assert.deepEqual(nudgeParts({ CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "reminder-only" }), { reminder: true, nudge: false });
+    assert.deepEqual(nudgeParts({ CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "off" }), { reminder: false, nudge: false });
+  });
+  it("keeps an explicit legacy variable as the backwards-compatible override", () => {
+    assert.deepEqual(nudgeParts({ APANA_CLASS_GRAPH_NUDGE: "off", CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "both" }), { reminder: false, nudge: false });
+    assert.deepEqual(nudgeParts({ APANA_CLASS_GRAPH_NUDGE: "on", CLAUDE_PLUGIN_OPTION_CLASS_GRAPH_NUDGE: "off" }), { reminder: true, nudge: true });
+  });
 });
 
 describe("the mode", () => {
