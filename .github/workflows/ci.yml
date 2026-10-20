@@ -17,7 +17,10 @@ jobs:
         with:
           python-version: "3.12"
       # ripgrep is what find-usages and class-graph shell out to.
-      - run: sudo apt-get install -y ripgrep
+      - run: sudo apt-get install -y ripgrep bubblewrap
+      # Ubuntu 24.04 runners block unprivileged user namespaces through AppArmor; bubblewrap then
+      # fails with \"loopback: Failed RTM_NEWADDR\". Allow them so the claude-scope sandbox can run.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # Node suite: hooks, skills, the self tests and the end-to-end test of compact-handoff. Offline: no model, no network.
       - name: Node suite
         run: npm test
@@ -27,3 +30,6 @@ jobs:
       # Offline Python suites of the claude-auto wrapper and of its installer and uninstaller (a fake `claude`, a temporary HOME).
       - name: claude-auto (offline Python suites)
         run: npm run test:claude-auto
+      # Offline policy, worktree, provenance and installer tests for the guarded one-task launcher.
+      - name: claude-scope (offline Python suites)
+        run: npm run test:claude-scope

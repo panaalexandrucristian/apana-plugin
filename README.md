@@ -21,9 +21,18 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:omlx` | Runs a local model on an Apple Silicon Mac with oMLX. |
 | `apana:android-ui-step` | Taps a label on an Android emulator and prints a digest of the new screen. |
 | `apana:android-emulator-low-ram` | Measures Android Emulator memory and safely tunes a dedicated low-RAM AVD. |
+| `apana:install-claude-scope` | Installs `claude-scope`, which automatically plans and enforces an exact change scope and accepts tests only for the production behavior changed by that task. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
 
 OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.
+
+### Guarded implementation tasks
+
+Run `/apana:install-claude-scope` once, then from a clean Git repository:
+
+    claude-scope "Fix the requested behavior and add only its regression tests"
+
+`claude-scope` requires Claude Code 2.1.295+, plus `sandbox-exec` on macOS or `bubblewrap` on Linux. For Android/Gradle projects export `ANDROID_HOME` (or `ANDROID_SDK_ROOT`) first: tests run in a sandbox with a private HOME, so a git-ignored `local.properties` is not available and the build fails with "SDK location not found". Test commands must be recognizable runner invocations (`node --test`, `python -m unittest|pytest`, `npm test`, Gradle/Maven test tasks); a refactor must name an existing narrow regression test and may not edit tests. On macOS the test sandbox allows only loopback networking; On Linux with bubblewrap, Ubuntu 24.04 needs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (otherwise `bwrap` fails with "loopback: Failed RTM_NEWADDR"); CI runs the sandbox tests on Linux. It derives an exact production-to-test manifest with repository-confined read-only tools, implements in an independent temporary clone, blocks writes outside the manifest, runs tests in an OS sandbox, checks feature/bugfix tests RED for the expected reason on baseline and GREEN with the production patch, performs a final semantic audit, then applies exactly the validated patch. Repository hooks/settings are ignored while the Apana hooks remain active. Plain `claude` remains unchanged. The accepted files stay uncommitted.
 
 ## Hooks
 
@@ -48,5 +57,6 @@ The existing environment variables remain compatible and take precedence when ex
     npm test                  # node suite: hooks, skills, self tests, end to end
     npm run test:omlx         # offline Python suite of omlx
     npm run test:claude-auto  # offline Python suites of claude-auto and its installer
+    npm run test:claude-scope # offline Python suites of claude-scope and its installer
 
 Node 22 and Python 3 are needed; `class-graph` and `find-usages` also need ripgrep (`rg`). `AGENTS.md` says how to work in this repository.
