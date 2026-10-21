@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // Claude Code hook adapter of the apana plugin. Usage (from hooks/hooks.json):
 //   node "${CLAUDE_PLUGIN_ROOT}/scripts/apana-hook.mjs" <EventName>  < hook-input.json
-// Prints the hook JSON output (if any) and always exits 0: an internal error yields one stderr diagnostic and no output.
-// Two features add context and never decide anything. Each is loaded by a guarded dynamic import, so a failure, even at
-// load time, leaves the output of the other unchanged.
+// Prints hook JSON and exits 0. Guidance-only failures are isolated; scope failures emit an explicit block/deny.
+// Scope authorization is separate from the guidance-only logic and class-graph features.
 async function readStdin() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
@@ -34,6 +33,32 @@ try {
     }
   } catch {
     process.stderr.write("[class-graph-nudge] unavailable\n");
+  }
+  // Explicit scope mode: stateful, fail-closed edit gates for normal Claude sessions.
+  try {
+    const scope = await import("../private/claude-scope-hook/core.mjs");
+    const added = name === "UserPromptSubmit" ? scope.onPrompt(input, process.env) :
+      (name === "PreToolUse" ? scope.onTool(input, process.env) : null);
+    if (added) {
+      const decision = added?.hookSpecificOutput?.permissionDecision;
+      if (!output || decision) output = added;
+      else {
+        const old = output?.hookSpecificOutput?.additionalContext;
+        const extra = added?.hookSpecificOutput?.additionalContext;
+        if (typeof old === "string" && typeof extra === "string") output = { ...output, hookSpecificOutput: { ...output.hookSpecificOutput, additionalContext: `${old}\n${extra}` } };
+      }
+    }
+  } catch {
+    process.stderr.write("[claude-scope] hook unavailable\n");
+    // Unlike guidance-only hooks, a failed scope gate must never become implicit allow.
+    if (name === "UserPromptSubmit") output = {
+      decision: "block",
+      reason: "Apana scope is unavailable; no task was authorized. Repair the plugin/state directory and retry the request.",
+    };
+    else if (name === "PreToolUse") output = { hookSpecificOutput: {
+      hookEventName: "PreToolUse", permissionDecision: "deny",
+      permissionDecisionReason: "Apana scope is unavailable; tool execution is blocked until the gate is restored.",
+    } };
   }
   if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
 } catch (error) {

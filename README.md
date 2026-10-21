@@ -21,25 +21,33 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:omlx` | Runs a local model on an Apple Silicon Mac with oMLX. |
 | `apana:android-ui-step` | Taps a label on an Android emulator and prints a digest of the new screen. |
 | `apana:android-emulator-low-ram` | Measures Android Emulator memory and safely tunes a dedicated low-RAM AVD. |
-| `apana:install-claude-scope` | Installs `claude-scope`, which automatically plans and enforces an exact change scope and accepts tests only for the production behavior changed by that task. |
+| `apana:scope` | Investigate a coding task, ask about unclear intent, then gate edits to exact paths after explicit user approval. |
+| `apana:uninstall-claude-scope` | Remove an old standalone launcher and its marked PATH block without removing reports or unrelated files. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
 
 OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.
 
 ### Guarded implementation tasks
 
-Run `/apana:install-claude-scope` once, then from a clean Git repository:
+In a normal `claude` session with Apana enabled:
 
-    claude-scope "Fix the requested behavior and add only its regression tests"
+    /apana:scope Fix the requested behavior and add only its regression tests
 
-`claude-scope` requires Claude Code 2.1.295+, plus `sandbox-exec` on macOS or `bubblewrap` on Linux. For Android/Gradle projects export `ANDROID_HOME` (or `ANDROID_SDK_ROOT`) first: tests run in a sandbox with a private HOME, so a git-ignored `local.properties` is not available and the build fails with "SDK location not found". Test commands must be recognizable runner invocations (`node --test`, `python -m unittest|pytest`, `npm test`, Gradle/Maven test tasks); a refactor must name an existing narrow regression test and may not edit tests. On macOS the test sandbox allows only loopback networking; On Linux with bubblewrap, Ubuntu 24.04 needs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (otherwise `bwrap` fails with "loopback: Failed RTM_NEWADDR"); CI runs the sandbox tests on Linux. It derives an exact production-to-test manifest with repository-confined read-only tools, implements in an independent temporary clone, blocks writes outside the manifest, runs tests in an OS sandbox, checks feature/bugfix tests RED for the expected reason on baseline and GREEN with the production patch, performs a final semantic audit, then applies exactly the validated patch. Repository hooks/settings are ignored while the Apana hooks remain active. Plain `claude` remains unchanged. The accepted files stay uncommitted.
+The hook creates an investigation-only scope for that session and working directory. Read/Glob/Grep and user questions remain available; repository writes are denied. Claude must investigate repository-answerable questions rather than guess and ask the user about ambiguous intent. It writes a proposal with exact production paths, test paths mapped to production, and narrow test commands. Review the proposed behavior, paths and commands, then submit:
+
+    /apana:scope approve <nonce shown by the hook>
+
+Only those exact files and test commands are then permitted. Starting a new `/apana:scope <task>` revokes the previous approval; changed intent or more files require a fresh proposal and user approval. MCP and subagents are blocked while scope is active. This is opt-in, not automatic for every prompt, and does not commit changes. The old installer/launcher is no longer shipped; `/apana:uninstall-claude-scope` remains solely to remove legacy installations. Updating the plugin does not uninstall them or delete reports.
+
+**Limits:** this is a tool/path gate in the real checkout, not the old planner, temporary-clone broker, OS sandbox, automatic RED/GREEN provenance or semantic audit. Production-to-test mapping is a declaration, not proof that a test covers changed behavior: the model must explain the behavior and the user must review it. Focused assertions for changed production behavior are in scope; unrelated coverage is not. Approved test runners execute repository code with the user's rights and can have side effects. Preexisting symlink paths are rejected, but path checks and later tool execution are not atomic; concurrent changes by local processes are outside the guarantee. Hooks disabled by policy, timeout or external processes remain outside this gate's control. Unexpected scope-handler errors block prompts/tools rather than silently authorizing a task.
 
 ## Hooks
 
-`hooks/hooks.json` calls `scripts/apana-hook.mjs`, which adds context and never decides anything:
+`hooks/hooks.json` calls `scripts/apana-hook.mjs`. Guidance hooks add context; scope can deny tool use or block a prompt:
 
 - the `logic-test-debug` directive on code prompts (`APANA_LOGIC_TEST_DEBUG=off` turns it off);
 - the `class-graph` nudge after a bare `/apana:class-graph` (`APANA_CLASS_GRAPH_NUDGE=off` turns it off; `APANA_CLASS_GRAPH_STATE_DIR` moves its state).
+- the explicit `scope` gate, with session state in `~/.claude/apana-scope` (`APANA_SCOPE_STATE_DIR` overrides it).
 
 `opencode-plugin.js` sets `logic-test-debug` up on OpenCode.
 
@@ -57,6 +65,6 @@ The existing environment variables remain compatible and take precedence when ex
     npm test                  # node suite: hooks, skills, self tests, end to end
     npm run test:omlx         # offline Python suite of omlx
     npm run test:claude-auto  # offline Python suites of claude-auto and its installer
-    npm run test:claude-scope # offline Python suites of claude-scope and its installer
+    npm run test:claude-scope # Node scope gates and Python legacy-uninstaller tests
 
 Node 22 and Python 3 are needed; `class-graph` and `find-usages` also need ripgrep (`rg`). `AGENTS.md` says how to work in this repository.

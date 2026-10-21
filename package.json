@@ -17,6 +17,6 @@
     "test": "node --test private/*/test/*.mjs skills/*/scripts/test/*.mjs",
     "test:omlx": "$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3) -B -W ignore::ResourceWarning -m unittest discover -s skills/omlx/scripts -p 'test_*.py'",
     "test:claude-auto": "(cd skills/install-claude-auto/assets && python3 -B -W ignore test_claude_auto.py) && (cd skills/install-claude-auto/scripts && python3 -B -W ignore test_setup.py)",
-    "test:claude-scope": "python3 -B -m unittest skills/install-claude-scope/assets/test_claude_scope.py skills/install-claude-scope/scripts/test_setup.py"
+    "test:claude-scope": "node --test private/claude-scope-hook/test/*.mjs && python3 -B -m unittest skills/uninstall-claude-scope/scripts/test_uninstall.py"
   }
 }

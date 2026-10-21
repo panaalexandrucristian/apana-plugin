@@ -96,6 +96,7 @@ describe("scripts/apana-hook.mjs seam", () => {
     mkdirSync(join(tree, "private"));
     cpSync(join(ROOT, "scripts", "apana-hook.mjs"), join(tree, "scripts", "apana-hook.mjs"));
     symlinkSync(join(ROOT, "private", "class-graph-nudge"), join(tree, "private", "class-graph-nudge"), "dir");
+    symlinkSync(join(ROOT, "private", "claude-scope-hook"), join(tree, "private", "claude-scope-hook"), "dir");
     useRealLogic();
   });
   after(() => rmSync(tree, { recursive: true, force: true }));

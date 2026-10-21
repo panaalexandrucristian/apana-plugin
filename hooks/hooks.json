@@ -14,7 +14,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Grep",
+        "matcher": "Bash|Grep|Read|Glob|Edit|Write|NotebookEdit|AskUserQuestion|Agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
