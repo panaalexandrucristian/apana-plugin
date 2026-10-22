@@ -654,9 +654,9 @@ class HookProcess(unittest.TestCase):
             os.remove(os.path.join(self.tmp, "run", "signal.json"))
             os.remove(os.path.join(self.tmp, "run", "last-handoff"))
 
-    def test_default_threshold_is_150000(self):
+    def test_default_threshold_is_100000(self):
         self.env.pop("CLAUDE_AUTO_TOKENS")
-        for tokens, handoff in ((100000, False), (149999, False), (150000, True)):
+        for tokens, handoff in ((99999, False), (100000, True), (150000, True)):
             with self.subTest(tokens=tokens):
                 t = transcript(os.path.join(self.tmp, "t%d.jsonl" % tokens), tokens)
                 r = self.hook(json.dumps({"hook_event_name": "Stop", "session_id": "d%d" % tokens, "transcript_path": t, "cwd": "/w"}))
@@ -755,6 +755,17 @@ FAKE_CLAUDE = """
             tty.setraw(0)
             sys.stdout.write("\\x1b[?2004h\\x1b[?25l"); sys.stdout.flush()
             os.kill(os.getpid(), signal.SIGKILL)
+    elif mode == "bootstrap":
+        if n == 0:
+            fire("anchor-123")
+            time.sleep(60)
+    elif mode == "bootstrap_then_handoff":
+        if n == 0:
+            fire("anchor-123")
+            time.sleep(60)
+        elif n == 1:
+            fire("work-456")
+            time.sleep(60)
     elif mode == "handoff_then_quit":
         fire("s0")
         time.sleep(0.5)
@@ -783,7 +794,7 @@ class Wrapper(unittest.TestCase):
         self.env = dict(os.environ, CLAUDE_AUTO_CLAUDE=self.fake, CLAUDE_AUTO_DIR=self.base, FAKE_STATE=self.state,
                         CLAUDE_AUTO_MAKE_CONTEXT=make_stubs(self.tmp)["ok"], STUB_CALLS=os.path.join(self.tmp, "calls"),
                         CLAUDE_AUTO_GRACE="0.05", CLAUDE_AUTO_POLL="0.02", CLAUDE_AUTO_KILL_WAIT="0.5",
-                        CLAUDE_AUTO_COOLDOWN="0", FAKE_CWD=self.cwd2)
+                        CLAUDE_AUTO_COOLDOWN="0", CLAUDE_AUTO_BOOTSTRAP="0", FAKE_CWD=self.cwd2)
         for k in ("CLAUDE_AUTO_RUN", "CLAUDE_AUTO_NEXT_ARGS", "CLAUDE_AUTO_MAX", "CLAUDE_AUTO_TOKENS"):
             self.env.pop(k, None)
         self.env["CLAUDE_AUTO_RULE"] = "off"       # the tests below pin positions in argv; SystemPromptRule tests the rule
@@ -868,6 +879,38 @@ class Wrapper(unittest.TestCase):
 
     def run_folders(self):
         return [d for d in os.listdir(self.base) if d.startswith("run-")]
+
+    def test_handoff_can_fork_a_configured_immutable_anchor(self):
+        r = self.wrap("--model", "opus", "do the task", FAKE_MODE="handoff", CLAUDE_AUTO_ANCHOR_ID="anchor-123")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        second = self.calls()[1]["argv"]
+        self.assertEqual(second[2:-2], ["--model", "opus", "--resume", "anchor-123", "--fork-session"])
+        self.assertEqual(second[-2], "--")
+        self.assertIn("HANDOFF.md", second[-1])
+
+    def test_default_bootstrap_keeps_delimited_prefix_arguments(self):
+        args = ["--model", "opus", "--mcp-config", "/mcp.json", "--plugin-dir", "/plugin", "--add-dir", "/src", "--", "do work"]
+        r = self.wrap(*args, FAKE_MODE="bootstrap", CLAUDE_AUTO_BOOTSTRAP="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        c = self.calls()
+        prefix = args[:-2]
+        self.assertEqual(c[0]["argv"][2:-2], prefix)
+        self.assertEqual(c[1]["argv"][2:-2], prefix + ["--resume", "anchor-123", "--fork-session"])
+        self.assertEqual(c[1]["argv"][-2:], ["--", "do work"])
+
+    def test_bootstrap_keeps_plain_prompt_without_flag_values(self):
+        r = self.wrap("--model", "sonnet", "task", FAKE_MODE="bootstrap", CLAUDE_AUTO_BOOTSTRAP="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls()[1]["argv"][-1], "task")
+
+    def test_stop_in_the_bootstrapped_work_session_creates_a_normal_handoff(self):
+        r = self.wrap("--model", "sonnet", "task", FAKE_MODE="bootstrap_then_handoff", CLAUDE_AUTO_BOOTSTRAP="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        c = self.calls()
+        self.assertEqual(len(c), 3, r.stderr)
+        self.assertEqual(c[2]["argv"][2:-2], ["--model", "sonnet", "--resume", "anchor-123", "--fork-session"])
+        self.assertEqual(c[2]["argv"][-2], "--")
+        self.assertIn("HANDOFF.md", c[2]["argv"][-1])
 
     def test_next_args_override(self):
         self.wrap("--model", "opus", FAKE_MODE="handoff", CLAUDE_AUTO_NEXT_ARGS="--permission-mode 'accept Edits'")

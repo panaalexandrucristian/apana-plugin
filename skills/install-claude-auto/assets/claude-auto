@@ -30,9 +30,12 @@ threshold. A background launch and a SendMessage that resumes a finished subagen
 no SubagentStop for that), each at its own PostToolUse. Not covered: a background subagent whose finish has not reached the transcript yet, and processes that are not subagents.
 
 Env (all optional)
-  CLAUDE_AUTO_TOKENS         threshold in tokens (default 150000)
+  CLAUDE_AUTO_TOKENS         threshold in tokens (default 100000); starts the compact handoff before the
+                             expensive final 50k-token context window
   CLAUDE_AUTO_NEXT_ARGS      flags for the follow-up sessions, e.g. "--permission-mode acceptEdits". Default: the
                              --model/--permission-mode/--effort/... flags you started with (see STICKY)
+  CLAUDE_AUTO_ANCHOR_ID      immutable, already-warmed Claude session ID. When set, every handoff resumes a fork of
+                             this anchor, then appends HANDOFF.md; without it, the normal new-session handoff is used.
   CLAUDE_AUTO_RULE           off (or 0) stops claude-auto from appending the variant-check rule to the system prompt of
                              every session it starts (default on; skipped when you pass your own --append-system-prompt
                              or --append-system-prompt-file)
@@ -390,11 +393,14 @@ def handle(d):
     if os.path.exists(os.path.join(run, "signal.json")):
         save_pending(run, d)             # a handoff is waiting for the wrapper; this event will not reach the transcript either
         return None
+    if os.environ.get("CLAUDE_AUTO_BOOTSTRAP") == "1" and event == "Stop":
+        write_signal(run, {"kind": "anchor", "session_id": sid, "cwd": d.get("cwd")})
+        return {"systemMessage": "Ancora de cache este pregătită; pornesc sesiunea de lucru."}
     if event == "PostToolUse":
         track_subagent_tool(run, d)
     else:
         end_foreground_agents(run)
-    tokens, threshold = context_tokens(transcript), env_num("CLAUDE_AUTO_TOKENS", 150000)
+    tokens, threshold = context_tokens(transcript), env_num("CLAUDE_AUTO_TOKENS", 100000)
     if os.environ.get("CLAUDE_AUTO_DEBUG"):
         log("%s %s: %d tokens (threshold %d)" % (event, sid[:8], tokens, threshold))
     if tokens < threshold:
@@ -528,6 +534,21 @@ def rule_args(*arglists):
         if any(a.partition("=")[0] in OWN_SYSTEM_PROMPT for a in head):
             return []
     return ["--append-system-prompt", VARIANT_RULE]
+
+
+def session_args(args):
+    """Keep every explicit session-shaping argument before `--`; callers with variadic flags must delimit the prompt."""
+    if "--" not in args:
+        return sticky_args(args)
+    head, kept, i = args[:args.index("--")], [], 0
+    while i < len(head):
+        if head[i] == "--settings":
+            i += 2
+            continue
+        if not head[i].startswith("--settings="):
+            kept.append(head[i])
+        i += 1
+    return kept
 
 
 def passthrough(args):
@@ -705,6 +726,20 @@ def run_once(cmd, env, cwd, run):
                 return proc.returncode, sig
 
 
+def initial_prompt(args):
+    if "--" in args:
+        return " ".join(args[args.index("--") + 1:])
+    out, i = [], 0
+    while i < len(args):
+        name, eq, _ = args[i].partition("=")
+        if name in STICKY and STICKY[name] and not eq:
+            i += 1
+        elif not args[i].startswith("-"):
+            out.append(args[i])
+        i += 1
+    return " ".join(out)
+
+
 def wrapper(args):
     claude = shutil.which(os.environ.get("CLAUDE_AUTO_CLAUDE") or "claude")
     if not claude:
@@ -720,7 +755,7 @@ def wrapper(args):
         return 2
     first_args, user, err = split_settings(args)
     if env_next is None:
-        next_args, next_user, nerr = sticky_args(first_args), user, None
+        next_args, next_user, nerr = session_args(first_args), user, None
     else:
         next_args, next_user, nerr = split_settings(env_next)
     for e in (err, nerr):
@@ -749,13 +784,20 @@ def wrapper(args):
         signal.signal(signal.SIGTERM, on_term_signal)      # SIG_IGN, which the child would inherit
         signal.signal(signal.SIGHUP, on_term_signal)
         rule = rule_args(first_args, next_args)      # decided once: the same system prompt in every session of the run
-        handoffs, cwd, argv = 0, None, first_args
+        anchor = os.environ.get("CLAUDE_AUTO_ANCHOR_ID")
+        bootstrap = not bool(anchor) and os.environ.get("CLAUDE_AUTO_BOOTSTRAP", "1") != "0"
+        work_prompt = initial_prompt(first_args)
+        handoffs, cwd = 0, None
+        argv = next_args + ["--", "Răspunde exact: ANCHOR_READY"] if bootstrap else first_args
         while True:
             hooked = not maximum or handoffs < maximum
             env = dict(os.environ)
             env.pop("CLAUDE_AUTO_RUN", None)
+            env.pop("CLAUDE_AUTO_BOOTSTRAP", None)
             if hooked:
                 env["CLAUDE_AUTO_RUN"] = run
+            if bootstrap:
+                env["CLAUDE_AUTO_BOOTSTRAP"] = "1"
             use = (settings if handoffs == 0 else settings_next) if hooked else plain
             cmd = [claude] + (["--settings", use] if use else []) + rule + argv
             rc, sig = run_once(cmd, env, cwd, run if hooked else None)
@@ -764,6 +806,12 @@ def wrapper(args):
             if not sig or Child.stop:
                 return rc if rc >= 0 else 128 - rc      # killed by a signal: 128 + signal, as a shell reports it
             os.remove(os.path.join(run, "signal.json"))
+            if sig.get("kind") == "anchor":
+                anchor, bootstrap = sig["session_id"], False
+                with open(os.path.join(run, "anchor.json"), "w") as f:
+                    json.dump({"anchor_session_id": anchor}, f)
+                argv = next_args + ["--resume", anchor, "--fork-session", "--", work_prompt]
+                continue
             shutil.rmtree(os.path.join(run, "agents"), ignore_errors=True)      # the subagents ended with that claude
             if os.path.exists(os.path.join(run, "deferred")):
                 os.remove(os.path.join(run, "deferred"))
@@ -771,7 +819,8 @@ def wrapper(args):
             handoffs += 1
             if sig.get("cwd") and os.path.isdir(sig["cwd"]):
                 cwd = sig["cwd"]
-            argv = next_args + ["--", new_session_prompt(sig)]      # `--`: a variadic option must not swallow the prompt
+            fork = ["--resume", anchor, "--fork-session"] if anchor else []
+            argv = next_args + fork + ["--", new_session_prompt(sig)]      # `--`: a variadic option must not swallow the prompt
             say("%dk tokeni de context; nota: %s. Pornesc sesiunea nouă în aceeași fereastră." % (
                 int(sig.get("tokens") or 0) // 1000, sig["handoff"]))
             log("handoff %d: claude ended (exit %s), new session from %s (cwd %s, %d pending file(s))" % (
