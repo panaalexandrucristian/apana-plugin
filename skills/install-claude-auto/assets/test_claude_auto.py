@@ -59,6 +59,126 @@ def make_stubs(folder):
     return stubs
 
 
+class Cooldown(unittest.TestCase):
+    def test_default_is_sixty_seconds_from_last_successful_handoff(self):
+        m = load()
+        with tempfile.TemporaryDirectory() as run, mock.patch.dict(os.environ, {}, clear=True):
+            marker = os.path.join(run, "last-handoff")
+            self.assertTrue(m.cooled_down(run))  # the first handoff has no cooldown
+            with open(marker, "w"):
+                pass
+            os.utime(marker, (1000, 1000))
+            for now, allowed in ((1000, False), (1059, False), (1059.999, False),
+                                 (1060, True), (1060.001, True), (1600, True)):
+                with self.subTest(now=now), mock.patch.object(m.time, "time", return_value=now):
+                    self.assertEqual(m.cooled_down(run), allowed)
+                    self.assertEqual(os.path.getmtime(marker), 1000)  # checks never restart the countdown
+
+    def test_successive_sessions_wait_sixty_seconds_and_keep_correct_token_count(self):
+        m = load()
+        with tempfile.TemporaryDirectory() as root:
+            run = os.path.join(root, "run")
+            os.mkdir(run)
+            marker = os.path.join(run, "last-handoff")
+            env = {"CLAUDE_AUTO_DIR": root, "CLAUDE_AUTO_RUN": run,
+                   "CLAUDE_AUTO_TOKENS": "150000", "CLAUDE_AUTO_RULE": "off",
+                   "CLAUDE_AUTO_MAKE_CONTEXT": make_stubs(root)["ok"],
+                   "STUB_CALLS": os.path.join(root, "calls")}
+            t = transcript(os.path.join(root, "synthetic.jsonl"), 150000)
+            self.assertEqual(m.context_tokens(t), 150000)  # input + cache read + cache creation, not cumulative
+            try:
+                with mock.patch.dict(os.environ, env, clear=True):
+                    for i in range(3):
+                        payload = {"hook_event_name": "Stop", "session_id": "synthetic-%d" % i,
+                                   "cwd": root, "transcript_path": t, "last_assistant_message": "synthetic"}
+                        if i:
+                            os.utime(marker, (1000, 1000))
+                            with mock.patch.object(m.time, "time", return_value=1059.999):
+                                self.assertIsNone(m.handle(payload))
+                            self.assertEqual(os.path.getmtime(marker), 1000)
+                            self.assertFalse(os.path.exists(os.path.join(run, "signal.json")))
+                            with open(os.path.join(root, "auto.log")) as f:
+                                self.assertIn("younger than 60s; skipped", f.read())
+                        with mock.patch.object(m.time, "time", return_value=1060):
+                            self.assertIsNotNone(m.handle(payload))
+                        with open(os.path.join(run, "signal.json")) as f:
+                            sig = json.load(f)
+                        self.assertEqual((sig["session_id"], sig["tokens"]), (payload["session_id"], 150000))
+                        self.assertTrue(os.path.exists(m.done_file(run, payload["session_id"])))
+                        self.assertGreater(os.path.getmtime(marker), 1000)
+                        os.remove(os.path.join(run, "signal.json"))  # wrapper consumed it
+                        while m.HELD:
+                            m.HELD.pop().close()  # hook process exited
+                    with open(env["STUB_CALLS"]) as f:
+                        self.assertEqual(len(f.readlines()), 3)
+            finally:
+                while m.HELD:
+                    m.HELD.pop().close()
+
+
+class BootstrapBudget(unittest.TestCase):
+    def test_anchor_leaves_cooldown_free_and_three_forks_use_default_budgets(self):
+        m = load()
+        with tempfile.TemporaryDirectory() as root:
+            run = os.path.join(root, "run")
+            os.mkdir(run)
+            marker = os.path.join(run, "last-handoff")
+            env = {"CLAUDE_AUTO_DIR": root, "CLAUDE_AUTO_RUN": run,
+                   "CLAUDE_AUTO_MAKE_CONTEXT": make_stubs(root)["ok"],
+                   "STUB_CALLS": os.path.join(root, "calls")}
+            def payload(sid, event, tokens):
+                # Synthetic fork ancestry: an anchor request, current main request,
+                # then a sidechain request that must not replace the main usage.
+                path = os.path.join(root, sid + ".jsonl")
+                records = [
+                    {"type": "assistant", "uuid": "anchor", "message": {"usage": {"input_tokens": 5000}}},
+                    {"type": "user", "uuid": "fork", "parentUuid": "anchor", "message": {"content": "synthetic fork"}},
+                    {"type": "assistant", "parentUuid": "fork", "message": {"usage": {
+                        "input_tokens": 5, "cache_read_input_tokens": tokens - 15, "cache_creation_input_tokens": 10}}},
+                    {"type": "assistant", "isSidechain": True, "message": {"usage": {"input_tokens": 900000}}}]
+                with open(path, "w") as f:
+                    f.write("\n".join(json.dumps(r) for r in records) + "\n")
+                self.assertEqual(m.context_tokens(path), tokens)
+                return {"hook_event_name": event, "session_id": sid, "cwd": root, "transcript_path": path}
+            try:
+                with mock.patch.dict(os.environ, env, clear=True):
+                    with mock.patch.dict(os.environ, {"CLAUDE_AUTO_BOOTSTRAP": "1"}):
+                        self.assertIsNotNone(m.handle(payload("anchor", "Stop", 5000)))
+                    with open(os.path.join(run, "signal.json")) as f:
+                        self.assertEqual(json.load(f)["kind"], "anchor")
+                    self.assertFalse(os.path.exists(marker))
+                    self.assertFalse(os.path.exists(m.done_file(run, "anchor")))
+                    self.assertTrue(m.cooled_down(run))
+                    os.remove(os.path.join(run, "signal.json"))
+                    for i, event in enumerate(("PreToolUse", "PostToolUse", "Stop")):
+                        sid = "fork-%d" % i
+                        limit = 120000 if event == "PreToolUse" else 150000
+                        self.assertIsNone(m.handle(payload(sid, event, limit - 1)))
+                        if i:
+                            os.utime(marker, (1000, 1000))
+                            with mock.patch.object(m.time, "time", return_value=1059.999):
+                                self.assertIsNone(m.handle(payload(sid, event, limit)))
+                            self.assertEqual(os.path.getmtime(marker), 1000)
+                        with mock.patch.object(m.time, "time", return_value=1060):
+                            result = m.handle(payload(sid, event, limit))
+                        self.assertIsNotNone(result)
+                        if event == "PreToolUse":
+                            self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
+                        with open(os.path.join(run, "signal.json")) as f:
+                            sig = json.load(f)
+                        self.assertEqual((sig["session_id"], sig["tokens"]), (sid, limit))
+                        self.assertTrue(os.path.exists(m.done_file(run, sid)))
+                        self.assertTrue(os.path.exists(marker))
+                        os.remove(os.path.join(run, "signal.json"))
+                        while m.HELD:
+                            m.HELD.pop().close()
+                    with open(env["STUB_CALLS"]) as f:
+                        self.assertEqual(len(f.readlines()), 3)
+            finally:
+                while m.HELD:
+                    m.HELD.pop().close()
+
+
 class ContextTokens(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -246,6 +366,27 @@ class HookMatrix(unittest.TestCase):
         pdir = os.path.join(run, "pending")
         names = sorted(os.listdir(pdir)) if os.path.isdir(pdir) else []
         return run, [os.path.join(pdir, n) for n in names]
+
+    def test_pre_tool_guard_hands_off_before_a_large_result_is_admitted(self):
+        root = os.path.join(self.tmp, "pretool")
+        run = os.path.join(root, "run")
+        os.makedirs(run)
+        env = {"CLAUDE_AUTO_DIR": os.path.join(root, "base"), "CLAUDE_AUTO_TOKENS": "100000",
+               "CLAUDE_AUTO_PRETOOL_MARGIN": "10000", "CLAUDE_AUTO_RUN": run,
+               "CLAUDE_AUTO_MAKE_CONTEXT": self.stubs["ok"], "STUB_CALLS": os.path.join(root, "calls")}
+        payload = {"hook_event_name": "PreToolUse", "session_id": "pre", "cwd": "/w", "tool_name": "Bash",
+                   "tool_input": {"command": "command-that-could-return-a-lot"},
+                   "transcript_path": transcript(os.path.join(root, "t.jsonl"), 90000)}
+        with mock.patch.dict(os.environ, env):
+            res = self.m.handle(payload)
+        while self.m.HELD:
+            self.m.HELD.pop().close()
+        self.assertEqual(res, {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                        "permissionDecisionReason": mock.ANY}})
+        self.assertIn("continuă în sesiunea nouă", res["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertTrue(os.path.isfile(json.load(open(os.path.join(run, "signal.json")))["handoff"]))
+        self.assertEqual(len(open(env["STUB_CALLS"]).read().splitlines()), 1)
+        self.assertFalse(os.path.exists(os.path.join(run, "pending")))
 
     def test_pending_files(self):
         cases = [("PostToolUse", {"tool_name": "Bash", "tool_use_id": "toolu_1", "tool_input": {"command": "echo hi"},
@@ -654,9 +795,9 @@ class HookProcess(unittest.TestCase):
             os.remove(os.path.join(self.tmp, "run", "signal.json"))
             os.remove(os.path.join(self.tmp, "run", "last-handoff"))
 
-    def test_default_threshold_is_100000(self):
+    def test_default_threshold_is_150000(self):
         self.env.pop("CLAUDE_AUTO_TOKENS")
-        for tokens, handoff in ((99999, False), (100000, True), (150000, True)):
+        for tokens, handoff in ((99999, False), (100000, False), (149999, False), (150000, True)):
             with self.subTest(tokens=tokens):
                 t = transcript(os.path.join(self.tmp, "t%d.jsonl" % tokens), tokens)
                 r = self.hook(json.dumps({"hook_event_name": "Stop", "session_id": "d%d" % tokens, "transcript_path": t, "cwd": "/w"}))
@@ -829,7 +970,7 @@ class Wrapper(unittest.TestCase):
     def test_settings_file_has_the_hooks_with_a_quoted_command(self):
         self.wrap(FAKE_MODE="exit7")
         s = json.loads(self.calls()[0]["settings"])
-        self.assertEqual(sorted(s["hooks"]), ["PostToolUse", "Stop", "SubagentStart", "SubagentStop"])
+        self.assertEqual(sorted(s["hooks"]), ["PostToolUse", "PreToolUse", "Stop", "SubagentStart", "SubagentStop"])
         self.assertEqual(s["hooks"]["PostToolUse"][0]["matcher"], "*")
         cmd = s["hooks"]["Stop"][0]["hooks"][0]["command"]
         self.assertEqual(cmd, s["hooks"]["PostToolUse"][0]["hooks"][0]["command"])
@@ -879,6 +1020,24 @@ class Wrapper(unittest.TestCase):
 
     def run_folders(self):
         return [d for d in os.listdir(self.base) if d.startswith("run-")]
+
+    def test_budget_hooks_survive_bootstrap_and_explicit_anchor_continuations(self):
+        cases = (("bootstrap_then_handoff", {"CLAUDE_AUTO_BOOTSTRAP": "1"}, 3),
+                 ("handoff", {"CLAUDE_AUTO_ANCHOR_ID": "anchor-123"}, 2))
+        for mode, env, expected in cases:
+            with self.subTest(mode=mode):
+                shutil.rmtree(self.state), os.makedirs(self.state)
+                result = self.wrap("--model", "sonnet", "task", FAKE_MODE=mode, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.calls()
+                self.assertEqual(len(calls), expected)
+                for call in calls:
+                    hooks = json.loads(call["settings"])["hooks"]
+                    self.assertTrue({"Stop", "PostToolUse", "PreToolUse"}.issubset(hooks))
+                    command = hooks["Stop"][0]["hooks"][0]["command"]
+                    for event in ("PostToolUse", "PreToolUse"):
+                        self.assertEqual(hooks[event][0]["matcher"], "*")
+                        self.assertEqual(hooks[event][0]["hooks"][0]["command"], command)
 
     def test_handoff_can_fork_a_configured_immutable_anchor(self):
         r = self.wrap("--model", "opus", "do the task", FAKE_MODE="handoff", CLAUDE_AUTO_ANCHOR_ID="anchor-123")
@@ -1236,13 +1395,15 @@ class Settings(unittest.TestCase):
         p = os.path.join(self.tmp, "o.json")
         self.m.write_settings(p, None)
         plain = json.load(open(p))
-        self.assertEqual(sorted(plain["hooks"]), ["PostToolUse", "Stop", "SubagentStart", "SubagentStop"])
+        self.assertEqual(sorted(plain["hooks"]), ["PostToolUse", "PreToolUse", "Stop", "SubagentStart", "SubagentStop"])
         user = {"env": {"A": "1"}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "u"}]}],
                                               "PreToolUse": [{"matcher": "Bash", "hooks": []}], "PostToolUse": "oops"}}
         self.m.write_settings(p, user)
         s = json.load(open(p))
         self.assertEqual(s["env"], {"A": "1"})
-        self.assertEqual(s["hooks"]["PreToolUse"], user["hooks"]["PreToolUse"])
+        self.assertEqual(s["hooks"]["PreToolUse"][0], user["hooks"]["PreToolUse"][0])
+        self.assertEqual(len(s["hooks"]["PreToolUse"]), 2)
+        self.assertEqual(s["hooks"]["PreToolUse"][1]["matcher"], "*")
         self.assertEqual(s["hooks"]["Stop"][0], user["hooks"]["Stop"][0])
         self.assertEqual(len(s["hooks"]["Stop"]), 2)
         self.assertEqual(len(s["hooks"]["PostToolUse"]), 1)          # a malformed user value is replaced, not crashed on

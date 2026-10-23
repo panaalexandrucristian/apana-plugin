@@ -52,6 +52,7 @@ TOOL_REC = re.compile(r"^\[[0-9a-f-]{36} assistant\] (\[tool_use ([^\]\n]+)\]) (
 PRIMARY_KEYS = ("command", "file_path", "notebook_path", "pattern", "query", "url", "path")   # first keys that the tool name already implies: their name is left out of the preview
 ID_FLOOR = 8   # blob mode: a record header `[uuid role]` is written `[id role]`, id = the first ID_FLOOR characters of the uuid (more only when two uuids of the session would then look alike)
 REC_ID = re.compile(r"(?m)^\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?:user|assistant)\]")
+STRUCT_REC = re.compile(r"(?m)^\[(?:[0-9a-f-]{36}|no-uuid) (?:user|assistant)\]")
 ID_NOTE = "Each record starts with `[id user]` or `[id assistant]`; id is the first %d characters of the record's uuid in the session transcript (search for it there).\n"
 ID_NOTE_RE = re.compile(r"the first (\d+) characters of the record's uuid")
 LEGEND_MARKS = ("§", "¤", "¶", "‡", "※", "⁂", "Ω", "☉")   # blob mode: a mark that occurs nowhere in the text is the first one of these
@@ -146,16 +147,39 @@ def pick_pair(text):
     raise ValueError("every marker pair already occurs in the text; refusing to compact")
 
 
+class RecordText(str):
+    """Prepared text with trusted record starts, independent of payload syntax."""
+    starts: tuple
+
+    def __new__(cls, text, starts):
+        obj = str.__new__(cls, text)
+        obj.starts = tuple(starts)
+        return obj
+
+
+def record_matches(text):
+    if isinstance(text, RecordText):
+        matches = []
+        for pos in text.starts:
+            m = REC_ID.match(text, pos)
+            if m is not None: matches.append(m)
+        return matches
+    return list(REC_ID.finditer(text))
+
+
 def id_length(text, floor=ID_FLOOR):
     """The shortest id length, at least `floor`, with which the distinct uuids of the record headers of `text` stay distinct."""
-    ids = {m.group(1) for m in REC_ID.finditer(text)}; n = floor
+    ids = {m.group(1) for m in record_matches(text)}; n = floor
     while n < 36 and len({i[:n] for i in ids}) < len(ids): n += 1
     return n
 
 
 def short_ids(text, n):
     """`text` with the uuid of every record header (a line that starts `[uuid user]` or `[uuid assistant]`) cut to its first n characters; nothing else changes."""
-    return REC_ID.sub(lambda m: m.group(0).replace(m.group(1), m.group(1)[:n], 1), text)
+    pieces, at = [], 0
+    for m in record_matches(text):
+        pieces.extend((text[at:m.start(1)], m.group(1)[:n])); at = m.end(1)
+    return "".join(pieces) + text[at:]
 
 
 def make_legend(compact, pair, text):
@@ -211,11 +235,21 @@ def header(pair, limits, moved=0, idlen=None, legend=(None, [])):
 
 def read_chunks(chunk_dir):
     files = sorted(glob.glob(os.path.join(chunk_dir, "transcript", "chunk-*.txt")))
-    return "".join(open(f, encoding="utf-8", newline="").read() for f in files)
+    text = "".join(open(f, encoding="utf-8", newline="").read() for f in files)
+    path = os.path.join(chunk_dir, "record-boundaries.json")
+    if not os.path.exists(path): return text
+    with open(path, encoding="utf-8") as f: meta = json.load(f)
+    starts = meta["starts"]
+    if (not isinstance(starts, list) or
+            any(type(p) is not int or not 0 <= p < len(text) for p in starts) or
+            meta["sha256"] != sha(text) or starts != sorted(set(starts)) or
+            any(not STRUCT_REC.match(text, p) for p in starts)):
+        raise ValueError("invalid record boundaries for prepared text")
+    return RecordText(text, starts)
 
 
 def split_records(text):
-    pos = [m.start() for m in REC.finditer(text)]
+    pos = list(text.starts) if isinstance(text, RecordText) else [m.start() for m in REC.finditer(text)]
     if not pos: return text, []
     return text[:pos[0]], [text[a:b] for a, b in zip(pos, pos[1:] + [len(text)])]
 
@@ -276,6 +310,7 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
     their length, and the marker preview is the label (`stats["forced"]` counts them). Both default to nothing, and then the output is exactly what it was without them."""
     pair = pick_pair(text) if blobs else None
     head, recs = split_records(text); out, blob_map = [head], {}
+    inline_starts, offset = [], len(head)
     for r in recs:
         k = kind_of(r); lim = limits.get(k)
         by_length = lim is not None and len(r) > lim
@@ -285,9 +320,11 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
         by_skill = bool(sk) and sk.group(1) in meta_uuids and len(r) > preview + 25
         by_notice = moved_notice(r, notice_uuids, limits, blobs)
         by_sdk = moved_sdk(r, sdk_uuids, limits, blobs)
-        if not (by_length or by_rule or by_skill or by_notice or by_sdk or label is not None): out.append(r); continue
+        if not (by_length or by_rule or by_skill or by_notice or by_sdk or label is not None):
+            inline_starts.append(offset); out.append(r); offset += len(r); continue
         if not blobs:
-            c = cut_record(r, preview); out.append(c)
+            inline_starts.append(offset)
+            c = cut_record(r, preview); out.append(c); offset += len(c)
             if c != r and stats is not None and not by_length: stats["readonly"] = stats.get("readonly", 0) + 1
             continue
         if stats is not None and by_skill: stats["skill"] = stats.get("skill", 0) + 1
@@ -307,7 +344,9 @@ def compact_text(text, limits, preview, readonly=False, stats=None, blobs=True, 
             p = (tool_preview(r, preview) if k == "tool_use" else None) or ROLE_LABEL.sub("", p, count=1)   # the kind in brackets already says who wrote it; a readable form of the input when it can be made
         p = one_line(p).replace(pair[1], "·")
         out.append("%s%s|%d|%s%s%s" % (pair[0], name, len(r), p, pair[1], "\n" if r.endswith("\n") else ""))
-    return "".join(out), blob_map, pair
+        offset += len(out[-1])
+    packed = "".join(out)
+    return RecordText(packed, inline_starts), blob_map, pair
 
 
 def verify_cut(text, compact, preview):
@@ -364,7 +403,7 @@ def cmd_compact(chunk_dir, out_dir, limits, preview, readonly=True, intro="", na
     text = read_chunks(chunk_dir); stats = {}
     compact, blob_map, pair = compact_text(text, limits, preview, readonly, stats, blobs, meta_uuids, notice_uuids, readonly_uuids, forced, sdk_uuids)
     if blobs:
-        idlen = id_length(text) if REC_ID.search(text) else None
+        idlen = id_length(text) if isinstance(text, RecordText) and record_matches(text) else None
         packed, mark, entries = make_legend(short_ids(compact, idlen) if idlen else compact, pair, text)
         write_out(out_dir, packed, blob_map, limits, pair, stats.get("readonly", 0), intro, name, idlen, (mark, entries))
     else:
@@ -380,7 +419,13 @@ def cmd_check(chunk_dir, out_dir, limits, preview=DEFAULT_PREVIEW, readonly=True
     size = len(open(os.path.join(out_dir, name), encoding="utf-8", newline="").read()); label = describe(limits) + (" + read-only rule" if readonly else "")
     if blobs:
         c2, b2, p2 = read_out(out_dir); n = read_idlen(out_dir); back = expand_text(c2, b2, p2)
-        ok = sha(short_ids(back, n) if n else back) == sha(short_ids(text, n) if n else text)   # the way back is exact except that each record id is cut to n characters (n keeps the ids of the session distinct)
+        head, records = split_records(text)
+        moved_records = set(blob_map.values())
+        expected = head + "".join(
+            r if not n or r in moved_records or not REC_ID.match(r) else REC_ID.sub(
+                lambda m: m.group(0).replace(m.group(1), m.group(1)[:n], 1), r, count=1)
+            for r in records)
+        ok = sha(back) == sha(expected)   # no normalization of reconstructed payload
         print("%s | original %7d chars | %s %7d chars (%.1f%% of original) | blobs %3d (%d chars, %d by the read-only rule) | roundtrip %s" % (
             label, orig, name, size, 100 * size / orig, len(blob_map), sum(map(len, blob_map.values())), moved, "IDENTICAL" if ok else "DIFFERENT"))
         return ok
@@ -630,6 +675,8 @@ def selftest():
     for rows, want in (((U1, U3), 8), ((U1, U2, U3), 33)):   # a whole run in blob mode: the file declares the length, inline headers are short, blobs keep the whole record, the check passes
         txt = "".join(R(u, "user", "x" * (10 + i)) + R(u, "assistant", "[tool_result] " + "y" * 400) for i, u in enumerate(rows))
         d2 = tempfile.mkdtemp(); os.makedirs(os.path.join(d2, "transcript")); open(os.path.join(d2, "transcript", "chunk-0000.txt"), "w", encoding="utf-8").write(txt)
+        with open(os.path.join(d2, "record-boundaries.json"), "w") as f:
+            json.dump(dict(sha256=sha(txt), starts=[m.start() for m in REC.finditer(txt)]), f)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf): ok2 = cmd_check(d2, os.path.join(d2, "o"), DEFAULT_LIMITS, PV, True, "", "HANDOFF.md", True)
         out_ = open(os.path.join(d2, "o", "HANDOFF.md"), encoding="utf-8").read()
@@ -704,7 +751,7 @@ def selftest():
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["selftest"]: selftest()
-    elif a[:1] == ["expand"]: c, b, pr = read_out(a[1]); t = expand_text(c, b, pr); k = read_idlen(a[1]); sys.stdout.write(short_ids(t, k) if k else t)
+    elif a[:1] == ["expand"]: c, b, pr = read_out(a[1]); sys.stdout.write(expand_text(c, b, pr))
     elif a[:1] in (["check"], ["compact"]):
         lims = dict(DEFAULT_LIMITS); pre = DEFAULT_PREVIEW; ro = True; intro = ""; name = "CONTEXT.md"; blobs = False; i = 3
         while i < len(a):

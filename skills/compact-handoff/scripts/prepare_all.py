@@ -32,4 +32,19 @@ def _typed_while_busy(d):
 _load_jsonl = discover.load_jsonl
 discover.load_jsonl = lambda path: [_typed_while_busy(d) for d in _load_jsonl(path)]
 import prepare
+# Preserve structured record boundaries before chunking; quoted headers are payload.
+_derive = prepare.derive
+def _derive_with_boundaries(*args, **kwargs):
+    p = _derive(*args, **kwargs)
+    starts, offset = [], 0
+    for chunk, text in zip(p["chunks_meta"], p["chunk_texts"]):
+        starts.extend(offset + e["start"] for e in chunk["entries"] if e["eoff"] == 0)
+        offset += len(text)
+    if p["work"]:
+        import json, hashlib
+        text = "".join(p["chunk_texts"])
+        with open(os.path.join(p["work"], "record-boundaries.json"), "w") as f:
+            json.dump(dict(sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), starts=starts), f)
+    return p
+prepare.derive = _derive_with_boundaries
 sys.exit(prepare.main())
