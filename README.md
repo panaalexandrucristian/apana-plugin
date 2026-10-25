@@ -1,6 +1,6 @@
 # apana
 
-A Claude Code plugin with skills and hooks that do not call Jev. Split out of `jev-mcp-private` (the `jev` plugin) on 2026-10-19.
+A Claude Code plugin with skills and hooks that do not need the jev plugin (only `jev-decision-loop` calls Jev, over its direct API with the user's own key). Split out of `jev-mcp-private` (the `jev` plugin) on 2026-10-19.
 
 Install:
 
@@ -23,6 +23,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:android-emulator-low-ram` | Measures Android Emulator memory and safely tunes a dedicated low-RAM AVD. |
 | `apana:scope` | Investigate a coding task, ask about unclear intent, then gate edits to exact paths after explicit user approval. |
 | `apana:uninstall-claude-scope` | Remove an old standalone launcher and its marked PATH block without removing reports or unrelated files. |
+| `apana:jev-decision-loop` | A mode, switched on by the user, in which Jev picks every next step of the session from 2-5 options the model writes. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
 | `apana:claude-openai` | Install or verify a separate launcher using an OpenAI subscription through local CLIProxyAPI and Codex OAuth. |
 

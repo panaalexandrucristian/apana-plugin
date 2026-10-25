@@ -1,6 +1,6 @@
 # Working in this repository
 
-The `apana` plugin for Claude Code (and OpenCode, for `logic-test-debug`): skills and hooks that do not call Jev. Split out of `jev-mcp-private` (the `jev` plugin) at `1a047da` on 2026-10-19. One developer, several sessions working at the same time.
+The `apana` plugin for Claude Code (and OpenCode, for `logic-test-debug`): skills and hooks that do not need the jev plugin. Split out of `jev-mcp-private` (the `jev` plugin) at `1a047da` on 2026-10-19. One developer, several sessions working at the same time.
 
 Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measurement log, mostly history). Run `grep -n '^## ' PRIVATE.md` and read the one section you need.
 
@@ -12,7 +12,7 @@ Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measuremen
 - `opencode-plugin.js` and `private/logic-test-debug/opencode.mjs`: the OpenCode side of `logic-test-debug`.
 - `skills/compact-handoff/scripts/handoff_verify/`: a byte-for-byte copy of 15 modules of the `handoff-verify` skill of `jev-mcp-private`. Do not edit it here; `VENDORED.md` there says how to refresh it.
 - A session runs the plugin from `~/.claude/plugins/cache/apana-private/apana/<version>/`, not from a checkout. A change reaches a session only after a release and `claude plugin update apana@apana-private`.
-- Nothing in this repository calls Jev. If a change needs it, it belongs in `jev-mcp-private`.
+- Only `skills/jev-decision-loop/` calls Jev, over its direct API (TypeSafe or OpenRouter) with the user's own key, so that it works without the jev plugin. Anything that needs the jev plugin or its MCP tools belongs in `jev-mcp-private`.
 
 ## Working
 
