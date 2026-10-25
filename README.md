@@ -24,8 +24,15 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:scope` | Investigate a coding task, ask about unclear intent, then gate edits to exact paths after explicit user approval. |
 | `apana:uninstall-claude-scope` | Remove an old standalone launcher and its marked PATH block without removing reports or unrelated files. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
+| `apana:claude-openai` | Install or verify a separate launcher using an OpenAI subscription through local CLIProxyAPI and Codex OAuth. |
 
 OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.
+
+### OpenAI subscription launcher
+
+On macOS, invoke `/apana:claude-openai` and ask it to install. Requires zsh, Python 3, Claude Code 2.1.242+ and CLIProxyAPI (`brew install cliproxyapi`). The bundled installer performs a separate OpenAI browser login when needed and verifies a real response. Updating this plugin alone does not install or update the launcher; rerun the skill's installer, then start a new `claude-openai` session.
+
+This is an unofficial subscription bridge, not a paid-API-key setup. It keeps normal `claude`, global/project rules, hooks and permissions unchanged. `/model` lists distinct gateway IDs once plus Claude's Default row. If `claude-auto` is installed, its extra instruction policy is reused directly, including opt-outs and print-mode exceptions, without enabling automatic handoffs. Credentials stay outside the plugin. Subscription limits and compatibility constraints still apply; see the skill's operations reference.
 
 ### Guarded implementation tasks
 
@@ -66,5 +73,6 @@ The existing environment variables remain compatible and take precedence when ex
     npm run test:omlx         # offline Python suite of omlx
     npm run test:claude-auto  # offline Python suites of claude-auto and its installer
     npm run test:claude-scope # Node scope gates and Python legacy-uninstaller tests
+    npm run test:claude-openai # offline bridge suite; proxy lifecycle skips if CLIProxyAPI is absent
 
 Node 22 and Python 3 are needed; `class-graph` and `find-usages` also need ripgrep (`rg`). `AGENTS.md` says how to work in this repository.

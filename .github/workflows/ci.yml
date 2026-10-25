@@ -30,3 +30,6 @@ jobs:
       # Offline scope hook gates and legacy launcher removal; no OS sandbox is claimed.
       - name: scope hooks and legacy uninstall
         run: npm run test:claude-scope
+      # Offline bridge tests; the real proxy lifecycle case skips when CLIProxyAPI is not installed.
+      - name: subscription bridge (offline Python suite)
+        run: npm run test:claude-openai

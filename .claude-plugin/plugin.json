@@ -1,8 +1,8 @@
 {
   "name": "apana",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "displayName": "Apana",
-  "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, Android helpers, claude-auto, explicit scope approval hooks and legacy claude-scope uninstall.",
+  "description": "Skills and hooks that do not call Jev: compact-handoff, class-graph, logic-test-debug, explica-clar, omlx, Android helpers, claude-auto, claude-openai, explicit scope approval hooks and legacy claude-scope uninstall.",
   "author": {
     "name": "Alexandru-Cristian Pana",
     "url": "https://github.com/panaalexandrucristian"
