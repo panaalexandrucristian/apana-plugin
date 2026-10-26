@@ -2,8 +2,8 @@
 // jev: one decision of a coding session, asked to Jev (TypeSafe's judgment model) over its direct API, answered with a verdict to follow.
 //   node jev.mjs <<'EOF'
 //   decision: what is being decided
-//   task: the user's request
-//   fact: what was learned (any number of fact: and done: lines)
+//   task: the user's request (the first decision of a session only: the script keeps it)
+//   fact: what was learned (any number of fact: and done: lines; only the new ones, the script keeps the earlier ones)
 //   a: one concrete step
 //   b: another
 //   gate safe: a statement Jev rates true or false
@@ -16,10 +16,13 @@
 // The request may also be the first argument or come from --file <path>. `options` becomes one Jev choice question, each gate one noul
 // question (the probability that the statement is true). Provider: TYPESAFE_API_KEY (direct, the default) or OPENROUTER_API_KEY, from the
 // environment or the macOS Keychain (services claude-code-jev-typesafe / claude-code-jev-openrouter); JEV_PROVIDER and JEV_MODEL override.
+// The task, facts and done lines are kept per session (CLAUDE_CODE_SESSION_ID) in JEV_STATE_DIR (default ~/.claude/jev-decision-loop/state): a request
+// without "task:" gets the kept state, and its fact: and done: lines are added to it. A new "task:" starts the state over. Without a session id the
+// request must carry the whole state, as before.
 // Every answered decision is appended to JEV_DECISION_LOG (default ~/.claude/jev-decision-loop/decisions.jsonl) without its state.
 // Exit codes: 0 answered (whatever the verdict), 2 bad request, 3 refused before sending (looks like a secret, too long), 4 Jev unavailable.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +32,7 @@ export const GO_MARGIN = 0.2; // ...and this lead over the runner-up
 export const YES_MIN = 0.7; // a gate is true at or above this, false at or below NO_MAX, unsure between
 export const NO_MAX = 0.3;
 export const MAX_REQUEST_CHARS = 24_000;
+export const MAX_STATE_CHARS = 16_000; // the kept state is trimmed to this, so that it stays under the limit above with the options and gates
 const ID = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 const TIMEOUT_MS = 20_000;
 const ATTEMPTS = 3;
@@ -79,11 +83,12 @@ export function normalize(raw) {
   return { decision, state: raw.state, options: optionCount ? options : null, gates: gates && Object.keys(gates).length ? gates : null };
 }
 
+const MISSING_TASK = 'missing "task:": the user\'s request, in their words (the first decision of a session needs it; later ones get the one kept)';
 const LINE = /^\s*(decision|task|fact|done|[a-h]|gate\s+[A-Za-z][A-Za-z0-9_]{0,39})\s*:\s?(.*)$/i;
 
 /** The raw request for the line format: decision, task, fact and done lines, one line per option (a-h) and per gate ("gate <id>:").
  * A line that does not start with one of those keys continues the line before it. */
-export function parseLines(text) {
+export function parseLines(text, { needTask = true } = {}) {
   const entries = [];
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
@@ -107,8 +112,52 @@ export function parseLines(text) {
       raw[group][id] = value;
     }
   }
-  if (!raw.state.task) throw new Refused(2, 'missing "task:": the user\'s request, in their words');
+  if (needTask && !raw.state.task) throw new Refused(2, MISSING_TASK);
   return raw;
+}
+
+/** Where this session's state is kept (task, facts, done lines), or null outside a session. */
+export function statePath(env = process.env) {
+  const id = String(env.CLAUDE_CODE_SESSION_ID || "").replace(/[^A-Za-z0-9_-]/g, "_");
+  return id ? join(env.JEV_STATE_DIR || join(homedir(), ".claude", "jev-decision-loop", "state"), `${id}.json`) : null;
+}
+
+function readState(path) {
+  try {
+    const kept = JSON.parse(readFileSync(path, "utf8"));
+    return kept && typeof kept.task === "string" && Array.isArray(kept.facts) && Array.isArray(kept.done) ? kept : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The state of a request completed with the state kept before: its task when it has none, every fact and done line since (a line written again is
+ * taken once). A request with another task starts over. */
+export function mergeState(state, kept) {
+  const task = state.task || kept?.task || "";
+  const before = kept && task === kept.task ? kept : { facts: [], done: [] };
+  const add = (old, lines) => [...old, ...lines.filter((line, i) => !old.includes(line) && lines.indexOf(line) === i)];
+  return { task, facts: add(before.facts, state.facts), done: add(before.done, state.done) };
+}
+
+/** The state with its oldest done lines dropped, then its oldest facts, until it fits MAX_STATE_CHARS; `dropped` counts the lines. */
+export function trimState(state) {
+  const kept = { ...state, facts: [...state.facts], done: [...state.done] };
+  let dropped = 0;
+  while (JSON.stringify(kept).length > MAX_STATE_CHARS && (kept.done.length || kept.facts.length)) {
+    (kept.done.length ? kept.done : kept.facts).shift();
+    dropped++;
+  }
+  return { state: kept, dropped };
+}
+
+function writeState(path, state) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const temp = `${path}.${process.pid}.tmp`;
+    writeFileSync(temp, JSON.stringify(state));
+    renameSync(temp, path);
+  } catch {}
 }
 
 /** The Jev {state, questions} body for a normalized request. */
@@ -299,10 +348,21 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   if (!provider) { console.log(noKey()); return 4; }
   const check = args[0] === "--check";
   let request;
+  let kept = null; // { path, state, dropped } when the request is a line request of a session
   try {
-    const raw = check
-      ? { decision: "connectivity check", state: { note: "a connectivity check of the jev-decision-loop skill" }, gates: { ok: "This request is a connectivity check." } }
-      : parseRequest(await readRequest(args));
+    let raw;
+    if (check) raw = { decision: "connectivity check", state: { note: "a connectivity check of the jev-decision-loop skill" }, gates: { ok: "This request is a connectivity check." } };
+    else {
+      const text = await readRequest(args);
+      const path = text.trim() && !text.trim().startsWith("{") ? statePath(env) : null;
+      raw = path ? parseLines(text, { needTask: false }) : parseRequest(text);
+      if (path) {
+        const { state, dropped } = trimState(mergeState(raw.state, readState(path)));
+        if (!state.task) throw new Refused(2, MISSING_TASK);
+        raw.state = state;
+        kept = { path, state, dropped };
+      }
+    }
     request = normalize(raw);
   } catch (error) {
     console.log(`JEV REQUEST REFUSED: ${error instanceof SyntaxError ? `the request is not valid JSON (${error.message})` : error.message}`);
@@ -311,11 +371,13 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   const body = toQuestions(request);
   const refusal = screen(body, provider.key);
   if (refusal) { console.log(`JEV REQUEST REFUSED: ${refusal.message}. Nothing was sent.`); return refusal.code; }
+  if (kept) writeState(kept.path, kept.state);
   try {
     const { answers, ms, model } = await ask(provider, body);
     if (check) { console.log(`JEV OK: ${provider.name} ${model} answered in ${ms} ms (key from ${provider.source}).`); return 0; }
     const result = verdict(request, answers);
-    console.log(`JEV ${request.decision} (${provider.name} ${model}, ${ms} ms)\n${render(request, result)}`);
+    const note = kept ? `\nstate: ${kept.state.facts.length} facts, ${kept.state.done.length} done kept for this session${kept.dropped ? ` (the ${kept.dropped} oldest lines were dropped)` : ""}; write only what is new` : "";
+    console.log(`JEV ${request.decision} (${provider.name} ${model}, ${ms} ms)\n${render(request, result)}${note}`);
     log({ at: new Date().toISOString(), cwd: process.cwd(), provider: provider.name, model, ms, decision: request.decision, options: request.options ? Object.keys(request.options) : [], gates: Object.keys(request.gates ?? {}), answers, verdict: result.verdict, chosen: result.chosen }, env);
     return 0;
   } catch (error) {

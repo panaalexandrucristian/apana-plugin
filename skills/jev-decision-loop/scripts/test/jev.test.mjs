@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { Refused, main, normalize, parseLines, parseRequest, render, verdict } from "../jev.mjs";
+import { MAX_STATE_CHARS, Refused, main, normalize, parseLines, parseRequest, render, trimState, verdict } from "../jev.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "jev.mjs");
 const SKILL = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "SKILL.md");
@@ -152,6 +152,62 @@ describe("CLI", () => {
   }));
 });
 
+// Measured on 2026-10-26 (n = 26 decisions of 3 live sessions): 61-66% of the characters of a request were the task, facts and done lines written out
+// again; the script keeps them for the session, so a request carries what is new.
+describe("state kept for the session", () => {
+  const FIRST = "decision: where to look first\ntask: Fix the review error dialog\nfact: ReviewSheet.kt:42 shows the dialog\na: Read ReviewSheet.kt\nb: Grep \"error\" in app/src\n";
+  const NEXT = "decision: what next\nfact: the errors come from SubmissionException\ndone: read ReviewSheet.kt\na: Edit ReviewSheet.kt\nb: Read SubmissionException.kt\n";
+  const env = (dir, session = "s1") => ({ HOME: dir, TYPESAFE_API_KEY: "test-key", TYPESAFE_BASE_URL: url, JEV_DECISION_LOG: join(dir, "d.jsonl"), JEV_STATE_DIR: join(dir, "state"), CLAUDE_CODE_SESSION_ID: session });
+
+  it("completes a request that has no task: with the task and the facts of the earlier decisions", () => withTemp(async (dir) => {
+    bodies.length = 0; probs = { a: 0.9, b: 0.1 };
+    assert.equal((await run([], FIRST, env(dir))).code, 0);
+    const second = await run([], NEXT, env(dir));
+    assert.equal(second.code, 0, second.stdout);
+    assert.deepEqual(bodies[1].state, { task: "Fix the review error dialog", facts: ["ReviewSheet.kt:42 shows the dialog", "the errors come from SubmissionException"], done: ["read ReviewSheet.kt"] });
+    assert.match(second.stdout, /state: 2 facts, 1 done kept for this session/);
+  }));
+
+  it("takes a fact written again once, and a new task: starts the state over", () => withTemp(async (dir) => {
+    bodies.length = 0;
+    await run([], FIRST, env(dir));
+    await run([], FIRST.replace("decision:", "decision: again, ") , env(dir));
+    assert.deepEqual(bodies[1].state.facts, ["ReviewSheet.kt:42 shows the dialog"]);
+    await run([], "decision: d\ntask: Rename the sheet\na: one\nb: two\n", env(dir));
+    assert.deepEqual(bodies[2].state, { task: "Rename the sheet", facts: [], done: [] });
+  }));
+
+  it("keeps one state per session and, outside a session, still wants the task in every request", () => withTemp(async (dir) => {
+    bodies.length = 0;
+    await run([], FIRST, env(dir, "s1"));
+    const other = await run([], NEXT, env(dir, "s2"));
+    assert.equal(other.code, 2);
+    assert.match(other.stdout, /^JEV REQUEST REFUSED: missing "task:"/);
+    const bare = await run([], NEXT, { ...env(dir), CLAUDE_CODE_SESSION_ID: "" });
+    assert.equal(bare.code, 2);
+    assert.equal(bodies.length, 1);
+  }));
+
+  it("keeps nothing of a request that was refused for looking like a secret", () => withTemp(async (dir) => {
+    const leak = FIRST.replace("shows the dialog", "uses sk-abcdefghijklmnopqrstuvwxyz");
+    const { code } = await run([], leak, env(dir));
+    assert.equal(code, 3);
+    assert.equal(existsSync(join(dir, "state", "s1.json")), false);
+  }));
+
+  it("drops the oldest done lines, then the oldest facts, once the state is longer than MAX_STATE_CHARS", () => {
+    const line = "x".repeat(1_000);
+    const state = { task: "t", facts: Array.from({ length: 10 }, (_, i) => `f${i} ${line}`), done: Array.from({ length: 10 }, (_, i) => `d${i} ${line}`) };
+    const { state: kept, dropped } = trimState(state);
+    assert.ok(JSON.stringify(kept).length <= MAX_STATE_CHARS);
+    assert.equal(kept.facts.length, 10);
+    assert.ok(kept.done.length > 0 && kept.done.length < 10);
+    assert.deepEqual(kept.done.map((l) => l.split(" ")[0]), Array.from({ length: kept.done.length }, (_, i) => `d${10 - kept.done.length + i}`));
+    assert.equal(dropped, 20 - kept.facts.length - kept.done.length);
+    assert.equal(kept.task, "t");
+  });
+});
+
 describe("SKILL.md", () => {
   const source = readFileSync(SKILL, "utf8");
   const requests = [...source.matchAll(/<<'EOF'\n([\s\S]*?)\n\s*EOF/g)].map((m) => m[1].replace(/^ {4}/gm, ""));
@@ -164,6 +220,18 @@ describe("SKILL.md", () => {
     assert.match(source, /the file that a search just found/);
     assert.match(source, /failed or found nothing/);
     assert.match(source, /giving the final answer/);
+  });
+  it("asks for the task once and only the new facts after it", () => {
+    assert.match(source, /`task:` in the first decision only, and in each later decision only the `fact:` and `done:` lines that are new/);
+    assert.match(source, /61-66% of the characters of a request were state written out again/);
+    const later = requests.find((text) => !/^task:/m.test(text));
+    assert.ok(later, "a worked example of a later decision, without task:");
+    assert.deepEqual(parseLines(later, { needTask: false }).state.task, "");
+  });
+  it("makes one option the way forward, and the edit an option after two reads on the same unknown", () => {
+    assert.match(source, /\*\*One option always moves the task forward\.\*\*/);
+    assert.match(source, /one option is the edit itself, with the assumption it rests on written in it/);
+    assert.match(source, /After two reads in a row on the same unknown, the next decision has the edit with its assumption as an option/);
   });
   it("has a worked example that the script accepts", () => {
     assert.ok(requests.some((text) => { try { return Object.keys(normalize(parseLines(text)).options).length >= 2; } catch { return false; } }));

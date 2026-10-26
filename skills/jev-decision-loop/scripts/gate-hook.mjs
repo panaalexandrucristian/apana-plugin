@@ -44,9 +44,9 @@ export function allowance(body, stdout) {
   return { token: true, reply: /^Ask the user\b/i.test(picked) || (done && (REPLY.test(picked) || /every gate holds/.test(picked))) };
 }
 
-const ASK = `ask Jev first, then do exactly the option it picks:\nnode ${JEV} <<'EOF'\ndecision: <what is being decided>\ntask: <the user's request>\nfact: <what you learned, with file:line>\na: <one concrete step>\nb: <another>\nEOF\nOne GO allows one tool call; the call after it is a new decision.`;
+const ASK = `ask Jev first, then do exactly the option it picks:\nnode ${JEV} <<'EOF'\ndecision: <what is being decided>\ntask: <the user's request; the first decision of the session only>\nfact: <what you learned, with file:line>\na: <one concrete step>\nb: <another>\nEOF\nOne GO allows one tool call; the call after it is a new decision.`;
 const DENY = `No Jev decision allows this tool call (jev-decision-loop is on: Jev takes every decision of this session). Do not retry the same call: ${ASK}`;
-const STOP = `No Jev decision covers ending this turn. Before you reply, ask Jev the last decision, with the reply as an option and the done gate:\nnode ${JEV} <<'EOF'\ndecision: whether to give the final answer now\ntask: <the user's request>\nfact: <the facts, with file:line>\na: Answer the user: <the answer in one line>\nb: <the best step that would still check something>\ngate done: The facts in the state show that the user's request is fully done.\nEOF\nWhen you need the user instead, make the option "Ask the user: <the question>". Then reply as Jev picks (or do the step it picks).`;
+const STOP = `No Jev decision covers ending this turn. Before you reply, ask Jev the last decision, with the reply as an option and the done gate:\nnode ${JEV} <<'EOF'\ndecision: whether to give the final answer now\ntask: <the user's request; the first decision of the session only>\nfact: <the facts, with file:line>\na: Answer the user: <the answer in one line>\nb: <the best step that would still check something>\ngate done: The facts in the state show that the user's request is fully done.\nEOF\nWhen you need the user instead, make the option "Ask the user: <the question>". Then reply as Jev picks (or do the step it picks).`;
 
 function paths(sessionId, env) {
   const dir = env.JEV_GATE_DIR || join(homedir(), ".claude", "jev-decision-loop", "gate");

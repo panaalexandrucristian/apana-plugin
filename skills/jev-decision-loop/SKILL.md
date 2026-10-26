@@ -30,15 +30,15 @@ Every decision is one command, with one `key: text` line per item between the `E
 
     node ${CLAUDE_SKILL_DIR}/scripts/jev.mjs <<'EOF'
     decision: <one line: what is being decided>
-    task: <the user's request, in their words>
-    fact: <something you learned, with file:line>
-    done: <a step already taken>
+    task: <the user's request, in their words: the first decision only>
+    fact: <something new you learned, with file:line>
+    done: <a step taken since the last decision>
     a: <one concrete step>
     b: <another>
     gate <id>: <a statement Jev rates true or false>
     EOF
 
-Write as many `fact:` and `done:` lines as you need (none on the first decision), options `a:` to `h:`, gates only when step 3 asks for them. No JSON and no `{` or `}` in the texts: Claude Code refuses a command with a brace next to a quote, and then Jev is never asked.
+The script keeps the state of this session (the task, every fact and done line it was given): write `task:` in the first decision only, and in each later decision only the `fact:` and `done:` lines that are new, never the earlier ones again. In test runs, 61-66% of the characters of a request were state written out again, and every one of them is time you wait for. A new `task:` line starts the state over. Options go `a:` to `h:`, gates only when step 3 asks for them. No JSON and no `{` or `}` in the texts: Claude Code refuses a command with a brace next to a quote, and then Jev is never asked.
 
 ## Start
 
@@ -70,7 +70,9 @@ Asking takes about 0.3 s: write the obvious step as option a and its best altern
    - `Answer the user: the text is in strings.xml:12; changed it to Sign in`
 
    Not "investigate further" or "look around": Jev cannot pick a step you did not write. Independent reads may share one option ("Read A and B"). Options must differ in what they would find out or change: two variants of the same search ("Grep X in app/src", "Grep X in the whole repo") split Jev's vote and give UNSURE for nothing.
-2. **State**: the task in the user's words, the facts you learned so far (short, with file:line), the steps already done. Summaries, not whole files. Never keys, passwords, tokens or `.env` contents (the script refuses a request that looks like one).
+
+   **One option always moves the task forward.** When the user asked for a change and the facts name where it goes, one option is the edit itself, with the assumption it rests on written in it (`Edit ReviewSheet.kt: show the field errors from SubmissionException.fieldErrors, assuming the accessor has that name`), and when the user asked a question, one option is the answer. Reads are for what the edit depends on, not for everything that could be known. In two live runs both sessions chose reads and searches on one unknown (the field-errors accessor of an SDK class) for 9 and 7 decisions in a row, listing no edit, and ended with no change; the same task without the mode was done with a 14-line edit (n = 2 per arm). After two reads in a row on the same unknown, the next decision has the edit with its assumption as an option, and `Ask the user: <that question>` as another.
+2. **State**: what is new since the last decision: the facts you learned (short, with file:line) and the steps done. Summaries, not whole files. The first decision also carries the task in the user's words. Never keys, passwords, tokens or `.env` contents (the script refuses a request that looks like one and keeps nothing of it).
 3. **Gates**, when the step changes something (Jev gives each statement a probability of being true):
    - before an edit: `gate in_scope: This edit changes only what the user asked for.`
    - before a command that writes, installs, deletes or sends: `gate reversible: This command can be undone without losing anything.`
@@ -100,7 +102,16 @@ prints
     VERDICT: GO a -- Read app/src/main/res/values/strings.xml
     Next tool call: exactly option a, nothing else. The call after it is a new Jev decision, even when it looks obvious (reading what a search found, retrying a failed search, answering).
 
-so the next tool call is the Read of strings.xml, and after it comes the next decision (which edit), with what you read as a new `fact:` line.
+so the next tool call is the Read of strings.xml, and after it comes the next decision (which edit), with what you read as a new `fact:` line and without `task:`, which the script has kept:
+
+    node ${CLAUDE_SKILL_DIR}/scripts/jev.mjs <<'EOF'
+    decision: which edit makes the button say Sign in
+    fact: strings.xml:12 has login_button = "Log in"
+    done: read strings.xml
+    a: Edit strings.xml: "Log in" -> "Sign in" in login_button
+    b: Grep "login_button" in app/src to see whether another string overrides it
+    gate in_scope: This edit changes only what the user asked for.
+    EOF
 
 ## What Jev cannot lift
 
