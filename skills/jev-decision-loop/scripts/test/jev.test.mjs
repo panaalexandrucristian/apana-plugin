@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { Refused, main, normalize, parseLines, parseRequest, render, verdict } from "../jev.mjs";
+import { Refused, main, normalize, parseLines, parseRequest, render, toQuestions, verdict } from "../jev.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "jev.mjs");
 const SKILL = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "SKILL.md");
@@ -85,6 +85,60 @@ describe("line request format", () => {
   });
 });
 
+// Why the statement names the step (PRIVATE.md, «Jev decision loop»): Jev sees only the state and the statement, so "This edit changes only
+// what the user asked for." got UNSURE on 71 of 84 requests; with the step in the statement, 42 of 42 requests on fresh scope cases were clear and right.
+const WITH_STEP = `decision: edit strings.xml
+task: Change the login button text to Sign in
+a: Edit app/src/main/res/values/strings.xml line 12
+b: Read LoginFragment.kt
+step: Editing line 12 of strings.xml to change login_button from "Log in" to "Sign in".
+gate in_scope:
+gate reversible:
+gate done: The facts in the state show that the user's request is fully done.
+`;
+
+describe("gates written from the step line", () => {
+  const STEP = 'Editing line 12 of strings.xml to change login_button from "Log in" to "Sign in"';
+  it("writes in_scope and reversible from the step and keeps the done statement as written", () => {
+    assert.deepEqual(normalize(parseLines(WITH_STEP)).gates, {
+      in_scope: `${STEP} is exactly what the user asked for.`,
+      reversible: `${STEP} can be undone without losing anything.`,
+      done: "The facts in the state show that the user's request is fully done.",
+    });
+  });
+
+  it("keeps the step out of the state and sends each gate as one noul question with its statement", () => {
+    const body = toQuestions(normalize(parseLines(WITH_STEP)));
+    assert.deepEqual(Object.keys(body.state), ["task", "facts", "done"]);
+    assert.deepEqual(body.questions.in_scope, { type: "noul", instructions: `${STEP} is exactly what the user asked for.` });
+  });
+
+  it("keeps a statement written after the colon", () => {
+    const gates = normalize(parseLines("decision: d\ntask: t\na: one\nb: two\ngate in_scope: Writing answer.json is what the user asked for.\n")).gates;
+    assert.equal(gates.in_scope, "Writing answer.json is what the user asked for.");
+  });
+
+  it("refuses an empty in_scope gate with no step line, and says to write one", () => {
+    const raw = parseLines("decision: d\ntask: t\na: one\nb: two\ngate in_scope:\n");
+    assert.throws(() => normalize(raw), (e) => e instanceof Refused && e.code === 2 && /"step:" line/.test(e.message));
+  });
+
+  it("refuses a step that does not start with an -ing verb", () => {
+    const raw = parseLines("decision: d\ntask: t\na: one\nb: two\nstep: Edit line 12 of strings.xml\ngate in_scope:\n");
+    assert.throws(() => normalize(raw), (e) => e instanceof Refused && e.code === 2 && /-ing verb/.test(e.message));
+  });
+
+  it("still refuses an empty gate that has no statement of its own, and two step lines", () => {
+    assert.throws(() => normalize(parseLines("decision: d\ntask: t\na: one\nb: two\nstep: Running ls\ngate done:\n")), (e) => e instanceof Refused && /non-empty text/.test(e.message));
+    assert.throws(() => parseLines("decision: d\ntask: t\nstep: Running ls\nstep: Running pwd\n"), (e) => e instanceof Refused && /two "step:" lines/.test(e.message));
+  });
+
+  it("reads the step of a JSON request too", () => {
+    const request = normalize(parseRequest('{"decision": "d", "state": {"task": "t"}, "step": "Running npm test.", "gates": {"reversible": ""}}'));
+    assert.equal(request.gates.reversible, "Running npm test can be undone without losing anything.");
+  });
+});
+
 describe("verdict", () => {
   const request = { options: { a: "one", b: "two" }, gates: null };
   it("takes 0.60 against 0.40 as the 0.20 lead it is: GO", () => {
@@ -131,6 +185,16 @@ describe("CLI", () => {
     assert.deepEqual(Object.keys(bodies[0].questions), ["next", "in_scope"]);
     assert.deepEqual(bodies[0].state.facts, ["LoginFragment.kt:42 uses R.string.login_button"]);
     assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 1);
+  }));
+
+  it("sends the statements it wrote from the step line to Jev", () => withTemp(async (dir) => {
+    bodies.length = 0; probs = { a: 0.9, b: 0.1 }; noul = 0.95;
+    const { code, stdout } = await run([], WITH_STEP, { HOME: dir, TYPESAFE_API_KEY: "test-key", TYPESAFE_BASE_URL: url, JEV_DECISION_LOG: join(dir, "d.jsonl") });
+    assert.equal(code, 0, stdout);
+    assert.deepEqual(Object.keys(bodies[0].questions), ["next", "in_scope", "reversible", "done"]);
+    assert.match(bodies[0].questions.in_scope.instructions, /^Editing line 12 of strings\.xml .* is exactly what the user asked for\.$/);
+    assert.match(bodies[0].questions.reversible.instructions, / can be undone without losing anything\.$/);
+    assert.match(stdout, /gate in_scope: 0\.95 yes/);
   }));
 
   it("writes the decision log named by the env it is given, not by process.env", () => withTemp(async (dir) => {

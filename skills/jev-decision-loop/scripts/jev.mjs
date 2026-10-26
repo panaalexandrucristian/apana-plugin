@@ -6,6 +6,9 @@
 //   fact: what was learned (any number of fact: and done: lines)
 //   a: one concrete step
 //   b: another
+//   step: Editing line 12 of x.kt to ...   (a phrase that starts with an -ing verb; the gates below with no text are written from it)
+//   gate in_scope:                          no text: "<step> is exactly what the user asked for."
+//   gate reversible:                        no text: "<step> can be undone without losing anything."
 //   gate safe: a statement Jev rates true or false
 //   EOF
 //   node jev.mjs --check      one tiny live request: is Jev reachable with the key found?
@@ -30,6 +33,11 @@ export const YES_MIN = 0.7; // a gate is true at or above this, false at or belo
 export const NO_MAX = 0.3;
 export const MAX_REQUEST_CHARS = 24_000;
 const ID = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+/** Gates with no text of their own get their statement from the `step:` line; the wording is the one measured in PRIVATE.md («Jev decision loop»). */
+export const STEP_GATES = {
+  in_scope: (step) => `${step} is exactly what the user asked for.`,
+  reversible: (step) => `${step} can be undone without losing anything.`,
+};
 const TIMEOUT_MS = 20_000;
 const ATTEMPTS = 3;
 
@@ -54,6 +62,20 @@ export class Refused extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
+/** `gates` with every STEP_GATES gate that has no text written from `step`; a gate that has text is kept as written. */
+function withStepStatements(gates, step) {
+  if (!gates || typeof gates !== "object" || Array.isArray(gates)) return gates;
+  const out = { ...gates };
+  for (const [id, statement] of Object.entries(STEP_GATES)) {
+    if (!Object.hasOwn(out, id) || typeof out[id] !== "string" || out[id].trim()) continue;
+    const phrase = String(step ?? "").trim().replace(/[.\s]+$/, "");
+    if (!phrase) throw new Refused(2, `gate ${id} has no statement: write a "step:" line (a phrase that starts with an -ing verb, for example "Editing line 12 of strings.xml to change login_button from Log in to Sign in") or write the statement after "gate ${id}:"`);
+    if (!/^[A-Za-z]+ing\b/.test(phrase)) throw new Refused(2, `"step:" must start with an -ing verb ("Editing line 12 of strings.xml to ...", "Running npm test"): the gates read it as "<step> is exactly what the user asked for."`);
+    out[id] = statement(phrase);
+  }
+  return out;
+}
+
 /** The request in canonical form: `options` as an object (an array becomes a, b, c...), ids checked, at least one question. */
 export function normalize(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Refused(2, "the request must be a JSON object");
@@ -62,7 +84,7 @@ export function normalize(raw) {
   if (raw.state === undefined || raw.state === null || raw.state === "") throw new Refused(2, 'missing "state": the facts Jev needs (task, evidence, constraints)');
   let options = raw.options ?? null;
   if (Array.isArray(options)) options = Object.fromEntries(options.map((text, i) => [String.fromCharCode(97 + i), text]));
-  const gates = raw.gates ?? raw.checks ?? null;
+  const gates = withStepStatements(raw.gates ?? raw.checks ?? null, raw.step);
   for (const [what, group] of [["options", options], ["gates", gates]]) {
     if (group === null) continue;
     if (typeof group !== "object" || Array.isArray(group)) throw new Refused(2, `"${what}" must be an object of id: text`);
@@ -79,9 +101,9 @@ export function normalize(raw) {
   return { decision, state: raw.state, options: optionCount ? options : null, gates: gates && Object.keys(gates).length ? gates : null };
 }
 
-const LINE = /^\s*(decision|task|fact|done|[a-h]|gate\s+[A-Za-z][A-Za-z0-9_]{0,39})\s*:\s?(.*)$/i;
+const LINE = /^\s*(decision|task|fact|done|step|[a-h]|gate\s+[A-Za-z][A-Za-z0-9_]{0,39})\s*:\s?(.*)$/i;
 
-/** The raw request for the line format: decision, task, fact and done lines, one line per option (a-h) and per gate ("gate <id>:").
+/** The raw request for the line format: decision, task, fact, done and step lines, one line per option (a-h) and per gate ("gate <id>:").
  * A line that does not start with one of those keys continues the line before it. */
 export function parseLines(text) {
   const entries = [];
@@ -90,7 +112,7 @@ export function parseLines(text) {
     const match = LINE.exec(line);
     if (match) entries.push([match[1].toLowerCase().replace(/\s+/, " "), match[2].trim(), match[1]]);
     else if (entries.length) entries.at(-1)[1] = `${entries.at(-1)[1]} ${line.trim()}`.trim();
-    else throw new Refused(2, `line ${index + 1} does not start with a key: write "decision: ...", "task: ...", "fact: ...", "done: ...", "a: ..." or "gate <id>: ..."`);
+    else throw new Refused(2, `line ${index + 1} does not start with a key: write "decision: ...", "task: ...", "fact: ...", "done: ...", "step: ...", "a: ..." or "gate <id>: ..."`);
   }
   const raw = { decision: "", state: { task: "", facts: [], done: [] }, options: null, gates: null };
   for (const [key, value, written] of entries) {
@@ -100,7 +122,10 @@ export function parseLines(text) {
       slot[key] = value;
     } else if (key === "fact") raw.state.facts.push(value);
     else if (key === "done") raw.state.done.push(value);
-    else {
+    else if (key === "step") {
+      if (raw.step) throw new Refused(2, 'two "step:" lines: write one');
+      raw.step = value;
+    } else {
       const [group, id] = key.startsWith("gate ") ? ["gates", written.trim().split(/\s+/)[1]] : ["options", key];
       raw[group] ??= {};
       if (Object.hasOwn(raw[group], id)) throw new Refused(2, `two lines for ${group === "gates" ? `gate ${id}` : `option ${id}`}: write one`);
