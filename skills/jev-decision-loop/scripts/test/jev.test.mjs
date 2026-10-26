@@ -87,6 +87,7 @@ describe("line request format", () => {
 
 // Why the statement names the step (PRIVATE.md, «Jev decision loop»): Jev sees only the state and the statement, so "This edit changes only
 // what the user asked for." got UNSURE on 71 of 84 requests; with the step in the statement, 42 of 42 requests on fresh scope cases were clear and right.
+// With both gates in one request, `reversible` pointing at the step in the state was clear and right on 73 of 81 requests, the step in its statement on 60 of 81.
 const WITH_STEP = `decision: edit strings.xml
 task: Change the login button text to Sign in
 a: Edit app/src/main/res/values/strings.xml line 12
@@ -102,15 +103,19 @@ describe("gates written from the step line", () => {
   it("writes in_scope and reversible from the step and keeps the done statement as written", () => {
     assert.deepEqual(normalize(parseLines(WITH_STEP)).gates, {
       in_scope: `${STEP} is exactly what the user asked for.`,
-      reversible: `${STEP} can be undone without losing anything.`,
+      reversible: "`step` can be undone without losing anything.",
       done: "The facts in the state show that the user's request is fully done.",
     });
   });
 
-  it("keeps the step out of the state and sends each gate as one noul question with its statement", () => {
+  it("sends each gate as one noul question and puts the step into the state for reversible only", () => {
     const body = toQuestions(normalize(parseLines(WITH_STEP)));
-    assert.deepEqual(Object.keys(body.state), ["task", "facts", "done"]);
+    assert.equal(body.state.step, STEP);
+    assert.deepEqual(Object.keys(body.state), ["task", "facts", "done", "step"]);
     assert.deepEqual(body.questions.in_scope, { type: "noul", instructions: `${STEP} is exactly what the user asked for.` });
+    assert.deepEqual(body.questions.reversible, { type: "noul", instructions: "`step` can be undone without losing anything." });
+    const scopeOnly = toQuestions(normalize(parseLines(WITH_STEP.replace("gate reversible:\n", ""))));
+    assert.deepEqual(Object.keys(scopeOnly.state), ["task", "facts", "done"]);
   });
 
   it("keeps a statement written after the colon", () => {
@@ -133,9 +138,13 @@ describe("gates written from the step line", () => {
     assert.throws(() => parseLines("decision: d\ntask: t\nstep: Running ls\nstep: Running pwd\n"), (e) => e instanceof Refused && /two "step:" lines/.test(e.message));
   });
 
-  it("reads the step of a JSON request too", () => {
+  it("reads the step of a JSON request too, and writes it into the statement when the state is not an object", () => {
     const request = normalize(parseRequest('{"decision": "d", "state": {"task": "t"}, "step": "Running npm test.", "gates": {"reversible": ""}}'));
-    assert.equal(request.gates.reversible, "Running npm test can be undone without losing anything.");
+    assert.equal(request.gates.reversible, "`step` can be undone without losing anything.");
+    assert.deepEqual(request.state, { task: "t", step: "Running npm test" });
+    const text = normalize(parseRequest('{"decision": "d", "state": "the task is t", "step": "Running npm test.", "gates": {"reversible": ""}}'));
+    assert.equal(text.gates.reversible, "Running npm test can be undone without losing anything.");
+    assert.equal(text.state, "the task is t");
   });
 });
 
@@ -194,6 +203,7 @@ describe("CLI", () => {
     assert.deepEqual(Object.keys(bodies[0].questions), ["next", "in_scope", "reversible", "done"]);
     assert.match(bodies[0].questions.in_scope.instructions, /^Editing line 12 of strings\.xml .* is exactly what the user asked for\.$/);
     assert.match(bodies[0].questions.reversible.instructions, / can be undone without losing anything\.$/);
+    assert.match(bodies[0].state.step, /^Editing line 12 of strings\.xml/);
     assert.match(stdout, /gate in_scope: 0\.95 yes/);
   }));
 

@@ -74,7 +74,7 @@ Asking takes about 0.3 s: write the obvious step as option a and its best altern
 2. **State**: the task in the user's words, the facts you learned so far (short, with file:line), the steps already done. Summaries, not whole files. Never keys, passwords, tokens or `.env` contents (the script refuses a request that looks like one).
 3. **Gates**, when the step changes something (Jev gives each statement a probability of being true). Jev does not see which step you mean, so name it once, on a `step:` line: a phrase that starts with an -ing verb and names the file or the command, the place and what changes (`step: Editing line 12 of strings.xml to change login_button from Log in to Sign in`, `step: Running rm -rf legacy/ in the repository root`). It is the step you mean to take, usually option `a`. Write the two gates below with no text after the colon: the script writes their statements from the step.
    - before an edit: `gate in_scope:` is asked as "<step> is exactly what the user asked for."
-   - before a command that writes, installs, deletes or sends: `gate reversible:` is asked as "<step> can be undone without losing anything."
+   - before a command that writes, installs, deletes or sends: `gate reversible:` is asked as "`step` can be undone without losing anything.", and the script adds your step to the state as the field `step`
    - before the final answer: `gate done: The facts in the state show that the user's request is fully done.` (written out; no `step:`)
 4. **Ask** with the command above and read the `VERDICT` line:
    - `GO a` → your next tool call is exactly option a. Not another one, not two.

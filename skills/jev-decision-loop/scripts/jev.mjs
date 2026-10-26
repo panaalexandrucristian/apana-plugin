@@ -8,7 +8,7 @@
 //   b: another
 //   step: Editing line 12 of x.kt to ...   (a phrase that starts with an -ing verb; the gates below with no text are written from it)
 //   gate in_scope:                          no text: "<step> is exactly what the user asked for."
-//   gate reversible:                        no text: "<step> can be undone without losing anything."
+//   gate reversible:                        no text: "`step` can be undone without losing anything." (the step goes into the state as the field `step`)
 //   gate safe: a statement Jev rates true or false
 //   EOF
 //   node jev.mjs --check      one tiny live request: is Jev reachable with the key found?
@@ -33,10 +33,14 @@ export const YES_MIN = 0.7; // a gate is true at or above this, false at or belo
 export const NO_MAX = 0.3;
 export const MAX_REQUEST_CHARS = 24_000;
 const ID = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
-/** Gates with no text of their own get their statement from the `step:` line; the wording is the one measured in PRIVATE.md («Jev decision loop»). */
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+/** Gates with no text of their own get their statement from the `step:` line; the wording is the one measured in PRIVATE.md («Jev decision loop»).
+ * `reversible` points at a `step` field that it adds to the state (a state that is not an object gets the step written into the statement). */
 export const STEP_GATES = {
-  in_scope: (step) => `${step} is exactly what the user asked for.`,
-  reversible: (step) => `${step} can be undone without losing anything.`,
+  in_scope: (step) => ({ text: `${step} is exactly what the user asked for.` }),
+  reversible: (step, state) => (isPlainObject(state)
+    ? { text: "`step` can be undone without losing anything.", state: { ...state, step } }
+    : { text: `${step} can be undone without losing anything.` }),
 };
 const TIMEOUT_MS = 20_000;
 const ATTEMPTS = 3;
@@ -62,18 +66,21 @@ export class Refused extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
-/** `gates` with every STEP_GATES gate that has no text written from `step`; a gate that has text is kept as written. */
-function withStepStatements(gates, step) {
-  if (!gates || typeof gates !== "object" || Array.isArray(gates)) return gates;
+/** `{gates, state}` with every STEP_GATES gate that has no text written from `step` (and the state that gate needs); a gate that has text is kept as written. */
+function withStepStatements(gates, step, state) {
+  if (!gates || typeof gates !== "object" || Array.isArray(gates)) return { gates, state };
   const out = { ...gates };
-  for (const [id, statement] of Object.entries(STEP_GATES)) {
+  let nextState = state;
+  for (const [id, compose] of Object.entries(STEP_GATES)) {
     if (!Object.hasOwn(out, id) || typeof out[id] !== "string" || out[id].trim()) continue;
     const phrase = String(step ?? "").trim().replace(/[.\s]+$/, "");
     if (!phrase) throw new Refused(2, `gate ${id} has no statement: write a "step:" line (a phrase that starts with an -ing verb, for example "Editing line 12 of strings.xml to change login_button from Log in to Sign in") or write the statement after "gate ${id}:"`);
     if (!/^[A-Za-z]+ing\b/.test(phrase)) throw new Refused(2, `"step:" must start with an -ing verb ("Editing line 12 of strings.xml to ...", "Running npm test"): the gates read it as "<step> is exactly what the user asked for."`);
-    out[id] = statement(phrase);
+    const made = compose(phrase, nextState);
+    out[id] = made.text;
+    if (made.state) nextState = made.state;
   }
-  return out;
+  return { gates: out, state: nextState };
 }
 
 /** The request in canonical form: `options` as an object (an array becomes a, b, c...), ids checked, at least one question. */
@@ -84,7 +91,7 @@ export function normalize(raw) {
   if (raw.state === undefined || raw.state === null || raw.state === "") throw new Refused(2, 'missing "state": the facts Jev needs (task, evidence, constraints)');
   let options = raw.options ?? null;
   if (Array.isArray(options)) options = Object.fromEntries(options.map((text, i) => [String.fromCharCode(97 + i), text]));
-  const gates = withStepStatements(raw.gates ?? raw.checks ?? null, raw.step);
+  const { gates, state } = withStepStatements(raw.gates ?? raw.checks ?? null, raw.step, raw.state);
   for (const [what, group] of [["options", options], ["gates", gates]]) {
     if (group === null) continue;
     if (typeof group !== "object" || Array.isArray(group)) throw new Refused(2, `"${what}" must be an object of id: text`);
@@ -98,7 +105,7 @@ export function normalize(raw) {
   if (optionCount > 8) throw new Refused(2, "more than 8 options: narrow them down first");
   if (gates && Object.hasOwn(gates, "next")) throw new Refused(2, 'gate id "next" is reserved for the options');
   if (!optionCount && !(gates && Object.keys(gates).length)) throw new Refused(2, 'nothing to ask: give "options" (2-8) and/or "gates"');
-  return { decision, state: raw.state, options: optionCount ? options : null, gates: gates && Object.keys(gates).length ? gates : null };
+  return { decision, state, options: optionCount ? options : null, gates: gates && Object.keys(gates).length ? gates : null };
 }
 
 const LINE = /^\s*(decision|task|fact|done|step|[a-h]|gate\s+[A-Za-z][A-Za-z0-9_]{0,39})\s*:\s?(.*)$/i;
