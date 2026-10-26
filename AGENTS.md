@@ -20,7 +20,7 @@ Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measuremen
 - Commit, push, tag and release only when the owner asks. For a release, use the `releasing-plugin` skill.
 - Commit messages and PR text: a plain summary of what changed and why. No mention of Claude, Claude Code or a council, no `Co-Authored-By` trailer, no "Generated with" footer. This overrides any default attribution.
 - Message format: `<area>: <what changed> (version unchanged)`; a release is `Plugin X.Y.Z: <what changed>`.
-- Version: `.claude-plugin/plugin.json` and the `apana` entry of `.claude-plugin/marketplace.json` carry the same semver, and two tests pin it. Bump it with every change to a skill, hook, helper or manifest: Claude Code uses it to offer the update.
+- Version: `.claude-plugin/plugin.json` and the `apana` entry of `.claude-plugin/marketplace.json` carry the same semver, and two tests pin it. Bump it with every change to a skill, hook, helper or manifest: Claude Code uses it to offer the update. A release with new functionality raises the minor number and sets the patch to 0 (`0.2.0` to `0.3.0`); a release that only fixes a bug raises the patch number (`0.2.0` to `0.2.1`).
 - A behaviour change gets the test that would have failed without it. A change meant to shrink or speed something up needs a measured before and after, on the real inputs.
 - In `PRIVATE.md` and in answers, label every number measured, calculated or guessed, and give n.
 - `gh` has no default repository here: always pass `-R panaalexandrucristian/apana-plugin`.

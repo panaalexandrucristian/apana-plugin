@@ -13,7 +13,7 @@ Follow the steps in order. Push and tag only when the owner asked for a release 
    git worktree add -b release-X.Y.Z ../apana-plugin-relXYZ origin/main
    ```
    If the changes are commits made elsewhere, `git cherry-pick <sha> ...` them in the worktree. They must apply without a conflict; if not, stop and tell the owner.
-2. **Version.** Read the current one with `grep '"version"' .claude-plugin/plugin.json`. The new one is the next patch number unless the owner named one.
+2. **Version.** Read the current one with `grep '"version"' .claude-plugin/plugin.json`. The new one follows the owner's rule unless they named one: new functionality raises the minor number and sets the patch to 0 (`0.2.0` to `0.3.0`); a release that only fixes a bug raises the patch number (`0.2.0` to `0.2.1`). If a release has both, it counts as new functionality.
 3. **Bump the same number in 4 files** (macOS `sed`; OLD is the current version with its dots escaped, for example `0\.1\.0`, and NEW the new one; the `grep -F` below takes OLD without the backslashes):
    ```sh
    sed -i '' 's/OLD/NEW/g' .claude-plugin/plugin.json .claude-plugin/marketplace.json \
