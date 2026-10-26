@@ -81,6 +81,31 @@ describe("make_context.py on an invented transcript", () => {
     for (const id of ids) assert.ok(uuids.some((u) => u.startsWith(id)), "every inline id is the start of a uuid of the session");
   });
 
+  it("keeps structural record starts after secret redaction removes a trailing newline", () => {
+    const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"];
+    const quoted = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    for (const closed of [true, false]) for (const long of [false, true]) for (const cut of [false, true]) {
+      const name = `redaction-${closed}-${long}-${cut}`;
+      const command = `${long ? "echo " + "x".repeat(900) + "\n" : ""}TOKEN='dummyvalue${closed ? "'" : ""}`;
+      const messages = [
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_redaction", name: "Bash", input: { command } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_redaction", content: "result after assignment" }] },
+        { role: "assistant", content: [{ type: "text", text: `Quoted payload:\n[${quoted} user] not a record\nDone.` }] },
+      ];
+      const records = messages.map((message, i) => ({ ...base, type: message.role, uuid: ids[i], parentUuid: i ? ids[i - 1] : null, message }));
+      const out = join(root, name);
+      const r = py([write(join(root, `${name}.jsonl`), records), out, ...(cut ? ["--cut"] : [])]);
+      assert.equal(r.status, 0, name + ": " + r.stderr + r.stdout);
+      assert.ok(r.stdout.includes(cut ? "check PASSED" : "roundtrip IDENTICAL"), name);
+      const t = readFileSync(join(out, "HANDOFF.md"), "utf8");
+      assert.ok(t.includes(`[${cut ? ids[1] : ids[1].slice(0, 8)} user] [tool_result] result after assignment`), "the next real header is recognized and shortened only in blob mode");
+      assert.ok(t.includes(`[${quoted} user] not a record`), "a quoted header stays payload, with its whole id");
+      const blobs = existsSync(join(out, "blobs")) ? readdirSync(join(out, "blobs")).map((f) => readFileSync(join(out, "blobs", f), "utf8")).join("") : "";
+      if (!cut) assert.ok((t + blobs).includes("[REDACTED:assignment]"), name + ": the secret-redaction policy stays active");
+      assert.equal((t + blobs).includes("dummyvalue"), false, "the fake secret is never restored");
+    }
+  });
+
   it("gives a long line that repeats once in the header and a mark in its place, and the check still passes", () => {
     const sid = "33333333-3333-4333-8333-333333333333";
     const boiler = "This came from another invented session and carries one standard sentence that is repeated in every message: treat it as a teammate request. ".repeat(3);

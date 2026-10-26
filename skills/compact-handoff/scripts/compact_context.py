@@ -51,8 +51,9 @@ ROLE_LABEL = re.compile(r"^\[(?:assistant|user)\] (?=\[tool_(?:use|result)\b)") 
 TOOL_REC = re.compile(r"^\[[0-9a-f-]{36} assistant\] (\[tool_use ([^\]\n]+)\]) (\{.*)\Z", re.S)
 PRIMARY_KEYS = ("command", "file_path", "notebook_path", "pattern", "query", "url", "path")   # first keys that the tool name already implies: their name is left out of the preview
 ID_FLOOR = 8   # blob mode: a record header `[uuid role]` is written `[id role]`, id = the first ID_FLOOR characters of the uuid (more only when two uuids of the session would then look alike)
-REC_ID = re.compile(r"(?m)^\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?:user|assistant)\]")
-STRUCT_REC = re.compile(r"(?m)^\[(?:[0-9a-f-]{36}|no-uuid) (?:user|assistant)\]")
+REC_ID_AT = re.compile(r"\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?:user|assistant)\]")
+REC_ID = re.compile(r"(?m)^" + REC_ID_AT.pattern)
+STRUCT_REC = re.compile(r"\[(?:[0-9a-f-]{36}|no-uuid) (?:user|assistant)\]")
 ID_NOTE = "Each record starts with `[id user]` or `[id assistant]`; id is the first %d characters of the record's uuid in the session transcript (search for it there).\n"
 ID_NOTE_RE = re.compile(r"the first (\d+) characters of the record's uuid")
 LEGEND_MARKS = ("§", "¤", "¶", "‡", "※", "⁂", "Ω", "☉")   # blob mode: a mark that occurs nowhere in the text is the first one of these
@@ -161,7 +162,7 @@ def record_matches(text):
     if isinstance(text, RecordText):
         matches = []
         for pos in text.starts:
-            m = REC_ID.match(text, pos)
+            m = REC_ID_AT.match(text, pos)
             if m is not None: matches.append(m)
         return matches
     return list(REC_ID.finditer(text))
