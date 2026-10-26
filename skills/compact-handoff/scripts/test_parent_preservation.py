@@ -43,6 +43,10 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+class Skip(Exception):
+    """The case needs a condition this system cannot produce."""
+
+
 @dataclass
 class Node:
     md: Path
@@ -216,6 +220,37 @@ def absolute_folder_intro(e):
     child(root, 'handoff-22222222-20260101-child')
     out = e.copy([root])[0]
     require(str(root.md.parent).encode() not in out.read_bytes().split(b'\n---\n')[0], 'Absolute root still in intro')
+
+
+def system_alias(path):
+    # macOS links /var and /tmp to /private/...; the alias spelling of `path`,
+    # whatever spelling TMPDIR has.
+    real = path.resolve()
+    alias = next((Path('/', *real.parts[2:]) for top in ('tmp', 'var')
+                  if real.parts[1:3] == ('private', top) and Path('/' + top).resolve() == Path('/private', top)), None)
+    if alias is None:
+        raise Skip('no /tmp or /var system alias of ' + str(real))
+    return alias
+
+
+@case
+def system_alias_folder_intro(e):
+    # The intro quotes the /var spelling the caller gave.
+    alias = system_alias(e.src)
+    root = node(alias, 'handoff-11111111-20260101-root', absolute=True)
+    child(root, 'handoff-22222222-20260101-child')
+    out = e.copy([root])[0]
+    require(str(alias).encode() not in out.read_bytes().split(b'\n---\n')[0], 'Aliased absolute root still in intro')
+
+
+@case
+def system_alias_dest_spelling(e):
+    # The new handoff links its parents relative to `dest` as the caller
+    # spelled it; a /private path would make that link dangle.
+    dest = system_alias(e.dest.parent) / e.dest.name
+    out = e.copy([node(e.src, 'handoff-11111111-20260101-leaf')], dest)[0]
+    require(dest in out.parents, 'Copy not under the destination as given: %s' % out)
+    require((dest.resolve() / os.path.relpath(out, dest)).is_file(), 'Relative link dangles: %s' % os.path.relpath(out, dest))
 
 
 @case
@@ -741,20 +776,22 @@ def main():
                 row = {'repeat': repeat, 'case': name}
                 try:
                     CASES[name](Env(module, folder))
+                except Skip as exc:
+                    row.update(status='SKIP', error=str(exc))
                 except Exception as exc:
                     row.update(status='FAIL', error=f'{type(exc).__name__}: {exc}', traceback=traceback.format_exc())
                 else:
                     row['status'] = 'PASS'
                 results.append(row)
                 if not args.quiet:
-                    print(f"{row['status']} {name}" + (': ' + row['error'] if row['status'] == 'FAIL' else ''), flush=True)
+                    print(f"{row['status']} {name}" + (': ' + row['error'] if row['status'] != 'PASS' else ''), flush=True)
     require(hashes == {k: digest(v) for k, v in SOURCES.items()}, 'Sources changed during tests')
     payload = {'python': sys.version, 'source_sha256': hashes, 'case_count': len(names), 'repeat': args.repeat,
                'summary': dict(Counter(r['status'] for r in results)), 'results': results}
     if args.report:
         Path(args.report).write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n')
     print('SUMMARY ' + json.dumps(payload['summary']))
-    return int(any(r['status'] != 'PASS' for r in results))
+    return int(any(r['status'] == 'FAIL' for r in results))
 
 
 if __name__ == '__main__':

@@ -119,7 +119,8 @@ class Env:
         self.evidence.setdefault('edges', []).append({'from': str(out), 'resolved': [str(p) for p in refs], 'expected_body_sha256': hashlib.sha256(self.body(original)).hexdigest()})
         require(len(refs) == 1, 'Expected one real provenance edge, got %r' % refs)
         require(refs[0].is_file(), 'Dangling real provenance edge: %s' % refs[0])
-        require(self.dest in refs[0].parents, 'Provenance outside destination: %s' % refs[0])
+        # refs are resolved, so compare with the resolved destination (macOS /var).
+        require(self.dest.resolve() in refs[0].parents, 'Provenance outside destination: %s' % refs[0])
         require(self.body(refs[0]) == self.body(original), 'WRONG PARENT BODY: %s resolves to %s' % (out, refs[0]))
         return refs[0]
 
@@ -519,7 +520,8 @@ def readonly_after_publication_fault_restores_mode(e):
     require(stat.S_IMODE(out.stat().st_mode) == 0o500, 'Published inode mode not restored')
     require(stat.S_IMODE((out / 'HANDOFF.md').stat().st_mode) == 0o400, 'Handoff mode changed')
     before = manifest(e.dest)
-    require(e.copy([p])[0] == out / 'HANDOFF.md', 'Retry did not reuse publication')
+    # The result keeps the spelling of dest, the rename target is resolved (macOS /var).
+    require(e.copy([p])[0].resolve() == (out / 'HANDOFF.md').resolve(), 'Retry did not reuse publication')
     require(manifest(e.dest) == before, 'Retry changed output bytes or modes')
     e.evidence['published_directory_mode'] = oct(stat.S_IMODE(out.stat().st_mode))
 

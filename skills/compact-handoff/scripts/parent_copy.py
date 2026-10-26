@@ -34,6 +34,12 @@ def intro_end(raw):
     return match.start() if match else 0
 
 
+def _given(path):
+    """`path` absolute, in the spelling the caller used (macOS /var, not /private/var)."""
+    path = Path(path)
+    return path if path.is_absolute() else Path.cwd() / path
+
+
 def _safe_path(path):
     """Reject links before opening anything. macOS's system aliases are OK."""
     path = Path(path)
@@ -104,13 +110,22 @@ def relativize_intro(md_path, orig_dir, orig_file=None):
     return True
 
 
+def _layout(path, folder):
+    """A handoff's payload source and the sidecar of its stored parents."""
+    if folder:
+        return path.parent, path.parent / "parents"
+    return path, path.with_name(path.stem + "-parents")
+
+
 class _Entry:
     def __init__(self, path, handoff=False):
         self.path = path
+        # Introductions quote the spelling the caller used, e.g. macOS /var
+        # for the resolved /private/var; text is compared with every form.
+        self.forms = [path]
         self.handoff = handoff
         self.folder = handoff and path.name == "HANDOFF.md"
-        self.source = path.parent if self.folder else path
-        self.side = path.parent / "parents" if self.folder else path.with_name(path.stem + "-parents")
+        self.source, self.side = _layout(path, self.folder)
         self.name = self.source.name
         self.dependencies = []
         self.links = []
@@ -134,6 +149,7 @@ class _Graph:
         self.warnings = set()
 
     def add(self, path, handoff=False, depth=0):
+        given = _given(path)
         path = _safe_path(path)
         source = path.parent if handoff and path.name == "HANDOFF.md" else path
         owner = self.sources.get(source)
@@ -147,12 +163,16 @@ class _Graph:
                 raise ValueError("opaque storage entry conflicts with parent provenance: %s" % path)
             if entry.state == "visiting":
                 raise ValueError("cycle in parent provenance: %s" % path)
+            if given not in entry.forms:
+                entry.forms.append(given)
             return entry
         if depth >= 256 or len(self.entries) >= 10000:
             raise ValueError("parent graph exceeds safe traversal limit")
         if not path.is_file() and handoff:
             raise ValueError("missing parent handoff: %s" % path)
         entry = self.entries[path] = _Entry(path, handoff)
+        if given != path:
+            entry.forms.append(given)
         self.sources[entry.source] = entry
         entry.state = "visiting"
         if self.dest == entry.source or (entry.source.is_dir() and entry.source in self.dest.parents):
@@ -337,21 +357,26 @@ class _Graph:
         def descriptive(match):
             group = 1 if match.group(1) is not None else 2
             value = match.group(group)
-            prefix = os.fsencode(entry.path.parent) + b"/"
-            side = os.fsencode(entry.side) + b"/"
             relative_side = os.fsencode(entry.side.name) + b"/"
             replacement = value
-            if value.startswith(side):
-                replacement = (b"../" if entry.folder else b"") + value[len(side):]
-                self.warnings.add(str(entry.path))
-            elif value.startswith(relative_side) and entry.side.is_dir():
-                replacement = (b"../" if entry.folder else b"") + value[len(relative_side):]
-            elif entry.folder and value == os.fsencode(entry.source):
-                replacement = "acest folder".encode()
-            elif not entry.folder and value == os.fsencode(entry.path):
-                replacement = "acest fișier".encode()
-            elif value.startswith(prefix):
-                replacement = value[len(prefix):]
+            for form in entry.forms:
+                source, side = _layout(form, entry.folder)
+                prefix = os.fsencode(form.parent) + b"/"
+                side = os.fsencode(side) + b"/"
+                if value.startswith(side):
+                    replacement = (b"../" if entry.folder else b"") + value[len(side):]
+                    self.warnings.add(str(entry.path))
+                elif value.startswith(relative_side) and entry.side.is_dir():
+                    replacement = (b"../" if entry.folder else b"") + value[len(relative_side):]
+                elif entry.folder and value == os.fsencode(source):
+                    replacement = "acest folder".encode()
+                elif not entry.folder and value == os.fsencode(form):
+                    replacement = "acest fișier".encode()
+                elif value.startswith(prefix):
+                    replacement = value[len(prefix):]
+                else:
+                    continue
+                break
             a, b = match.span(group)
             return match.group()[:a - match.start()] + replacement + match.group()[b - match.start():]
         intro = _TOKEN.sub(descriptive, intro)
@@ -453,7 +478,7 @@ def copy_parents(parents, dest):
     roots = []
     for original in parents:
         path = _safe_path(original)
-        roots.append((original, graph.add(path, True) if path.exists() else None))
+        roots.append((original, graph.add(original, True) if path.exists() else None))
     if not graph.entries:
         return [(original, None, False) for original, _ in roots]
     graph.dest.mkdir(parents=True, exist_ok=True)
@@ -472,4 +497,9 @@ def copy_parents(parents, dest):
     if graph.warnings:
         import sys
         print("warning: unverified legacy descriptive parent paths in: " + ", ".join(sorted(graph.warnings)), file=sys.stderr)
-    return [(original, str(entry.output / "HANDOFF.md" if entry.folder else entry.output), True) if entry is not None else (original, None, False) for original, entry in roots]
+
+    def shown(entry):
+        # Callers link these relative to `dest` as they spelled it.
+        output = _given(dest) / entry.output.relative_to(graph.dest)
+        return str(output / "HANDOFF.md" if entry.folder else output)
+    return [(original, shown(entry), True) if entry is not None else (original, None, False) for original, entry in roots]
