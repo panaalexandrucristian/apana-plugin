@@ -345,6 +345,43 @@ describe("make_context.py on an invented transcript", () => {
     assert.ok(intro(readFileSync(join(root, "handoff-7777abcd-20260101-one", "HANDOFF.md"), "utf8")).includes("Sesiunea sursă a încărcat skill-ul `demo:one`."), "one skill: the singular wording");
   });
 
+  it("lets the user choose the skills to load again: --list-skills prints each loaded skill with its size and writes nothing; --skills keeps only the named ones, by whole exact names, in the order of the first load; a name not loaded, a part of a name, an empty entry, a clash with --no-skills or --list-skills and a stray argument stop it before a folder is made", () => {
+    const sid = "88888888-8888-4888-8888-888888888888", P = "Base directory for this skill: ";
+    const names = ["jev-decision-loop", "apana:jev-decision-loop", "other"];   // the same skill under its bare name and under its plugin name is two entries
+    const body = (name, size) => `${P}/p/skills/${name}\n\n# ${name}\n${"BODY ".repeat(size)}`;
+    const texts = names.map((name, i) => body(name, 20 * (i + 1)));
+    const rs = transcript(sid, names.map((name) => ["Skill", { skill: name }, `Launching skill: ${name}`]));   // the tool results of the 3 calls are records 2, 4 and 6
+    names.map((name, i) => [2 + 2 * i, { ...base, sessionId: sid, type: "user", isMeta: true, uuid: uid(900 + i), sourceToolUseID: `toolu_8888${i + 1}`, timestamp: `2026-01-01T09:30:0${i}.000Z`, message: { role: "user", content: [{ type: "text", text: texts[i] }] } }])
+      .reverse().forEach(([at, r]) => rs.splice(at + 1, 0, r));
+    const file = write(join(root, "sk-choose.jsonl"), rs), sizes = texts.map((t) => t.length), total = sizes.reduce((x, y) => x + y, 0);
+    const out = (name) => join(root, `handoff-8888abcd-20260101-${name}`);
+    const listed = py([file, "--list-skills"]);
+    assert.equal(listed.status, 0, listed.stderr + listed.stdout);
+    assert.deepEqual(listed.stdout.trim().split("\n"), [...names.map((name, i) => `skill: ${name} | ${sizes[i]} characters`), `skills loaded: 3 | ${total} characters of skill text`]);
+    assert.equal(py([write(join(root, "sk-choose-none.jsonl"), transcript(sid)), "--list-skills"]).stdout.trim(), "skills loaded: none");
+    const kept = (flags, name) => { const o = out(name), r = py([file, o, ...flags]); assert.equal(r.status, 0, r.stderr + r.stdout); return { r, head: intro(readFileSync(join(o, "HANDOFF.md"), "utf8")) }; };
+    const two = kept(["--skills", "apana:jev-decision-loop,other"], "two");
+    assert.ok(two.r.stdout.includes(`skills to reload: apana:jev-decision-loop, other | ${sizes[1] + sizes[2]} characters of skill text`), two.r.stdout);
+    assert.ok(two.head.includes("`apana:jev-decision-loop`, `other`. ") && !two.head.includes("`jev-decision-loop`"), "the bare name is not kept by its plugin name");
+    const bare = kept(["--skills", "other,jev-decision-loop"], "bare");   // another order in the option: the order of the first load stays
+    assert.ok(bare.head.includes("`jev-decision-loop`, `other`. ") && !bare.head.includes("apana:jev-decision-loop"), bare.head);
+    const one = kept(["--skills", "other"], "one");
+    assert.ok(one.head.includes("Sesiunea sursă a încărcat skill-ul `other`."), "one skill: the singular wording");
+    const all = kept([], "all");
+    assert.ok(all.head.includes("`jev-decision-loop`, `apana:jev-decision-loop`, `other`. "), "without the option every loaded skill is kept, as before");
+    for (const [flags, message] of [[["--skills", "nope"], "not loaded by this session: 'nope' (loaded: jev-decision-loop, apana:jev-decision-loop, other)"], [["--skills", "decision-loop"], "'decision-loop'"], [["--skills", "other,"], "not loaded by this session: ''"],
+      [["--skills", "OTHER"], "'OTHER'"], [["--skills", "other", "--no-skills"], "cannot be combined"], [["--skills", "other", "--list-skills"], "cannot be combined"], [["--list-skills", "--no-skills"], "takes only the session"], [["--skills"], "needs a value"]]) {
+      const o = out("refused"), r = py([file, o, ...flags]);
+      assert.notEqual(r.status, 0, flags.join(" "));
+      assert.ok(r.stderr.includes(message), `${flags.join(" ")}: ${r.stderr}`);
+      assert.equal(existsSync(o), false, `nothing is written for: ${flags.join(" ")}`);
+    }
+    const stray = py([file, out("stray"), "--list-skills"]);
+    assert.notEqual(stray.status, 0); assert.ok(stray.stderr.includes("takes only the session"), stray.stderr); assert.equal(existsSync(out("stray")), false);
+    const oc = py(["--opencode", join(root, "none.sqlite"), "--list-skills"]);
+    assert.notEqual(oc.status, 0); assert.ok(oc.stderr.includes("work only with a Claude Code session"), oc.stderr);
+  });
+
   it("keeps a message that the user typed while the model was working (an `attachment` queued_command, origin human, mode prompt, a text) as a [user] record at its place; the other 15 combinations of those four conditions, a blank text and a missing origin leave it out", () => {
     const sid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const records = transcript(sid);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """make_context.py --marker                        (prints a unique marker; use it with --current in the next command)
-make_context.py SESSION | --current MARKER  [OUT] [--cut] [--keep] [--no-readonly] [--with-subagents] [--keep-work] [--no-goal] [--no-skills] [--opencode-db PATH] [--no-opencode]
+make_context.py SESSION | --current MARKER  [OUT] [--cut] [--keep] [--no-readonly] [--with-subagents] [--keep-work] [--no-goal] [--no-skills | --skills NAME,NAME…] [--opencode-db PATH] [--no-opencode]
+make_context.py SESSION | --current MARKER  --list-skills      (prints the skills that the session loaded, with their sizes, and writes nothing)
 make_context.py --opencode DB.sqlite [OUT] [--session ID] [--keep] [--no-readonly] [--keep-work]      (an OpenCode session; see below)
 make_context.py --list-opencode [--opencode-db PATH] [--limit N] [--match TEXT]      (the sessions of OpenCode's database, newest first; see below)
 
@@ -21,6 +22,8 @@ One command from a session transcript to a start context for a NEW session.
            which skips the OpenCode search (the Claude transcripts alone decide).
   --no-goal  do not carry a /goal that is still active in the session (by default it is: see below).
   --no-skills  do not ask the new session to load again the skills this session loaded (by default it does: see below).
+  --skills NAME,NAME…  ask the new session to load again only these of the skills this session loaded (whole names exactly as --list-skills prints them, separated by commas; a name that was not loaded stops the command before anything is written).
+  --list-skills  print one line `skill: NAME | N characters` for each skill the session loaded, then `skills loaded: …` with the total (`skills loaded: none` without any); nothing is written. An OpenCode session lists none.
   --keep   put the result in a DURABLE place instead of /tmp: ~/.claude/handoffs/ (nothing deletes it by itself). An OUT outside /tmp counts as durable too.
 ACTIVE GOAL: a /goal that is neither achieved nor cleared at the end of a Claude Code transcript (goal_status records, see goal_of) gets a section "Goal activ" in the introduction (condition, state, last unmet reason, what the new
 session does with it), an `active goal:` line, and the LAST line printed is then `claude '/goal <condition> (…read HANDOFF.md…)'`, which starts the new session with the same goal set (the line before it is the plain command). An OpenCode session has no goal.
@@ -197,6 +200,21 @@ SKILLS_ONE = ("Sesiunea sursă a încărcat skill-ul {names}. În transcript tex
 SKILLS_TAIL = ("Dacă unealta spune că un skill nu există sau nu poate fi încărcat, scrie asta în răspuns și mergi mai departe. "
                "Este singura acțiune pe care ți-o cer înainte de răspuns, o excepție de la „Nu repeta nimic” din „Reguli”; restul din „Reguli” rămâne în picioare. "
                "Skill-urile încărcate nu schimbă primul răspuns: rămân cele 4 puncte de la „Ce faci după ce l-ai citit”, în maximum 8 rânduri, fără alt format.\n\n")
+
+
+def skills_listing(skills):
+    """The lines that --list-skills prints for `skills` ([(name, chars)] from skills_loaded): one `skill: NAME | N characters` per skill, then the total; `skills loaded: none` without any."""
+    if not skills: return ["skills loaded: none"]
+    return ["skill: %s | %d characters" % (n, c) for n, c in skills] + ["skills loaded: %d | %d characters of skill text" % (len(skills), sum(c for _, c in skills))]
+
+
+def skills_chosen(skills, wanted):
+    """The entries of `skills` ([(name, chars)]) whose name is in `wanted` (the value of --skills: whole names, separated by commas), in the order of their first load. A name is matched whole and exactly, so `a:b` and `b` are two skills;
+    a name that the session did not load (or an empty one) stops the command with the list of the loaded ones."""
+    names = [w.strip() for w in wanted.split(",")]
+    bad = [w for w in names if w not in dict(skills)]
+    if bad: sys.exit("--skills: not loaded by this session: %s (loaded: %s)" % (", ".join(repr(w) for w in bad), ", ".join(n for n, _ in skills) or "none"))
+    return [s for s in skills if s[0] in names]
 
 
 def skills_paragraph(skills):
@@ -471,14 +489,17 @@ def main():
     a = sys.argv[1:]
     if a == ["--marker"]: print("handoff-marker-%d-%s" % (int(time.time()), os.urandom(6).hex())); return
     oc_db = take_option(a, "--opencode-db"); session = take_option(a, "--session"); limit = take_option(a, "--limit"); match = take_option(a, "--match"); no_oc = "--no-opencode" in a
-    a = [x for x in a if x != "--no-opencode"]
+    skills_opt = take_option(a, "--skills"); list_sk = "--list-skills" in a
+    a = [x for x in a if x not in ("--no-opencode", "--list-skills")]
     if oc_db is not None: oc_db = os.path.expanduser(oc_db)
+    if skills_opt is not None and (list_sk or "--no-skills" in a): sys.exit("--skills cannot be combined with --list-skills or --no-skills")
     if "--list-opencode" in a:
-        if a != ["--list-opencode"] or session is not None or no_oc: sys.exit("--list-opencode takes only --opencode-db PATH, --limit N and --match TEXT")
+        if a != ["--list-opencode"] or session is not None or no_oc or skills_opt is not None or list_sk: sys.exit("--list-opencode takes only --opencode-db PATH, --limit N and --match TEXT")
         return list_opencode(oc_db or oc.default_db(), limit, match)
     if limit is not None or match is not None: sys.exit("--limit and --match work only with --list-opencode")
     if session is not None and a[:1] != ["--opencode"]: sys.exit("--session works only with --opencode DB")
     if a[:1] == ["--opencode"]:
+        if skills_opt is not None or list_sk: sys.exit("--skills and --list-skills work only with a Claude Code session; an OpenCode session lists none")
         if len(a) < 2 or a[1].startswith("--"): print(__doc__); sys.exit(2)
         return build_opencode(os.path.expanduser(a[1]), session, a[2:])
     if len(a) >= 2 and a[0] == "--current":
@@ -488,7 +509,11 @@ def main():
         if len(hits) + len(sessions) != 1:
             if not sessions: sys.exit("--current: %d transcripts contain the marker %r (need exactly 1); give the session id instead" % (len(hits), a[1]))
             sys.exit("--current: %d sessions contain the marker %r (%d Claude Code transcripts, %d OpenCode sessions; need exactly 1); give the session id instead" % (len(hits) + len(sessions), a[1], len(hits), len(sessions)))
-        if sessions: print("current session:", sessions[0]); return build_opencode(db, sessions[0], a[2:])
+        if sessions:
+            print("current session:", sessions[0])
+            if list_sk: print("\n".join(skills_listing([]))); return
+            if skills_opt is not None: sys.exit("--skills works only with a Claude Code session; an OpenCode session lists none")
+            return build_opencode(db, sessions[0], a[2:])
         print("current session:", os.path.basename(hits[0])[:-6]); a = [hits[0]] + a[2:]
     if not a or a[0].startswith("--"): print(__doc__); sys.exit(2)
     sess = a[0]; keep_work = "--keep-work" in a; cut = "--cut" in a
@@ -498,6 +523,11 @@ def main():
         if len(hits) != 1: sys.exit("session id %r: %d transcripts found" % (sess, len(hits)))
         sess = hits[0]
     sess = os.path.abspath(sess); sid = os.path.basename(sess)[:-len(".jsonl")]; now = datetime.datetime.now()
+    if list_sk:
+        if len(a) != 1: sys.exit("--list-skills takes only the session (SESSION or --current MARKER) and no other option")
+        print("\n".join(skills_listing(skills_loaded(sess)))); return
+    reloads = [] if "--no-skills" in a else skills_loaded(sess)
+    if skills_opt is not None: reloads = skills_chosen(reloads, skills_opt)   # before any folder is made: an unknown name leaves nothing behind
     prefix = "handoff-%s-%s-" % (sid[:8], now.strftime("%Y%m%d"))
     o_abs = os.path.abspath(os.path.expanduser(out_arg)) if out_arg else None
     kept = "--keep" in a or (o_abs is not None and not o_abs.startswith(("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")))
@@ -518,7 +548,6 @@ def main():
     for fp, cp, ok in copies: print("parent handoff:", fp, "->", cp if ok else "MISSING (not copied)")
     goal = None if "--no-goal" in a else goal_of(sess)
     if goal: print("active goal: %s | unmet checks: %d%s | set %s" % (goal_oneline(goal["condition"], 100), goal["checks"], " | paused" if goal["paused"] else "", goal["since"][:16].replace("T", " ") + " UTC" if goal["since"] else "?"))
-    reloads = [] if "--no-skills" in a else skills_loaded(sess)
     if reloads: print("skills to reload: %s | %d characters of skill text (--no-skills leaves them out)" % (", ".join(n for n, _ in reloads), sum(c for _, c in reloads)))
     work = tempfile.mkdtemp(prefix="make_context_")
     try:
@@ -907,6 +936,16 @@ def selftest():
     assert dict(got)["plain"] == len(P + "/s/m-c1\n\n# m-c1") and dict(got)["after-noise"] == len(P + "/s/after-noise\n" + "z" * 100), got; n += 1
     empty = os.path.join(d, "none.jsonl"); open(empty, "w", encoding="utf-8").write("not json\n" + rec("user", "u1", "hello") + "\n")
     assert skills_loaded(empty) == [] and skills_paragraph([]) == ""; n += 1
+    # skills_listing and skills_chosen: one line per skill with its size and a total; a choice is a whole, exact name (`pl:tool` is not `tool`, `a:b` is not `b`), kept in the order of the first load; an unknown or empty name stops the command
+    assert skills_listing([]) == ["skills loaded: none"] and skills_listing([("pl:a", 10), ("b", 5)]) == ["skill: pl:a | 10 characters", "skill: b | 5 characters", "skills loaded: 2 | 15 characters of skill text"]; n += 1
+    assert skills_chosen(got, "after-noise,pl:tool") == [g for g in got if g[0] in ("pl:tool", "after-noise")] and skills_chosen(got, " lead , plain ") == [g for g in got if g[0] in ("plain", "lead")]; n += 1
+    both = [("jev-decision-loop", 3), ("apana:jev-decision-loop", 4), ("x", 1)]   # the same skill can be loaded under its bare name and under its plugin name: two entries
+    assert skills_chosen(both, "apana:jev-decision-loop") == [("apana:jev-decision-loop", 4)] and skills_chosen(both, "jev-decision-loop") == [("jev-decision-loop", 3)] and skills_chosen(both, "x,jev-decision-loop,apana:jev-decision-loop") == both; n += 1
+    for bad in ("tool", "pl:tool,nope", "", "plain,", "PLAIN", "pl:*"):
+        try: skills_chosen(got, bad)
+        except SystemExit as e: assert "not loaded by this session" in str(e.code) and "plain, pl:tool" in str(e.code), (bad, e.code)
+        else: raise AssertionError("accepted: %r" % bad)
+        n += 1
     # the section: the names in backticks, one or several, never a line `---` or a brace left to format; the introduction with it, in the 4 modes
     for sks in ([("a", 1)], [("pl:a", 1), ("b.c", 2), ("d_e-f", 3)]):
         rp = skills_paragraph(sks); n += 1
@@ -1026,7 +1065,7 @@ def selftest():
     assert goal_oneline("a  b\n c", 3) == "a…" and goal_oneline("a  b", 4) == "a b" and goal_oneline("a  b\n c") == "a b c"; n += 1
     n += selftest_opencode()
     print("make_context selftest OK: %d cases (an OpenCode session: the introduction as the Claude one with three substitutions and its four clause combinations, a session with every message type and content kind converted from a database built here, session picking, legacy, a parent handoff, --current over all sources and its fail-closed and skip cases; --list-opencode and the titled list in the error of --opencode; relative paths: an old folder parent, an old single-file parent, a parent already relative, a missing parent, idempotence; reading plan: 40 random files; "
-          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; naming the skills a transcript loaded (a Skill call or a slash command; once each, no subagent, no odd name, not compact-handoff) and the section that asks for them again, in 4 introduction modes;collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; the life of a /goal in a transcript (17 transcripts), its section in the introduction, its start command; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
+          "the introduction in 4 modes and the skill clause in 8; collecting the uuids of injected skill records; naming the skills a transcript loaded (a Skill call or a slash command; once each, no subagent, no odd name, not compact-handoff) and the section that asks for them again, in 4 introduction modes; the listing of them and the choice of some by whole exact names (a bare and a plugin name are two skills; unknown and empty names refused);collecting the uuids of background-task notifications (15 records) and the introduction with their clause in 16 combinations; collecting the uuids of SDK prompts (the first and the last left out; 5 counts, 18 records of noise, list content, a short first and a long last) and the introduction with their two sentences in 32 combinations; parent detection: 9 transcripts; the life of a /goal in a transcript (17 transcripts), its section in the introduction, its start command; finding the current session by a marker: one match, none, two, an old file, the wait)" % n)
 
 
 if "--selftest" in sys.argv: selftest()

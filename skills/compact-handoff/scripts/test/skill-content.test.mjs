@@ -25,7 +25,7 @@ describe("SKILL.md", () => {
 
   it("teaches plain commands: the only variable in a command line is CLAUDE_SKILL_DIR, no pipe, and every step uses the one script that the allowed-tools pattern covers", () => {
     const commandLines = body.split("\n").filter((line) => /^ {4,}\S/.test(line)).map((line) => line.trim());   // indented code, also inside a numbered list
-    assert.equal(commandLines.length, 4, "four command examples: --marker, --current, --list-opencode and --opencode");
+    assert.equal(commandLines.length, 5, "five command examples: --marker, --current with --list-skills, --current, --list-opencode and --opencode");
     for (const line of commandLines) {
       assert.match(line, /^python3 \$\{CLAUDE_SKILL_DIR\}\/scripts\/make_context\.py --(marker|current|list-opencode|opencode)/);
       assert.equal(line.replace(/\$\{CLAUDE_SKILL_DIR\}/g, "").includes("$"), false, `no other variable in: ${line}`);
@@ -33,7 +33,8 @@ describe("SKILL.md", () => {
     }
     const prefix = /^allowed-tools: Bash\((.*) \*\)$/m.exec(frontmatter)[1];   // the pattern of the frontmatter, without its trailing *
     for (const line of commandLines) assert.ok(line.startsWith(prefix + " "), `covered by the allowed-tools pattern: ${line}`);
-    assert.deepEqual(commandLines.map((l) => /make_context\.py (--[a-z-]+)/.exec(l)[1]), ["--marker", "--current", "--list-opencode", "--opencode"]);
+    assert.deepEqual(commandLines.map((l) => /make_context\.py (--[a-z-]+)/.exec(l)[1]), ["--marker", "--current", "--current", "--list-opencode", "--opencode"]);
+    assert.ok(commandLines[1].endsWith("--list-skills"), "the first --current command lists the skills and writes nothing");
   });
 
   it("states the rules that protect the user: no reading the file into the conversation, no deleting handoff folders unasked, no extra verification pass", () => {
@@ -63,6 +64,10 @@ describe("the skills to load again", () => {
   it("is explained in SKILL.md: the option that switches it off, the printed line and its size, how a name is found, what is left out and who loads them", () => {
     for (const part of ["`--no-skills`", "`skills to reload:` line", "`sourceToolUseID`", "`<command-name>`", "never compact-handoff itself", "\"Skill-uri de încărcat din nou\"", "without `args`", "an OpenCode session lists none"]) assert.ok(body.includes(part), part);
   });
+
+  it("lets the user choose at every handoff: the listing command, the question with sizes, the two options and the whole-name matching", () => {
+    for (const part of ["--list-skills", "Ask at every handoff; an earlier answer does not carry over", "(all, some or none)", "`--skills name1,name2`", "`--no-skills` for none, nothing for all", "the bare `x` and the plugin `p:x` are two skills", "before any folder is made", "`--skills` is refused"]) assert.ok(body.includes(part), part);
+  });
 });
 
 describe("the OpenCode section", () => {
@@ -77,7 +82,7 @@ describe("the OpenCode section", () => {
     assert.equal(section.split("\n").some((line) => /^ {4,}\S/.test(line)), false, "no indented command line in the OpenCode section");
     assert.equal(/\.config\/opencode|\.agents|ln -s|symlink/i.test(section), false, "no install path");
     const steps = /\n## Steps\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
-    for (const part of ["1. **Get a marker**", "2. **Make the handoff**", "3. **Tell the user**", 'the start command exactly as printed (`claude "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."`)', "`--cut` (one `.md` file without blobs"]) assert.ok(steps.includes(part), part);
+    for (const part of ["1. **Get a marker**", "2. **Choose the skills to load again, then make the handoff.**", "3. **Tell the user**", 'the start command exactly as printed (`claude "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."`)', "`--cut` (one `.md` file without blobs"]) assert.ok(steps.includes(part), part);
   });
 });
 
