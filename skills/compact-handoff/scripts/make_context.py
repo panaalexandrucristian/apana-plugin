@@ -32,7 +32,8 @@ Default mode: OUT/HANDOFF.md (the instructions for the new session first, then t
 NO ABSOLUTE PATHS: the text of the handoff points to `blobs/…` and `parents/…` relative to the folder of HANDOFF.md, so a folder can be copied or moved whole and still works.
 Steps: prepare_all.py (the chunks of handoff-verify's prepare.py without its verification exclusions; the transcripts of subagents are left out unless --with-subagents; a message the user typed while the model was working is kept as a user message) -> compact_context.py. Nothing leaves the machine.
 If the session itself started from a handoff (it Read a /tmp/handoff-*.md at its start), that PARENT handoff is kept whole: copied next to the new one (OUT/parents/, or <file>-parents/ with --cut) with its own
-parents. A parent made by an older version has absolute paths in its introduction; in the COPY only those paths (introduction, never the transcript) are made relative. Without the copy the parent would survive
+parents beside it in the same folder, never nested (nested copies passed the path length limit after 23 handoffs). A parent made by an older version has absolute paths in its introduction; in the COPY only those
+paths (introduction, never the transcript) are made relative, and a link to its own parents points next to it. Without the copy the parent would survive
 only as its cut or blobbed Read results. The last line printed is the command that starts the new session.
   make_context.py --selftest   (parent detection, copying and path rewriting, reading plan, introduction)"""
 import datetime, glob, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
@@ -241,39 +242,24 @@ def sdk_uuids_of(sess):
 
 
 def relativize_intro(md_path, orig_dir, orig_file=None):
-    """In the COPY of a parent made by an older version: make the absolute paths of the original relative, in the introduction only (up to the first line `---`; the transcript is never touched, and no line is added or removed,
-    so the reading plan stays valid). A folder handoff: `<dir>/blobs/` -> `blobs/`, `<dir>/parents/` -> `parents/`, any other `<dir>` -> `acest folder`. A single .md: its own path -> `acest fișier`, `<dir>/` -> ``.
-    Returns True when something changed."""
-    t = open(md_path, encoding="utf-8", newline="").read(); k = t.find("\n---\n")
-    if k < 0: return False
-    intro, rest = t[:k], t[k:]; new = intro
-    if orig_file is None:
-        new = new.replace(orig_dir + "/blobs/", "blobs/").replace(orig_dir + "/parents/", "parents/").replace(orig_dir, "acest folder")
-    else:
-        new = new.replace(orig_file, "acest fișier").replace(orig_dir + "/", "")
-    if new == intro: return False
-    open(md_path, "w", encoding="utf-8", newline="").write(new + rest)
-    return True
+    """Byte-safe compatibility helper for an older parent's introduction."""
+    from parent_copy import relativize_intro as rewrite
+    return rewrite(md_path, orig_dir, orig_file)
 
 
 def copy_parents(parents, dest):
-    """Copy each existing parent handoff into `dest` (a folder handoff with its blobs/ and its own parents/, or a single .md with its <stem>-parents folder) and make the absolute paths of its introduction relative
-    -> [(original, copy, exists)]."""
-    out = []
-    for fp in parents:
-        if not os.path.exists(fp): out.append((fp, None, False)); continue
-        os.makedirs(dest, exist_ok=True)
-        if os.path.basename(fp) == "HANDOFF.md":
-            src = os.path.dirname(fp); dst = os.path.join(dest, os.path.basename(src))
-            if not os.path.exists(dst): shutil.copytree(src, dst); relativize_intro(os.path.join(dst, "HANDOFF.md"), src)
-            out.append((fp, os.path.join(dst, "HANDOFF.md"), True))
-        else:
-            dst = os.path.join(dest, os.path.basename(fp))
-            if not os.path.exists(dst): shutil.copy2(fp, dst); relativize_intro(dst, os.path.dirname(fp), fp)
-            side = fp[:-3] + "-parents"
-            if os.path.isdir(side) and not os.path.exists(os.path.join(dest, os.path.basename(side))): shutil.copytree(side, os.path.join(dest, os.path.basename(side)))
-            out.append((fp, dst, True))
-    return out
+    """Preserve the complete parent graph in flat, collision-safe storage.
+
+    Returns [(original, copied, exists)]. Existing output is reused only after
+    a complete byte comparison; partial or unrelated output is never replaced.
+    """
+    from parent_copy import copy_parents as preserve
+    return preserve(parents, dest)
+
+
+def copy_flat(fp, dest):
+    """Compatibility entry point for copying one parent and its closure."""
+    return copy_parents([fp], dest)[0][1]
 
 
 def parents_paragraph(copies, base):
@@ -282,7 +268,7 @@ def parents_paragraph(copies, base):
     return ("## Handoff părinte\nAceastă sesiune a pornit din alt handoff. Părintele este păstrat întreg în: " + "; ".join(
         ("`%s`" % os.path.relpath(cp, base)) if ok else ("`%s` (nu mai exista când s-a făcut acest handoff)" % os.path.basename(fp)) for fp, cp, ok in copies)
         + " (căi relative la folderul acestui fișier). Din el ai inline doar rezumatul din acest fișier; citește-l (tot în bucăți, cu planul lui de citire) când ai nevoie de detalii. Dacă și el a pornit dintr-un handoff, "
-        "îl găsești lângă el, în `parents/` sau în `<nume>-parents/`.\n\n")
+        "îl găsești lângă el, în același folder; la fel toți strămoșii, unul lângă altul.\n\n")
 
 
 GOAL_LIMIT = 4000   # characters of a /goal condition that Claude Code accepts
@@ -823,18 +809,38 @@ def selftest():
     dest = os.path.join(d, "dest"); lines_before = (open(h2, encoding="utf-8").read().count("\n"), open(h1, encoding="utf-8").read().count("\n"))
     cp = copy_parents([h1, h2, os.path.join(d, "handoff-89abcdef-20260103-missing.md"), os.path.join(new_style, "HANDOFF.md")], dest); n += 1
     t2 = open(cp[1][1], encoding="utf-8").read()   # folder parent: intro relative, body identical, same number of lines, blobs and its own parents copied, original untouched
-    assert old_dir not in t2.split("\n---\n")[0] and "`blobs/Rnnnn.txt`" in t2 and "`acest folder`" in t2 and "parents/handoff-1111aaaa-20260101-ccc/HANDOFF.md" in t2
+    assert old_dir not in t2.split("\n---\n")[0] and "`blobs/Rnnnn.txt`" in t2 and "`acest folder`" in t2 and "`../handoff-1111aaaa-20260101-ccc/HANDOFF.md`" in t2
     assert t2.split("\n---\n", 1)[1] == body.split("\n---\n", 1)[1] and t2.count("\n") == lines_before[0] and old_dir in open(h2, encoding="utf-8").read()
-    assert open(os.path.join(os.path.dirname(cp[1][1]), "blobs", "R0000.txt")).read() == "blob" and os.path.exists(os.path.join(os.path.dirname(cp[1][1]), "parents", "g.md"))
-    t1 = open(cp[0][1], encoding="utf-8").read()   # single .md parent: its own path and the folder of its -parents become relative
-    assert h1 not in t1 and "`acest fișier`" in t1 and "handoff-0123abcd-20260101-aaa-parents/old.md" in t1 and d not in t1.split("\n---\n")[0] and t1.count("\n") == lines_before[1]
-    assert t1.split("\n---\n", 1)[1] == body.split("\n---\n", 1)[1] and os.path.exists(os.path.join(dest, "handoff-0123abcd-20260101-aaa-parents", "old.md"))
+    assert open(os.path.join(os.path.dirname(cp[1][1]), "blobs", "R0000.txt")).read() == "blob" and not os.path.exists(os.path.join(os.path.dirname(cp[1][1]), "parents"))
+    assert open(os.path.join(dest, "g.md")).read() == "grand"   # its own parent lies next to it
+    t1 = open(cp[0][1], encoding="utf-8").read()   # single .md parent: its own path becomes relative, and its parents lie next to it
+    assert h1 not in t1 and "`acest fișier`" in t1 and "`old.md`" in t1 and "-parents/" not in t1 and d not in t1.split("\n---\n")[0] and t1.count("\n") == lines_before[1]
+    assert t1.split("\n---\n", 1)[1] == body.split("\n---\n", 1)[1] and open(os.path.join(dest, "old.md")).read() == "old" and not os.path.exists(os.path.join(dest, "handoff-0123abcd-20260101-aaa-parents"))
     assert cp[2][1] is None and cp[2][2] is False
     assert open(cp[3][1], encoding="utf-8").read() == ns_text; n += 4   # a parent that is already relative is copied byte for byte
     para = parents_paragraph(cp, dest)
     assert "nu mai exista" in para and os.path.relpath(cp[0][1], dest) in para and os.path.relpath(cp[1][1], dest) in para and d not in para and "original" not in para and para.endswith("\n\n") and parents_paragraph([], dest) == ""
     copy_parents([h1], dest); n += 2   # a second copy into the same place changes nothing and does not fail
     assert relativize_intro(cp[0][1], os.path.dirname(h1), h1) is False and relativize_intro(cp[1][1], old_dir) is False; n += 1   # idempotent
+    # a chain of parents, each copied inside the one after it, as deep as the path limit allows: copied nested once more it would pass the limit ([Errno 63] File name too long after 23 handoffs on macOS)
+    root = tempfile.mkdtemp(); limit = os.pathconf(root, "PC_PATH_MAX"); dirs = [os.path.join(root, "src", "handoff-00000000-20260101-chain")]
+    while len(os.path.join(dirs[-1], "parents", "handoff-%08x-20260101-chain" % len(dirs), "blobs", "R0000.txt")) < limit:
+        dirs.append(os.path.join(dirs[-1], "parents", "handoff-%08x-20260101-chain" % len(dirs)))
+    for i, dd in enumerate(dirs):
+        os.makedirs(os.path.join(dd, "blobs")); open(os.path.join(dd, "blobs", "R0000.txt"), "w").write(str(i))
+        own = "Părintele este păstrat întreg în: `parents/%s/HANDOFF.md`\n" % os.path.basename(dirs[i + 1]) if i + 1 < len(dirs) else ""
+        open(os.path.join(dd, "HANDOFF.md"), "w", encoding="utf-8").write("# Handoff\n" + own + body)
+    dest = os.path.join(root, "x" * 100, "handoff-new", "parents")
+    assert len(dest) + len(dirs[-1]) - len(os.path.join(root, "src")) + len("/blobs/R0000.txt") > limit   # the nested layout would not fit
+    cp = copy_parents([os.path.join(dirs[0], "HANDOFF.md")], dest)
+    assert cp == [(os.path.join(dirs[0], "HANDOFF.md"), os.path.join(dest, os.path.basename(dirs[0]), "HANDOFF.md"), True)] and sorted(os.listdir(dest)) == sorted(map(os.path.basename, dirs))
+    for i, dd in enumerate(dirs):   # every ancestor next to the others, whole but without a parents/ folder, its transcript and line count unchanged, its link to its own parent resolving from the copy
+        c = os.path.join(dest, os.path.basename(dd)); t = open(os.path.join(c, "HANDOFF.md"), encoding="utf-8").read()
+        assert not os.path.exists(os.path.join(c, "parents")) and open(os.path.join(c, "blobs", "R0000.txt")).read() == str(i)
+        assert t.split("\n---\n", 1)[1] == body.split("\n---\n", 1)[1] and t.count("\n") == open(os.path.join(dd, "HANDOFF.md"), encoding="utf-8").read().count("\n")
+        if i + 1 < len(dirs): ref = "../%s/HANDOFF.md" % os.path.basename(dirs[i + 1]); assert "`%s`" % ref in t and os.path.isfile(os.path.join(c, ref)), (i, t[:300])
+    assert open(os.path.join(dest, os.path.basename(dirs[-1]), "HANDOFF.md"), encoding="utf-8").read() == "# Handoff\n" + body; n += 4   # the oldest, which had no parent, is byte for byte
+    shutil.rmtree(root)
     # --current: exactly the transcript that holds the marker, among recent ones
     pr = tempfile.mkdtemp(); os.makedirs(os.path.join(pr, "projA")); os.makedirs(os.path.join(pr, "projB"))
     def tr(proj, name, text, age=0):
