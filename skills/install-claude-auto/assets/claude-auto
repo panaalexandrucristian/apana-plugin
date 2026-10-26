@@ -34,7 +34,9 @@ Env (all optional)
   CLAUDE_AUTO_PRETOOL_MARGIN tokens before the threshold where a tool is blocked and handed off first (default 30000;
                              0 disables this guard). It avoids admitting a large tool result to an almost-full session.
   CLAUDE_AUTO_NEXT_ARGS      flags for the follow-up sessions, e.g. "--permission-mode acceptEdits". Default: the
-                             --model/--permission-mode/--effort/... flags you started with (see STICKY)
+                             --permission-mode/... flags you started with (see STICKY), with --model and --effort
+                             of the session that is closed (read from its transcript, so a /model or /effort made
+                             during the session carries over). When set, the whole value is used as it is.
   CLAUDE_AUTO_ANCHOR_ID      immutable, already-warmed Claude session ID. When set, every handoff resumes a fork of
                              this anchor, then appends HANDOFF.md; without it, the normal new-session handoff is used.
   CLAUDE_AUTO_RULE           off (or 0) stops claude-auto from appending the variant-check rule to the system prompt of
@@ -145,6 +147,37 @@ def context_tokens(path, tail=1 << 20):
         return n
     with open(path, errors="replace") as f:
         return last_usage(f.read().split("\n"))
+
+
+def session_flags(path, tail=1 << 20):
+    """Model and effort of the last main-thread request, as the transcript records them (a /model or /effort made
+    during the session shows there, a first command line does not know it); absent keys when the tail has neither."""
+    def scan(lines):
+        for line in reversed(lines):
+            if '"usage"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+                if r.get("type") != "assistant" or r.get("isSidechain"):
+                    continue
+                u = (r.get("message") or {}).get("usage") or {}
+                if not sum(int(u.get(k) or 0) for k in FIELDS):
+                    continue
+                found = {"model": r.get("requestedModel"), "effort": r.get("effort")}
+            except (ValueError, TypeError, AttributeError):
+                continue
+            return {k: v for k, v in found.items() if isinstance(v, str) and v and not v.startswith("-")}
+        return None
+
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        f.seek(max(0, size - tail))
+        lines = f.read().decode("utf-8", "replace").split("\n")
+    found = scan(lines[1:] if size > tail else lines)      # the first line is cut at the seek point
+    if found is None and size > tail:
+        with open(path, errors="replace") as f:
+            found = scan(f.read().split("\n"))
+    return found or {}
 
 
 def find_make_context():
@@ -451,7 +484,8 @@ def handle(d):
     saved = save_pending(run, d)
     if event == "PostToolUse" and not saved:
         log("PostToolUse payload has no tool_response (keys: %s); the last tool result will be missing" % sorted(d))
-    write_signal(run, {"event": event, "session_id": sid, "tokens": tokens, "handoff": handoff, "cwd": d.get("cwd")})
+    write_signal(run, {"event": event, "session_id": sid, "tokens": tokens, "handoff": handoff, "cwd": d.get("cwd"),
+                       **session_flags(transcript)})
     open(done_file(run, sid), "w").close()
     open(os.path.join(run, "last-handoff"), "w").close()
     log("%s: %d tokens >= %d; handoff %s" % (sid[:8], tokens, trigger, handoff))
@@ -528,6 +562,25 @@ def sticky_args(args):
                 kept.append(a)
         i += 1
     return kept
+
+
+def carry_session_flags(args, sig):
+    """args with --model and --effort replaced by those of the closed session (sig); untouched when sig has neither.
+    Only the flags before `--` are looked at."""
+    carried = [(name, sig[key]) for name, key in (("--model", "model"), ("--effort", "effort")) if sig.get(key)]
+    if not carried:
+        return args
+    names = {name for name, _ in carried}
+    head, tail = (args[:args.index("--")], args[args.index("--"):]) if "--" in args else (args, [])
+    kept, i = [], 0
+    while i < len(head):
+        name, eq, _ = head[i].partition("=")
+        if name in names:
+            i += 1 if eq or i + 1 >= len(head) else 2
+            continue
+        kept.append(head[i])
+        i += 1
+    return kept + [x for pair in carried for x in pair] + tail
 
 
 def rule_args(*arglists):
@@ -826,7 +879,8 @@ def wrapper(args):
             if sig.get("cwd") and os.path.isdir(sig["cwd"]):
                 cwd = sig["cwd"]
             fork = ["--resume", anchor, "--fork-session"] if anchor else []
-            argv = next_args + fork + ["--", new_session_prompt(sig)]      # `--`: a variadic option must not swallow the prompt
+            carried = next_args if env_next is not None else carry_session_flags(next_args, sig)      # an explicit CLAUDE_AUTO_NEXT_ARGS wins
+            argv = carried + fork + ["--", new_session_prompt(sig)]      # `--`: a variadic option must not swallow the prompt
             say("%dk tokeni de context; nota: %s. Pornesc sesiunea nouă în aceeași fereastră." % (
                 int(sig.get("tokens") or 0) // 1000, sig["handoff"]))
             log("handoff %d: claude ended (exit %s), new session from %s (cwd %s, %d pending file(s))" % (

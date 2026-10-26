@@ -226,6 +226,57 @@ class ContextTokens(unittest.TestCase):
         self.assertEqual(self.tok([self.a(5)] + [filler] * 40 + [self.a(9)], 1000), 9)   # last one inside the tail
 
 
+class SessionFlags(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.m = load()
+
+    def flags(self, recs, tail=1 << 20):
+        p = os.path.join(self.tmp, "t.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            for r in recs:
+                f.write((r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)) + "\n")
+        return self.m.session_flags(p, tail)
+
+    @staticmethod
+    def a(model=None, effort=None, n=10, **kw):
+        r = {"type": "assistant", "message": {"usage": {"input_tokens": n}}}
+        if model is not None:
+            r["requestedModel"] = model
+        if effort is not None:
+            r["effort"] = effort
+        return dict(r, **kw)
+
+    def test_cases(self):
+        a = self.a
+        cases = [
+            ("last main-thread record wins", [a("m1", "low"), a("m2", "high")], {"model": "m2", "effort": "high"}),
+            ("sidechain is ignored", [a("m1", "low"), a("sub", "max", isSidechain=True)], {"model": "m1", "effort": "low"}),
+            ("record without usage is skipped", [a("m1", "low"), {"type": "assistant", "requestedModel": "syn"}],
+             {"model": "m1", "effort": "low"}),
+            ("zero usage is skipped", [a("m1", "low"), a("m2", "high", n=0)], {"model": "m1", "effort": "low"}),
+            ("no effort on the last record", [a("m1", "low"), a("m2")], {"model": "m2"}),
+            ("no model on the last record", [a("m1", "low"), a(None, "high")], {"effort": "high"}),
+            ("a value that looks like a flag is dropped", [a("--dangerously-skip-permissions", "-x")], {}),
+            ("empty or non-string values are dropped", [a("", 5)], {}),
+            ("malformed last line", [a("m1", "low"), "{not json"], {"model": "m1", "effort": "low"}),
+            ("non-assistant is ignored", [a("m1", "low"), {"type": "user", "requestedModel": "u", "message": {"usage": {"input_tokens": 9}}}],
+             {"model": "m1", "effort": "low"}),
+            ("empty", [], {}),
+        ]
+        for name, recs, want in cases:
+            with self.subTest(name):
+                self.assertEqual(self.flags(recs), want)
+
+    def test_record_far_back_is_found_by_the_full_scan(self):
+        filler = {"type": "user", "message": {"content": "é" * 200}}
+        recs = [self.a("m1", "low")] + [filler] * 40
+        for tail in (50, 333, 1000, 1 << 20):
+            with self.subTest(tail=tail):
+                self.assertEqual(self.flags(recs, tail), {"model": "m1", "effort": "low"})
+
+
 class HookMatrix(unittest.TestCase):
     """Every combination of the gates that decide whether the hook hands off (4860), against an independent oracle."""
 
@@ -852,7 +903,12 @@ FAKE_CLAUDE = """
 
     def fire(sid):
         t = os.path.join(state, "t%d.jsonl" % n)
-        open(t, "w").write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 150000}}}) + "\\n")
+        last = {"type": "assistant", "message": {"usage": {"input_tokens": 150000}}}
+        if os.environ.get("FAKE_MODEL"):
+            last["requestedModel"] = os.environ["FAKE_MODEL"]
+        if os.environ.get("FAKE_EFFORT"):
+            last["effort"] = os.environ["FAKE_EFFORT"]
+        open(t, "w").write(json.dumps(last) + "\\n")
         payload = {"hook_event_name": os.environ.get("FAKE_EVENT", "Stop"), "session_id": sid, "transcript_path": t,
                    "cwd": os.environ.get("FAKE_CWD", os.getcwd()), "tool_response": {"stdout": "last-output"},
                    "last_assistant_message": "last-reply"}
@@ -966,6 +1022,35 @@ class Wrapper(unittest.TestCase):
         self.assertEqual(c[0]["argv"][2:], ["--model", "opus"])
         self.assertTrue(c[0]["run"] and c[0]["run"].startswith(self.base))
         self.assertEqual([d for d in os.listdir(self.base) if d.startswith("run-")], [])      # run folder removed
+
+    def second_launch(self, *args, **env):
+        r = self.wrap(*args, FAKE_MODE="handoff", **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        c = self.calls()
+        self.assertEqual(len(c), 2, r.stderr)
+        return c[1]["argv"][2:-2]
+
+    def test_handoff_keeps_the_model_and_effort_of_the_closed_session(self):
+        # started without flags, changed with /model and /effort later: the transcript is the only place that knows
+        self.assertEqual(self.second_launch("do the task", FAKE_MODEL="claude-opus-5-5", FAKE_EFFORT="high"),
+                         ["--model", "claude-opus-5-5", "--effort", "high"])
+
+    def test_handoff_replaces_the_model_and_effort_of_the_first_command(self):
+        for first in (["--model", "opus", "--effort", "low"], ["--model=opus", "--effort=low"]):
+            with self.subTest(first=first):
+                shutil.rmtree(self.state), os.makedirs(self.state)
+                self.assertEqual(
+                    self.second_launch(*first, "--verbose", FAKE_MODEL="claude-sonnet-5-5", FAKE_EFFORT="max"),
+                    ["--verbose", "--model", "claude-sonnet-5-5", "--effort", "max"])
+
+    def test_handoff_keeps_the_first_command_when_the_transcript_has_no_model_or_effort(self):
+        self.assertEqual(self.second_launch("--model", "opus", "--effort", "low"), ["--model", "opus", "--effort", "low"])
+        shutil.rmtree(self.state), os.makedirs(self.state)
+        self.assertEqual(self.second_launch("--model", "opus", FAKE_EFFORT="high"), ["--model", "opus", "--effort", "high"])
+
+    def test_explicit_next_args_win_over_the_closed_session(self):
+        self.assertEqual(self.second_launch("--model", "opus", CLAUDE_AUTO_NEXT_ARGS="--model haiku",
+                                            FAKE_MODEL="claude-sonnet-5-5", FAKE_EFFORT="high"), ["--model", "haiku"])
 
     def test_settings_file_has_the_hooks_with_a_quoted_command(self):
         self.wrap(FAKE_MODE="exit7")
