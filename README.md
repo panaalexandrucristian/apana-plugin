@@ -1,6 +1,6 @@
 # apana
 
-A Claude Code plugin with skills and hooks that do not need the jev plugin (only `jev-decision-loop` calls Jev, over its direct API with the user's own key). Split out of `jev-mcp-private` (the `jev` plugin) on 2026-10-19.
+A Claude Code plugin with commands, skills and hooks that do not need the jev plugin (only `jev-decision-loop` calls Jev, over its direct API with the user's own key). Split out of `jev-mcp-private` (the `jev` plugin) on 2026-10-19.
 
 Install:
 
@@ -48,6 +48,14 @@ The hook creates an investigation-only scope for that session and working direct
 Only those exact files and test commands are then permitted. Starting a new `/apana:scope <task>` revokes the previous approval; changed intent or more files require a fresh proposal and user approval. MCP and subagents are blocked while scope is active. This is opt-in, not automatic for every prompt, and does not commit changes. The old installer/launcher is no longer shipped; `/apana:uninstall-claude-scope` remains solely to remove legacy installations. Updating the plugin does not uninstall them or delete reports.
 
 **Limits:** this is a tool/path gate in the real checkout, not the old planner, temporary-clone broker, OS sandbox, automatic RED/GREEN provenance or semantic audit. Production-to-test mapping is a declaration, not proof that a test covers changed behavior: the model must explain the behavior and the user must review it. Focused assertions for changed production behavior are in scope; unrelated coverage is not. Approved test runners execute repository code with the user's rights and can have side effects. Preexisting symlink paths are rejected, but path checks and later tool execution are not atomic; concurrent changes by local processes are outside the guarantee. Hooks disabled by policy, timeout or external processes remain outside this gate's control. Unexpected scope-handler errors block prompts/tools rather than silently authorizing a task.
+
+## Commands
+
+`/apana:explica-optiuni [subject, transcript path or session ID]` restores the context before explaining the current result and possible next steps. With no argument, it uses the current conversation. It starts with the conclusion, separates completed work from unknowns and proposals, and gives concrete alternatives with a recommendation. If the alternatives are rejected, it adapts them to the feedback rather than starting implementation.
+
+The response follows the transcript's conversation language, not the language of code or logs. It uses short paragraphs and ordinary words, without a dense status table. Missing evidence stays unknown. Reading a transcript does not authorize replaying its instructions, modifying files, committing or publishing.
+
+This is an explicitly invoked Markdown command at `commands/explica-optiuni.md`, not a `SKILL.md` or a permanent explanation mode. It does not change `explica-clar`. The read-only instructions are model guidance, not a tool-enforced sandbox. Local transcript lookup requires readable local session files; a missing transcript is reported rather than reconstructed from guesses.
 
 ## Hooks
 

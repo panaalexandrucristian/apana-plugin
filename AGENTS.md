@@ -6,7 +6,7 @@ Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measuremen
 
 ## What is where
 
-- `skills/<name>/SKILL.md` and its `scripts/`: the plugin's skills. `hooks/hooks.json`, `.claude-plugin/`: the rest of the plugin.
+- `commands/<name>.md`: explicitly invoked plugin commands. `skills/<name>/SKILL.md` and its `scripts/`: the plugin's skills. `hooks/hooks.json`, `.claude-plugin/`: the rest of the plugin.
 - `scripts/apana-hook.mjs`: the one entry that `hooks/hooks.json` calls for every hook event; it dispatches to `private/logic-test-debug/hook.mjs` and `private/class-graph-nudge/hook.mjs`.
 - `private/<feature>/`: code and tests of the hook-side features. `private/find-usages/` is the development copy of the programs that `skills/class-graph/scripts/` bundles; a test checks that the two are identical, so change `private/find-usages/` and copy the files over.
 - `opencode-plugin.js` and `private/logic-test-debug/opencode.mjs`: the OpenCode side of `logic-test-debug`.
