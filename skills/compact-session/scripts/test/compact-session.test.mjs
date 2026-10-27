@@ -163,6 +163,29 @@ test('empty citation metadata from native text blocks preserves prose and the ex
   }
 });
 
+test('direct caller metadata from native tool_use blocks is accepted, any other caller fails closed', t => {
+  const f = fixture(t);
+  const call = extra => snapshot([
+    {type: 'text', text: 'run it'},
+    {type: 'tool_use', id: 'tool-probe', name: 'Bash', input: {command: 'ls'}, ...extra},
+  ], 'assistant');
+  // caller x cache_control is the only pair of optional tool_use fields: exhaustive.
+  for (const cache of [{}, {cache_control: {type: 'ephemeral'}}]) {
+    for (const metadata of [{}, {caller: {type: 'direct'}}]) {
+      const input = call({...metadata, ...cache});
+      const value = success(run(f, input));
+      assert.ok(value.text.includes('[tool_use Bash]'));
+      assert.deepEqual(JSON.parse(readFileSync(join(dirname(value.artifact), 'snapshot.json'), 'utf8')), input);
+    }
+    for (const caller of [
+      {type: 'code_execution_20250825', tool_id: 'srvtoolu_1'}, {type: 'direct', tool_id: 'x'}, {},
+      null, 'direct', '', false, 0, [],
+    ]) {
+      failure(run(f, call({caller, ...cache})));
+    }
+  }
+});
+
 test('unsupported media and block metadata fail closed even alongside supported text', t => {
   const f = fixture(t);
   const blocks = [

@@ -110,7 +110,11 @@ def synthetic_records(snapshot):
                 # text from being mistaken for actual tool records.
                 converted = {"type": "text", "text": "[text] " + text}
             elif kind == "tool_use" and role == "assistant":
-                require_fields(block, {"type", "cache_control", "id", "name", "input"}, where)
+                require_fields(block, {"type", "cache_control", "id", "name", "input", "caller"}, where)
+                # Native capture marks the model's own calls caller:{type:direct};
+                # a call made by another tool carries who made it and must not drop.
+                if "caller" in block and block["caller"] != {"type": "direct"}:
+                    raise ValueError(f"unsupported caller at {where}")
                 for key in ("id", "name"):
                     require_string(block.get(key), where + "." + key, nonempty=True)
                 if not isinstance(block.get("input"), dict):
