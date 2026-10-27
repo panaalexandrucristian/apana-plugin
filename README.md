@@ -27,6 +27,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:jev-decision-loop` | A mode, switched on by the user, in which Jev picks every next step of the session from 2-5 options the model writes. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
 | `apana:claude-openai` | Install or verify a separate launcher using an OpenAI subscription through local CLIProxyAPI and Codex OAuth. |
+| `apana:uninstall-claude-openai` | Preview and remove the owned launcher and shell alias, keeping credentials, state and shared dependencies. |
 
 OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.
 
@@ -47,6 +48,8 @@ Requires a build supporting native function hooks and custom `session.compact` r
 On macOS, invoke `/apana:claude-openai` and ask it to install. Requires zsh, Python 3, Claude Code 2.1.242+ and CLIProxyAPI (`brew install cliproxyapi`). The bundled installer performs a separate OpenAI browser login when needed and verifies a real response. Updating this plugin alone does not install or update the launcher; rerun the skill's installer, then start a new `claude-openai` session.
 
 This is an unofficial subscription bridge, not a paid-API-key setup. It keeps normal `claude`, global/project rules, hooks and permissions unchanged. `/model` lists distinct gateway IDs once plus Claude's Default row. If `claude-auto` is installed, its extra instruction policy is reused directly, including opt-outs and print-mode exceptions, without enabling automatic handoffs. Credentials stay outside the plugin. Subscription limits and compatibility constraints still apply; see the skill's operations reference.
+
+To remove the launcher and managed shell alias, invoke `/apana:uninstall-claude-openai`. It previews first and uses the existing bundled uninstaller. OAuth credentials, the state folder and backup, CLIProxyAPI, `claude-auto` and the plugin remain installed; this is not a full data purge. It does not stop running sessions. Existing shells may retain the alias until a new terminal is opened.
 
 ### Guarded implementation tasks
 

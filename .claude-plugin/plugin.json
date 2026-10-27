@@ -1,6 +1,6 @@
 {
   "name": "apana",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "displayName": "Apana",
   "description": "Commands, skills and hooks that do not need the jev plugin: explica-optiuni, compact-handoff, compact-session, class-graph, logic-test-debug, explica-clar, omlx, Android helpers, claude-auto, claude-openai, explicit scope approval hooks, legacy claude-scope uninstall and jev-decision-loop (Jev over its direct API, the user's own key).",
   "author": {

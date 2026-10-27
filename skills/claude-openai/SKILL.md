@@ -35,7 +35,7 @@ In a new terminal: `claude-openai`. Choose a listed GPT model with `--model` or 
 
 Run `python3 <skill-dir>/scripts/claude_openai.py` with:
 - `models`: list models; `login`: repeat OAuth; `verify`: real request.
-- `uninstall --dry-run`, then `uninstall` only when requested. Removes owned launcher/alias; retains credentials, state, backup, proxy and skill.
+- For removal, use `apana:uninstall-claude-openai`: it runs `uninstall --dry-run`, then `uninstall` only when requested. Removes owned launcher/alias; retains credentials, state, backup, proxy and skill.
 
 For installation/testing:
 1. Run `python3 -m unittest -v test_claude_openai.py` in `<skill-dir>/scripts`.
