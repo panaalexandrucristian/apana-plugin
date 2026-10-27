@@ -105,7 +105,7 @@ export function normalize(raw) {
   if (optionCount > 8) throw new Refused(2, "more than 8 options: narrow them down first");
   if (gates && Object.hasOwn(gates, "next")) throw new Refused(2, 'gate id "next" is reserved for the options');
   if (!optionCount && !(gates && Object.keys(gates).length)) throw new Refused(2, 'nothing to ask: give "options" (2-8) and/or "gates"');
-  return { decision, state, options: optionCount ? options : null, gates: gates && Object.keys(gates).length ? gates : null };
+  return { decision, state, baseState: raw.state, options: optionCount ? options : null, gates: gates && Object.keys(gates).length ? gates : null };
 }
 
 const LINE = /^\s*(decision|task|fact|done|step|[a-h]|gate\s+[A-Za-z][A-Za-z0-9_]{0,39})\s*:\s?(.*)$/i;
@@ -151,6 +151,15 @@ export function toQuestions(request) {
   }
   for (const [id, text] of Object.entries(request.gates ?? {})) questions[id] = { type: "noul", instructions: text };
   return { state: request.state, questions };
+}
+
+/** The bodies to send. The choice and the gates share one request while they see the same state; when a gate added the step to the state (`baseState` differs from `state`),
+ * the choice goes in a request of its own with the state as written, because the step in its state pulled it to the step (PRIVATE.md, «Jev decision loop», round 6). */
+export function toRequests(request) {
+  const whole = toQuestions(request);
+  if (!request.options || !request.gates || !request.baseState || request.baseState === request.state) return [whole];
+  const { next, ...gates } = whole.questions;
+  return [{ state: request.baseState, questions: { next } }, { state: request.state, questions: gates }];
 }
 
 /** A refusal reason when the serialized body looks like it carries a secret or is too long, else null. */
@@ -283,6 +292,12 @@ function log(entry, env) {
   } catch {}
 }
 
+/** Asks the bodies in parallel; one that fails fails the whole call, so a verdict never rests on half the answers. */
+async function askAll(provider, bodies) {
+  const parts = await Promise.all(bodies.map((body) => ask(provider, body)));
+  return { answers: Object.assign({}, ...parts.map((part) => part.answers)), ms: Math.max(...parts.map((part) => part.ms)), model: parts[0].model };
+}
+
 /** JSON when the text starts with "{", else the line format. */
 export function parseRequest(text) {
   return text.trim().startsWith("{") ? JSON.parse(text) : text.trim() ? parseLines(text) : null;
@@ -340,11 +355,11 @@ export async function main(args = process.argv.slice(2), env = process.env) {
     console.log(`JEV REQUEST REFUSED: ${error instanceof SyntaxError ? `the request is not valid JSON (${error.message})` : error.message}`);
     return error instanceof Refused ? error.code : 2;
   }
-  const body = toQuestions(request);
-  const refusal = screen(body, provider.key);
+  const bodies = toRequests(request);
+  const refusal = bodies.map((body) => screen(body, provider.key)).find(Boolean);
   if (refusal) { console.log(`JEV REQUEST REFUSED: ${refusal.message}. Nothing was sent.`); return refusal.code; }
   try {
-    const { answers, ms, model } = await ask(provider, body);
+    const { answers, ms, model } = await askAll(provider, bodies);
     if (check) { console.log(`JEV OK: ${provider.name} ${model} answered in ${ms} ms (key from ${provider.source}).`); return 0; }
     const result = verdict(request, answers);
     console.log(`JEV ${request.decision} (${provider.name} ${model}, ${ms} ms)\n${render(request, result)}`);

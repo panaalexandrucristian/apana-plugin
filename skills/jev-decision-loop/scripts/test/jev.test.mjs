@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { Refused, main, normalize, parseLines, parseRequest, render, toQuestions, verdict } from "../jev.mjs";
+import { Refused, main, normalize, parseLines, parseRequest, render, toQuestions, toRequests, verdict } from "../jev.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "jev.mjs");
 const SKILL = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "SKILL.md");
@@ -20,8 +20,8 @@ b: Grep "Log in" in all Kotlin files
 gate in_scope: This edit changes only what the user asked for.
 `;
 
-/** A fake Jev: records every body; answers option a with `probs` and every gate with `noul`. */
-let server; let url; const bodies = []; let probs = { a: 0.9, b: 0.1 }; let noul = 0.95;
+/** A fake Jev: records every body; answers option a with `probs` and every gate with `noul`; answers HTTP 400 to a body that asks the question `failOn`. */
+let server; let url; const bodies = []; let probs = { a: 0.9, b: 0.1 }; let noul = 0.95; let failOn = null;
 before(async () => {
   server = createServer((req, res) => {
     let text = "";
@@ -29,6 +29,11 @@ before(async () => {
     req.on("end", () => {
       const body = JSON.parse(text);
       bodies.push(body);
+      if (failOn && body.questions[failOn]) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: { message: "rejected by the fake" } }));
+        return;
+      }
       const answers = {};
       for (const [id, q] of Object.entries(body.questions)) answers[id] = q.type === "choice" ? { type: "choice", choice: "a", probabilities: probs } : { type: "noul", noul };
       res.setHeader("Content-Type", "application/json");
@@ -118,6 +123,31 @@ describe("gates written from the step line", () => {
     assert.deepEqual(Object.keys(scopeOnly.state), ["task", "facts", "done"]);
   });
 
+  // With the step in the state, the choice leaned to the step even when it was the wrong one: on 20 cases whose step was wrong, 3 requests each,
+  // the top option was the step in 10 of 60 requests, against 0 of 60 with the step only in the statement of `reversible` (PRIVATE.md, round 6).
+  it("asks the choice in a request of its own, without the step in its state, and the gates in one request with the step", () => {
+    const [choice, gates, ...rest] = toRequests(normalize(parseLines(WITH_STEP)));
+    assert.equal(rest.length, 0);
+    assert.deepEqual(Object.keys(choice.questions), ["next"]);
+    assert.deepEqual(Object.keys(choice.state), ["task", "facts", "done"]);
+    assert.deepEqual(Object.keys(gates.questions), ["in_scope", "reversible", "done"]);
+    assert.deepEqual(Object.keys(gates.state), ["task", "facts", "done", "step"]);
+    assert.equal(gates.state.step, STEP);
+  });
+
+  it("keeps one request when the choice and the gates see the same state", () => {
+    const scopeOnly = toRequests(normalize(parseLines(WITH_STEP.replace("gate reversible:\n", ""))));
+    assert.equal(scopeOnly.length, 1);
+    assert.deepEqual(Object.keys(scopeOnly[0].questions), ["next", "in_scope", "done"]);
+    assert.ok(!("step" in scopeOnly[0].state));
+    const gatesOnly = toRequests(normalize(parseLines("decision: d\ntask: t\nstep: Running npm test\ngate reversible:\n")));
+    assert.equal(gatesOnly.length, 1);
+    assert.equal(gatesOnly[0].state.step, "Running npm test");
+    const choiceOnly = toRequests(normalize(parseLines("decision: d\ntask: t\na: one\nb: two\n")));
+    assert.equal(choiceOnly.length, 1);
+    assert.deepEqual(Object.keys(choiceOnly[0].questions), ["next"]);
+  });
+
   it("keeps a statement written after the colon", () => {
     const gates = normalize(parseLines("decision: d\ntask: t\na: one\nb: two\ngate in_scope: Writing answer.json is what the user asked for.\n")).gates;
     assert.equal(gates.in_scope, "Writing answer.json is what the user asked for.");
@@ -200,11 +230,31 @@ describe("CLI", () => {
     bodies.length = 0; probs = { a: 0.9, b: 0.1 }; noul = 0.95;
     const { code, stdout } = await run([], WITH_STEP, { HOME: dir, TYPESAFE_API_KEY: "test-key", TYPESAFE_BASE_URL: url, JEV_DECISION_LOG: join(dir, "d.jsonl") });
     assert.equal(code, 0, stdout);
-    assert.deepEqual(Object.keys(bodies[0].questions), ["next", "in_scope", "reversible", "done"]);
-    assert.match(bodies[0].questions.in_scope.instructions, /^Editing line 12 of strings\.xml .* is exactly what the user asked for\.$/);
-    assert.match(bodies[0].questions.reversible.instructions, / can be undone without losing anything\.$/);
-    assert.match(bodies[0].state.step, /^Editing line 12 of strings\.xml/);
+    assert.equal(bodies.length, 2);
+    const choice = bodies.find((b) => b.questions.next);
+    const gates = bodies.find((b) => b.questions.reversible);
+    assert.deepEqual(Object.keys(choice.questions), ["next"]);
+    assert.ok(!("step" in choice.state));
+    assert.deepEqual(Object.keys(gates.questions), ["in_scope", "reversible", "done"]);
+    assert.match(gates.questions.in_scope.instructions, /^Editing line 12 of strings\.xml .* is exactly what the user asked for\.$/);
+    assert.match(gates.questions.reversible.instructions, / can be undone without losing anything\.$/);
+    assert.match(gates.state.step, /^Editing line 12 of strings\.xml/);
+    assert.match(stdout, /VERDICT: GO a -- Edit app\/src\/main\/res\/values\/strings\.xml line 12/);
     assert.match(stdout, /gate in_scope: 0\.95 yes/);
+  }));
+
+  it("is unavailable, with no verdict from the request that did answer, when one of the two requests fails", () => withTemp(async (dir) => {
+    bodies.length = 0; probs = { a: 0.9, b: 0.1 }; noul = 0.95; failOn = "reversible";
+    const log = join(dir, "d.jsonl");
+    try {
+      const { code, stdout } = await run([], WITH_STEP, { HOME: dir, TYPESAFE_API_KEY: "test-key", TYPESAFE_BASE_URL: url, JEV_DECISION_LOG: log });
+      assert.equal(code, 4, stdout);
+      assert.match(stdout, /^JEV UNAVAILABLE: .*HTTP 400/);
+      assert.doesNotMatch(stdout, /VERDICT: GO/);
+      assert.ok(!existsSync(log));
+    } finally {
+      failOn = null;
+    }
   }));
 
   it("writes the decision log named by the env it is given, not by process.env", () => withTemp(async (dir) => {
