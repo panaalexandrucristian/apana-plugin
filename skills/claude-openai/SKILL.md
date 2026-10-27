@@ -1,7 +1,7 @@
 ---
 name: claude-openai
 description: "Use when running Claude Code with an OpenAI subscription."
-version: 0.2.2
+version: 0.3.0
 author: Hermes Agent
 license: MIT
 platforms: [macos]
@@ -25,7 +25,7 @@ Resolve `<skill-dir>` from `${CLAUDE_SKILL_DIR}` (Claude) or `skill_view.skill_d
 python3 <skill-dir>/scripts/claude_openai.py install
 ```
 
-Run the bundled installer, not a rewritten equivalent. It creates the private state under `~/.local/share/claude-openai`, owned launcher/`.zshrc` alias, browser login when needed, and a live verification. Copying the skill alone does not install anything. Existing `claude`, hooks, project rules and permission mode remain unchanged; existing bridge credentials are reused. When installed, `claude-auto` supplies its instruction rules and opt-outs, not its handoff.
+Run the bundled installer, not a rewritten equivalent. It creates the private state under `~/.local/share/claude-openai`, owned launcher/`.zshrc` alias, browser login when needed, and a live verification. Copying the skill alone does not install anything. Existing `claude`, hooks, project rules and permission mode remain unchanged; existing bridge credentials are reused. When `claude-auto` is installed, an interactive launch runs under it: its instruction rules, opt-outs and context handoff apply, and the new session keeps this model and routing. Print mode, help and subcommands start `claude` directly.
 
 Passwords/2FA stay in the provider UI (use the vault for browser automation). Pause for user consent; never copy existing Hermes/Codex tokens, expose credentials, bypass account controls or silently switch account, provider, paid API key or relay. If paused, stop pending login and wait before reopening the browser. OAuth temporarily listens on port 1455 beyond loopback; use a trusted network.
 

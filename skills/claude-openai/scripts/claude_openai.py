@@ -127,18 +127,18 @@ def launch_spec(inherited, url, key, model, models=()):
                                              for name in picker_models]}}
 
 
-def claude_auto_instructions(args):
-    """Reuse the installed wrapper's rule policy, without starting its handoff loop."""
+def claude_auto_wrapper(args):
+    """The installed wrapper's source when this call should run under its rule and handoff loop; None when it is absent
+    or the call passes through (print mode, help, subcommands). Loaded without starting it."""
     source = Path(shutil.which('claude-auto') or Path.home() / '.claude/claude-auto/claude-auto')
     if not source.is_file():
-        return []
+        return None
     try:
-        shared = runpy.run_path(str(source), run_name='claude_auto_instructions')
-        if shared['passthrough'](args):
-            return []
-        return shared['rule_args'](args)
+        shared = runpy.run_path(str(source), run_name='claude_auto_wrapper')
+        shared['wrapper']
+        return None if shared['passthrough'](args) else source
     except Exception as error:
-        raise RuntimeError('Cannot load claude-auto instructions from ' + str(source) + ': ' + str(error)) from error
+        raise RuntimeError('Cannot load claude-auto wrapper from ' + str(source) + ': ' + str(error)) from error
 
 
 def proxy_environment(inherited, directory):
@@ -208,7 +208,7 @@ def run_claude(state, args, capture=False):
     claude = shutil.which('claude')
     if not claude:
         raise RuntimeError('Claude Code is missing; install the official CLI first')
-    instructions = claude_auto_instructions(args)
+    wrapper = claude_auto_wrapper(args)
     login(state)
     with proxy_session(state) as (url, key, models, run_dir, process):
         available = [m['id'] for m in models if m.get('id', '').startswith('gpt-')]
@@ -227,8 +227,12 @@ def run_claude(state, args, capture=False):
         settings_file = run_dir / 'claude-settings.json'
         private_write(settings_file, json.dumps(settings))
         print('claude-openai: Codex OAuth -> ' + model + ' (private localhost proxy)', file=sys.stderr)
-        return subprocess.run([claude, '--settings', str(settings_file), '--model', model] + instructions + args,
-                              env=env, capture_output=capture, text=True)
+        command = [claude, '--settings', str(settings_file), '--model', model] + args
+        if wrapper:
+            # claude-auto merges its hooks into --settings and appends the rule; its follow-up sessions keep this env and --model
+            command = [sys.executable, str(wrapper)] + command[1:]
+            env['CLAUDE_AUTO_CLAUDE'] = claude
+        return subprocess.run(command, env=env, capture_output=capture, text=True)
 
 
 def uninstall(home, dry_run=False):

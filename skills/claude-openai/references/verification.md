@@ -11,7 +11,7 @@
 - The zsh alias resolved to the separate installed launcher.
 - Unit/integration tests cover private/idempotent installation, login verification, model routing, remote-environment sanitization, asynchronous model readiness, authenticated loopback server and cleanup, uninstall/reinstall, and JSON success validation. Unit mock data is separate from the live session evidence above.
 
-## Shared claude-auto instructions, skill v0.2.2
+## Shared claude-auto instructions, skill v0.2.2 (superseded by v0.3.0 below: the launcher now runs `claude-auto` itself)
 
 - The launcher imports only the installed wrapper's instruction-selection helpers through a non-main module load; it does not start its handoff loop. It passes the resulting append-system-prompt arguments before user arguments. Normal global/project instruction loading remains unchanged.
 - Both new regressions were observed failing before implementation. All 14 tests passed, covering live source rereads, missing/incompatible source, the exact generated argv, and preservation of model routing/settings without adding handoff hooks or permission overrides.
@@ -20,6 +20,16 @@
 - Interactive session `0df20f74-cb4e-4052-a801-1f03dd95131d` ran on `gpt-6-astra`. Its live process command contained exactly one occurrence of the installed source's full rule. Its persisted assistant reply required enumerating all token variants actually present in real data, covering them in the matcher/filter, then diffing old/new outputs on real data and explaining every difference.
 - `.zshrc`, user Claude settings, global `CLAUDE.md`, the `claude-auto` source and the private proxy config retained their original hashes. The installed runtime matched the updated skill source.
 - Sharing instructions does not guarantee model obedience. This change deliberately preserves claude-auto's print-mode omission and opt-outs; it does not add automatic handoffs.
+
+## Handoff rotation under claude-auto, skill v0.3.0
+
+An interactive launch with `claude-auto` installed now runs `claude-auto` with the routing `--settings` file, the selected `--model` and `CLAUDE_AUTO_CLAUDE` set to the real `claude`, so the 150k-token handoff, the pre-tool guard and the appended rule apply to `claude-openai` sessions. Print mode, help, subcommands and an absent `claude-auto` start `claude` directly as before.
+
+- Offline (n=1 run of the bundled suite): 15 tests pass. The two tests that replaced the v0.2.2 ones (wrapper lookup, and the exact argv and environment of the wrapper launch) were observed failing against the v0.2.2 `claude_openai.py` (1 failure, 1 error) and passing with the change.
+- Live, 2026-10-27, Claude Code 2.1.311, the `claude-auto` installed on 2026-10-23, real `claude` on a pty, `CLAUDE_AUTO_TOKENS=1` and `CLAUDE_AUTO_MAX=1`, two short turns, n=2 runs. Both rotated once (11666 tokens at the handoff, measured from `auto.log`), and the transcripts of both sessions show only `gpt-6-astra`. One proxy process served the two sessions, and `claude-auto` sat between the launcher and `claude`.
+  - Run 2 ended with `/exit`: the launcher exited 0, no proxy process and no `session-*` folder were left, and `~/.claude/settings.json` kept its hash.
+  - Run 1 ended with SIGTERM on the launcher: the proxy (`start_new_session`) and its `session-*` folder were left, because `proxy_session` cleans up in a `finally` that SIGTERM skips. That code is not changed here; it was not measured on v0.2.2.
+  - Not measured: the default 150000 limit, a rotation after a long real task, a second rotation.
 
 ## Model picker cleanup, skill v0.2.1
 

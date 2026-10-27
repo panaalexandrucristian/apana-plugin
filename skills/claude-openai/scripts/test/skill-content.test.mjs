@@ -9,7 +9,7 @@ const read = (base, path) => readFileSync(new URL(path, base), "utf8");
 test("ships the subscription bridge skill with its installer, tests and lazy references", () => {
   const text = read(SKILL, "SKILL.md");
   assert.match(text, /^name: claude-openai$/m);
-  assert.match(text, /^version: 0\.2\.2$/m);
+  assert.match(text, /^version: 0\.3\.0$/m);
   assert.match(text, /\$\{CLAUDE_SKILL_DIR\}/);
   assert.doesNotMatch(text, /\/Users\/[^/]+\//);
   for (const path of ["scripts/claude_openai.py", "scripts/test_claude_openai.py",

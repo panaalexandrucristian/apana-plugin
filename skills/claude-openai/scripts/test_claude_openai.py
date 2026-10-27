@@ -98,68 +98,86 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(env['ANTHROPIC_DEFAULT_' + family + '_MODEL'], 'gpt-6-astra')
         self.assertNotIn('availableModels', settings, 'Picker cleanup must not change model permissions')
 
-    def test_auto_instructions_reuse_live_source_without_starting_wrapper(self):
+    def test_claude_auto_wrapper_comes_from_the_live_source_and_is_not_started_by_the_check(self):
         from unittest.mock import patch
         mod = self.module()
-        self.assertTrue(hasattr(mod, 'claude_auto_instructions'), 'Shared instructions are missing')
+        self.assertTrue(hasattr(mod, 'claude_auto_wrapper'), 'Wrapper lookup is missing')
         with tempfile.TemporaryDirectory(dir=ROOT) as td:
             source = Path(td) / 'claude-auto'
-            fixture = ("RULE = 'source-v1'\n"
-                       "def passthrough(args):\n    return '--version' in args\n"
-                       "def rule_args(args):\n    return ['--append-system-prompt', RULE] if args == ['task'] else []\n"
+            fixture = ("def passthrough(args):\n    return '--version' in args\n"
+                       "def wrapper(args):\n    return 0\n"
                        "if __name__ == '__main__':\n    raise RuntimeError('wrapper must not run')\n")
             source.write_text(fixture)
             with patch.object(mod.shutil, 'which', return_value=str(source)):
-                self.assertEqual(mod.claude_auto_instructions(['task']),
-                                 ['--append-system-prompt', 'source-v1'])
-                self.assertEqual(mod.claude_auto_instructions(['--version']), [])
-                self.assertEqual(mod.claude_auto_instructions(['own-prompt']), [])
-                source.write_text(fixture.replace('source-v1', 'source-v2'))
-                self.assertEqual(mod.claude_auto_instructions(['task']),
-                                 ['--append-system-prompt', 'source-v2'])
-                source.write_text('RULE = "missing exports"\n')
-                with self.assertRaisesRegex(RuntimeError, 'claude-auto instructions'):
-                    mod.claude_auto_instructions(['task'])
+                self.assertEqual(mod.claude_auto_wrapper(['task']), source)
+                self.assertIsNone(mod.claude_auto_wrapper(['--version']))
+                source.write_text('def passthrough(args):\n    return False\n')
+                with self.assertRaisesRegex(RuntimeError, 'claude-auto wrapper'):
+                    mod.claude_auto_wrapper(['task'])
             with patch.object(mod.shutil, 'which', return_value=None), \
                  patch.object(mod.Path, 'home', return_value=Path(td)):
-                self.assertEqual(mod.claude_auto_instructions(['task']), [])
+                self.assertIsNone(mod.claude_auto_wrapper(['task']))
                 installed = Path(td) / '.claude/claude-auto/claude-auto'
                 installed.parent.mkdir(parents=True)
                 installed.write_text(fixture)
-                self.assertEqual(mod.claude_auto_instructions(['task']),
-                                 ['--append-system-prompt', 'source-v1'])
+                self.assertEqual(mod.claude_auto_wrapper(['task']), installed)
 
-    def test_run_passes_shared_instructions_before_user_args_without_handoff(self):
+    def run_claude_with(self, td, source_text, user_args):
         from contextlib import contextmanager
         from unittest.mock import patch
         mod = self.module()
+        state = mod.configure(Path(td), '/usr/bin/python3')
+        source = Path(td) / 'claude-auto'
+        if source_text is not None:
+            source.write_text(source_text)
+        @contextmanager
+        def sidecar(_):
+            yield 'http://127.0.0.1:12345', 'local-test-key', [{'id': 'gpt-6-astra'}], state, None
+        with patch.object(mod.os, 'environ', {'PATH': '/unit'}), \
+             patch.object(mod, 'proxy_session', sidecar), patch.object(mod, 'login'), \
+             patch.object(mod.shutil, 'which', side_effect=lambda name: {
+                 'claude': '/opt/bin/claude',
+                 'claude-auto': str(source) if source_text is not None else None}.get(name)), \
+             patch.object(mod.Path, 'home', return_value=Path(td)), \
+             patch.object(mod.subprocess, 'run') as run:
+            run.return_value.returncode = 0
+            mod.run_claude(state, user_args)
+        self.assertEqual(run.call_count, 1)
+        return mod, state, source, run.call_args
+
+    WRAPPER = ("def passthrough(args):\n    return '-p' in args\n"
+               "def wrapper(args):\n    return 0\n"
+               "if __name__ == '__main__':\n    raise RuntimeError('not started by the unit test')\n")
+
+    def test_run_starts_claude_under_the_claude_auto_wrapper_with_routing_in_settings(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as td:
-            state = mod.configure(Path(td), '/usr/bin/python3')
-            source = Path(td) / 'claude-auto'
-            source.write_text("def passthrough(args):\n    return False\n"
-                              "def rule_args(args):\n    return ['--append-system-prompt', 'SHARED_RULE']\n"
-                              "if __name__ == '__main__':\n    raise RuntimeError('no handoff')\n")
-            @contextmanager
-            def sidecar(_):
-                yield 'http://127.0.0.1:12345', 'local-test-key', [{'id': 'gpt-6-astra'}], state, None
             user_args = ['--permission-mode', 'manual', '--', 'do this task']
-            with patch.object(mod.os, 'environ', {'PATH': '/unit'}), \
-                 patch.object(mod, 'proxy_session', sidecar), patch.object(mod, 'login'), \
-                 patch.object(mod.shutil, 'which', side_effect=lambda name: {
-                     'claude': '/opt/bin/claude', 'claude-auto': str(source)}.get(name)), \
-                 patch.object(mod.subprocess, 'run') as run:
-                run.return_value.returncode = 0
-                mod.run_claude(state, user_args)
-                self.assertEqual(run.call_args.args[0], [
-                    '/opt/bin/claude', '--settings', str(state / 'claude-settings.json'),
-                    '--model', 'gpt-6-astra', '--append-system-prompt', 'SHARED_RULE'] + user_args)
-                self.assertEqual(run.call_count, 1)
-                self.assertEqual(run.call_args.kwargs['env']['ANTHROPIC_MODEL'], 'gpt-6-astra')
-                self.assertNotIn('CLAUDE_AUTO_RUN', run.call_args.kwargs['env'])
-                settings = json.loads((state / 'claude-settings.json').read_text())
-                self.assertNotIn('hooks', settings)
-                self.assertNotIn('permissions', settings)
-                self.assertTrue(settings['modelPicker']['replaceBuiltInOptions'])
+            mod, state, source, call = self.run_claude_with(td, self.WRAPPER, user_args)
+            self.assertEqual(call.args[0], [
+                mod.sys.executable, str(source), '--settings', str(state / 'claude-settings.json'),
+                '--model', 'gpt-6-astra'] + user_args)
+            env = call.kwargs['env']
+            self.assertEqual(env['CLAUDE_AUTO_CLAUDE'], '/opt/bin/claude')
+            self.assertEqual(env['ANTHROPIC_MODEL'], 'gpt-6-astra')
+            self.assertEqual(env['ANTHROPIC_BASE_URL'], 'http://127.0.0.1:12345')
+            settings = json.loads((state / 'claude-settings.json').read_text())
+            self.assertEqual(settings['model'], 'gpt-6-astra')
+            self.assertEqual(settings['env']['ANTHROPIC_MODEL'], 'gpt-6-astra')
+            self.assertTrue(settings['modelPicker']['replaceBuiltInOptions'])
+            self.assertNotIn('hooks', settings, 'The wrapper merges its hooks into this file')
+            self.assertNotIn('permissions', settings)
+            self.assertNotIn('--append-system-prompt', call.args[0], 'The wrapper appends the rule itself')
+
+    def test_run_starts_claude_directly_for_print_mode_and_when_claude_auto_is_absent(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as td:
+            mod, state, _, call = self.run_claude_with(td, self.WRAPPER, ['-p', 'hello'])
+            self.assertEqual(call.args[0], ['/opt/bin/claude', '--settings', str(state / 'claude-settings.json'),
+                                            '--model', 'gpt-6-astra', '-p', 'hello'])
+            self.assertNotIn('CLAUDE_AUTO_CLAUDE', call.kwargs['env'])
+        with tempfile.TemporaryDirectory(dir=ROOT) as td:
+            mod, state, _, call = self.run_claude_with(td, None, ['task'])
+            self.assertEqual(call.args[0], ['/opt/bin/claude', '--settings', str(state / 'claude-settings.json'),
+                                            '--model', 'gpt-6-astra', 'task'])
 
     def test_sidecar_requires_local_key_and_is_stopped_on_exit(self):
         import shutil
