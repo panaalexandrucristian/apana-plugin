@@ -67,3 +67,9 @@ The generation checks disable tools and hooks. They test command expansion and a
 - Resumed-session checks on the final command: packaging tests passed (**3, measured; n=3 tests**), plugin validation passed with the existing missing-icon warning, and the full Node suite ran alone and passed again (**767, measured; n=767 tests**, no failures or skips). Log: `/tmp/explica-command-tests-jqVyscCX/npm-test-resumed-71e295e3.log`. Python suites remain unrun for the reason above.
 - At the end of the verification above, no commit, push, tag, release, global command installation or installed-plugin update had been performed.
 - The user subsequently approved the explanation format after a read-only application to another local transcript and requested integration and push to `release/0.4.0`. That application used the command's instructions in the current session, not an installed slash-command invocation. It does not replace the remaining end-to-end lookup coverage.
+
+## Release-branch integration
+
+Integrated the existing `release/0.4.0` tip `caa738b` in this feature worktree, preserving `compact-session` and leaving the other worktree untouched. Description/documentation conflicts were resolved by retaining both features. The prepared release version remains `0.4.0`; no tag or published release is created by this integration.
+
+On the merged tree, the full Node suite ran alone and passed (**857, measured; n=857 tests**, no failures or skips). The native plugin suite also passed (**14, measured; n=14 tests**), and plugin validation passed with the existing missing-icon warning. `git diff --check` passed. The Node log is `/tmp/explica-command-tests-jqVyscCX/npm-test-release-71e295e3.log`. No Python suite was rerun; relative to the existing release branch this integration changes the explanation command, fixtures/tests and documentation, not Python runtime code.

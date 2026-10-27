@@ -14,6 +14,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | Skill | What it does |
 | --- | --- |
 | `apana:compact-handoff` | Writes a compact handoff of the current session (or of a named OpenCode session) for a new session to continue from. |
+| `apana:compact-session` | Compacts the active conversation in the same session, with verified text and recoverable local archives; explicit invocation only. |
 | `apana:class-graph` | Kotlin/Java: where a function starts and ends, who uses a class or member, dependency chains between classes. |
 | `apana:logic-test-debug` | Rules for reading Boolean conditions, testing combined conditions and debugging; started by a hook on code prompts. |
 | `apana:variant-check` | Before a matcher or filter over text is written or changed: lists every distinct variant of the matched token in the real data (script with counts) and requires a before/after diff. |
@@ -28,6 +29,18 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:claude-openai` | Install or verify a separate launcher using an OpenAI subscription through local CLIProxyAPI and Codex OAuth. |
 
 OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.
+
+### Same-session compaction
+
+In an interactive session with Apana's native hook module loaded:
+
+    /apana:compact-session
+
+The skill requests compaction once through its frontmatter Stop hook. The native bridge archives the active API snapshot, verifies a deterministic compact transcript, then replaces the context without `/clear`, restart, a new session or a model-written summary. Recoverable tool content stays in local blobs under `~/.claude/handoffs/`; do not delete those archives while a later context may reference them. Ordinary prose is not summarized. The existing sanitizer remains active and thinking is archive-only, so text verification is not a byte-for-byte API-snapshot guarantee. Unsupported content fails closed.
+
+If the verified replacement would not shrink the prepared transcript, the current context stays in place and the result reports a no-op with measured character counts. The latest outcome also reaches the model with the next accepted prompt. This does not enable automatic compaction on later turns or change `compact-handoff`.
+
+Requires a build supporting native function hooks and custom `session.compact` replacements. Tested runtime: `2.1.311`; the native API is unavailable in headless (`-p`/SDK) runs on that build. An unavailable bridge or API leaves context unchanged, with no fallback to the built-in summarizer. Verification details and limits are in `private/compact-session/VERIFICATION.md`.
 
 ### OpenAI subscription launcher
 
@@ -65,6 +78,8 @@ This is an explicitly invoked Markdown command at `commands/explica-optiuni.md`,
 - the `class-graph` nudge after a bare `/apana:class-graph` (`APANA_CLASS_GRAPH_NUDGE=off` turns it off; `APANA_CLASS_GRAPH_STATE_DIR` moves its state).
 - the explicit `scope` gate, with session state in `~/.claude/apana-scope` (`APANA_SCOPE_STATE_DIR` overrides it).
 
+The same hook manifest also loads `hooks/compact-session.ts`, the native bridge used only after explicit activation of `compact-session`. Its Stop command is scoped to the skill, not registered globally.
+
 `opencode-plugin.js` sets `logic-test-debug` up on OpenCode.
 
 ## Configuration
@@ -83,5 +98,6 @@ The existing environment variables remain compatible and take precedence when ex
     npm run test:claude-auto  # offline Python suites of claude-auto and its installer
     npm run test:claude-scope # Node scope gates and Python legacy-uninstaller tests
     npm run test:claude-openai # offline bridge suite; proxy lifecycle skips if CLIProxyAPI is absent
+    claude plugin test .      # native compact-session hook tests on a supporting build
 
 Node 22 and Python 3 are needed; `class-graph` and `find-usages` also need ripgrep (`rg`). `AGENTS.md` says how to work in this repository.

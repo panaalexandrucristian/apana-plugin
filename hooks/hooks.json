@@ -1,5 +1,6 @@
 {
-  "description": "logic-test-debug directive on code prompts and class-graph nudge on text searches for a class or member name. Context only, never a decision. Local work only; no tests and no model calls.",
+  "description": "Guidance and scope hooks through the command adapter, plus the native bridge for explicitly requested compact-session. Local work only; no model calls.",
+  "modules": ["./compact-session.ts"],
   "hooks": {
     "UserPromptSubmit": [
       {
