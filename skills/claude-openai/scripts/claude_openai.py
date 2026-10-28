@@ -112,6 +112,7 @@ def launch_spec(inherited, url, key, model, models=()):
                  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'):
         env.pop(name, None)
     routing = {'ANTHROPIC_BASE_URL': url, 'ANTHROPIC_AUTH_TOKEN': key,
+               'CLAUDE_CODE_MAX_CONTEXT_TOKENS': '400000',
                'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1',
                'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY': '1'}
     for name in ('ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',

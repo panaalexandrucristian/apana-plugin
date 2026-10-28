@@ -85,6 +85,61 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(settings['env']['ANTHROPIC_AUTH_TOKEN'], 'local-test-key')
         self.assertEqual(settings['model'], 'gpt-6-astra')
 
+    def test_installed_context_limit_is_local_on_fresh_install_and_upgrade(self):
+        import runpy
+        from unittest.mock import patch
+        mod = self.module()
+        name = 'CLAUDE_CODE_MAX_CONTEXT_TOKENS'
+        for upgrade in (False, True):
+            for previous in (None, '200000', '800000'):
+                with self.subTest(upgrade=upgrade, inherited=previous), \
+                     tempfile.TemporaryDirectory(dir=ROOT) as td:
+                    home = Path(td)
+                    rc = home / '.zshrc'
+                    rc.write_text('# keep shell configuration\n')
+                    global_settings = home / '.claude/settings.json'
+                    global_settings.parent.mkdir()
+                    global_settings.write_text('{"env":{"KEEP":"yes"}}\n')
+                    if upgrade:
+                        state = mod.configure(home, '/usr/bin/python3')
+                        installed = state / 'claude_openai.py'
+                        installed.write_text('# previous installed version\n')
+                        auth = state / 'auth/test.json'
+                        auth.write_text('unit-test-credential-placeholder')
+                        config = state / 'proxy.json'
+                        custom = json.loads(config.read_text())
+                        custom['routing']['retry']['request-retry'] = 4
+                        config.write_text(json.dumps(custom))
+                        preserved = {path: path.read_bytes() for path in (rc, auth, config)}
+                    state = mod.configure(home, '/usr/bin/python3')
+                    installed = runpy.run_path(str(state / 'claude_openai.py'), run_name='installed_test')
+                    inherited = {'PATH': '/unit'}
+                    if previous is not None:
+                        inherited[name] = previous
+                    with patch.dict(os.environ, inherited, clear=True):
+                        before = dict(os.environ)
+                        env, settings = installed['launch_spec'](
+                            os.environ, 'http://127.0.0.1:12345', 'local-test-key', 'gpt-6-astra')
+                        self.assertEqual(dict(os.environ), before)
+                    self.assertEqual(env.get(name), '400000')
+                    self.assertEqual(settings['env'].get(name), '400000')
+                    self.assertNotIn(name, rc.read_text())
+                    self.assertEqual(global_settings.read_text(), '{"env":{"KEEP":"yes"}}\n')
+                    if upgrade:
+                        for path, content in preserved.items():
+                            self.assertEqual(path.read_bytes(), content)
+
+    def test_context_limit_reaches_direct_and_wrapped_launches(self):
+        name = 'CLAUDE_CODE_MAX_CONTEXT_TOKENS'
+        for wrapper in (None, self.WRAPPER):
+            for args in (['task'], ['-p', 'hello']):
+                with self.subTest(wrapper=wrapper is not None, args=args), \
+                     tempfile.TemporaryDirectory(dir=ROOT) as td:
+                    _, state, _, call = self.run_claude_with(td, wrapper, args)
+                    self.assertEqual(call.kwargs['env'].get(name), '400000')
+                    settings = json.loads((state / 'claude-settings.json').read_text())
+                    self.assertEqual(settings['env'].get(name), '400000')
+
     def test_launch_spec_replaces_duplicate_family_rows_with_gateway_model(self):
         mod = self.module()
         env, settings = mod.launch_spec({}, 'http://127.0.0.1:12345',

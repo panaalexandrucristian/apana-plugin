@@ -27,6 +27,8 @@ python3 <skill-dir>/scripts/claude_openai.py install
 
 Run the bundled installer, not a rewritten equivalent. It creates the private state under `~/.local/share/claude-openai`, owned launcher/`.zshrc` alias, browser login when needed, and a live verification. Copying the skill alone does not install anything. Existing `claude`, hooks, project rules and permission mode remain unchanged; existing bridge credentials are reused. When `claude-auto` is installed, an interactive launch runs under it: its instruction rules, opt-outs and context handoff apply, and the new session keeps this model and routing. Print mode, help and subcommands start `claude` directly.
 
+The launcher sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS=400000` in its child environment and session-local settings only. Separately started `claude` sessions, the parent shell and global settings stay unchanged. This fixed client limit also applies to helper models and survives supervised handoffs; it is not per-model capacity discovery or proof that the provider accepts a full window. Re-run this installer after updating the plugin to refresh an existing launcher while retaining credentials and proxy configuration.
+
 Passwords/2FA stay in the provider UI (use the vault for browser automation). Pause for user consent; never copy existing Hermes/Codex tokens, expose credentials, bypass account controls or silently switch account, provider, paid API key or relay. If paused, stop pending login and wait before reopening the browser. OAuth temporarily listens on port 1455 beyond loopback; use a trusted network.
 
 ## Commands and verification
