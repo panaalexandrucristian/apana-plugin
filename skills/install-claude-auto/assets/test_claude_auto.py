@@ -1643,5 +1643,119 @@ class SystemPromptRule(unittest.TestCase):
         self.assertEqual(self.calls()[0]["argv"], ["-p", "say hi"])
 
 
+class ReloadedSkills(unittest.TestCase):
+    """CLAUDE_AUTO_SKILLS: which skills of the closed session make_context.py asks the new one to load again."""
+    LOADED = "apana:logic-test-debug,android-cli,plugin-authoring"     # the two name shapes of real sessions: plugin:skill and plain
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.stub = write_script(os.path.join(cls.tmp, "mc_skills.py"), """
+            import json, os, sys
+            a = sys.argv[1:]
+            open(os.environ["STUB_ARGV"], "a").write(json.dumps(a) + "\\n")
+            if "--list-skills" in a:
+                if os.environ.get("STUB_LIST_FAIL"):
+                    sys.stderr.write("boom"); sys.exit(1)
+                names = [n for n in os.environ.get("STUB_SKILLS", "").split(",") if n]
+                for n in names:
+                    print("skill: %s | 100 characters" % n)
+                print("skills loaded: %d | %d characters of skill text" % (len(names), 100 * len(names)) if names else "skills loaded: none")
+                sys.exit(0)
+            os.makedirs(a[1], exist_ok=True); open(os.path.join(a[1], "HANDOFF.md"), "w").write("# note")
+            """)
+        cls.m = load()
+        cls.n = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, True)
+
+    def hand_off(self, want, loaded=None, list_fails=False):
+        """(argv of every make_context.py call, auto.log, whether HANDOFF.md was written) for one hand-off with CLAUDE_AUTO_SKILLS=want."""
+        type(self).n += 1
+        root = os.path.join(self.tmp, "r%d" % self.n)
+        run = os.path.join(root, "run")
+        os.makedirs(run)
+        env = {"CLAUDE_AUTO_DIR": os.path.join(root, "base"), "CLAUDE_AUTO_TOKENS": "1", "CLAUDE_AUTO_RUN": run,
+               "CLAUDE_AUTO_MAKE_CONTEXT": self.stub, "STUB_ARGV": os.path.join(root, "argv"),
+               "STUB_SKILLS": self.LOADED if loaded is None else loaded}
+        if list_fails:
+            env["STUB_LIST_FAIL"] = "1"
+        if want is not None:
+            env["CLAUDE_AUTO_SKILLS"] = want
+        payload = {"hook_event_name": "PostToolUse", "session_id": "s", "cwd": "/w",
+                   "transcript_path": transcript(os.path.join(root, "t.jsonl"), 500)}
+        with mock.patch.dict(os.environ, env):
+            if want is None:
+                os.environ.pop("CLAUDE_AUTO_SKILLS", None)
+            self.m.handle(payload)
+        while self.m.HELD:
+            self.m.HELD.pop().close()
+        calls = [json.loads(line) for line in open(env["STUB_ARGV"])]
+        log = os.path.join(root, "base", "auto.log")
+        return calls, (open(log).read() if os.path.isfile(log) else ""), os.path.isfile(json.load(open(os.path.join(run, "signal.json")))["handoff"])
+
+    def options(self, calls):
+        """The options after SESSION and OUT in the call that writes the handoff."""
+        made = [c for c in calls if "--list-skills" not in c]
+        self.assertEqual(len(made), 1)
+        return made[0][2:]
+
+    def test_no_skills_by_default_and_for_every_spelling_of_none(self):
+        for want in (None, "", "   ", "none", "None", "NONE", " none "):
+            with self.subTest(want=want):
+                calls, log, written = self.hand_off(want)
+                self.assertEqual(self.options(calls), ["--no-skills"])
+                self.assertEqual(len(calls), 1, "the skills are not listed when none are wanted")
+                self.assertTrue(written)
+
+    def test_all_passes_no_skills_option(self):
+        for want in ("all", "All", "ALL", " all "):
+            with self.subTest(want=want):
+                calls, log, written = self.hand_off(want)
+                self.assertEqual(self.options(calls), [])
+                self.assertEqual(len(calls), 1)
+                self.assertTrue(written)
+
+    def test_named_skills_keep_their_order_and_both_name_shapes(self):
+        for want, expect in (("apana:logic-test-debug", "apana:logic-test-debug"), ("android-cli", "android-cli"),
+                             ("android-cli,apana:logic-test-debug", "android-cli,apana:logic-test-debug"),
+                             (" android-cli , android-cli ,, plugin-authoring ", "android-cli,plugin-authoring"),
+                             (self.LOADED, self.LOADED)):
+            with self.subTest(want=want):
+                calls, log, written = self.hand_off(want)
+                self.assertEqual(self.options(calls), ["--skills", expect])
+                self.assertTrue(any("--list-skills" in c for c in calls))
+                self.assertNotIn("left out", log)
+                self.assertTrue(written)
+
+    def test_a_name_the_session_did_not_load_is_left_out_and_logged(self):
+        calls, log, written = self.hand_off("android-cli,ghost")
+        self.assertEqual(self.options(calls), ["--skills", "android-cli"])
+        self.assertIn("left out: ghost", log)
+        self.assertTrue(written)
+
+    def test_names_match_whole_so_a_bare_name_is_not_the_plugin_skill(self):
+        calls, log, written = self.hand_off("logic-test-debug,apana")
+        self.assertEqual(self.options(calls), ["--no-skills"])
+        self.assertIn("left out: logic-test-debug, apana", log)
+        self.assertTrue(written)
+
+    def test_nothing_left_after_the_filter_means_no_skills(self):
+        for loaded in ("", "other-skill"):
+            with self.subTest(loaded=loaded):
+                calls, log, written = self.hand_off("android-cli", loaded=loaded)
+                self.assertEqual(self.options(calls), ["--no-skills"])
+                self.assertIn("left out: android-cli", log)
+                self.assertTrue(written)
+
+    def test_a_failing_list_does_not_cost_the_handoff(self):
+        calls, log, written = self.hand_off("android-cli", list_fails=True)
+        self.assertEqual(self.options(calls), ["--no-skills"])
+        self.assertIn("--list-skills exit 1", log)
+        self.assertTrue(written)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

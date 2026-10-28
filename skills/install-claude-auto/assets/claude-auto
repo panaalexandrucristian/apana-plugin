@@ -42,6 +42,10 @@ Env (all optional)
   CLAUDE_AUTO_RULE           off (or 0) stops claude-auto from appending the variant-check rule to the system prompt of
                              every session it starts (default on; skipped when you pass your own --append-system-prompt
                              or --append-system-prompt-file)
+  CLAUDE_AUTO_SKILLS         which skills the new session loads again from the one that is closed: none (default; the
+                             handoff carries no skill text), all (every skill the old session loaded), or NAME,NAME
+                             (only those, whole names as make_context.py --list-skills prints them, e.g.
+                             "apana:logic-test-debug,android-cli"; a name the old session did not load is left out and logged)
   CLAUDE_AUTO_MAX            handoffs per run (default 0 = unlimited); after that claude runs without the hook
   CLAUDE_AUTO_COOLDOWN       seconds between two handoffs of one run (default 60: limits the frequency if the new session
                              is itself over the threshold because the note is large)
@@ -191,6 +195,35 @@ def find_make_context():
     # the version is the 3rd folder under the cache (<marketplace>/apana/<version>); a split on "/apana/" would also match a home folder named apana
     found.sort(key=lambda f: [int(x) if x.isdigit() else 0 for x in os.path.relpath(f, cache).split("/")[2].split(".")])
     return found[-1] if found else None
+
+
+def skills_args(script, transcript):
+    """The make_context.py options for CLAUDE_AUTO_SKILLS: none (also unset or empty) -> --no-skills; all -> no option;
+    NAME,NAME -> --skills with the names that the session loaded. make_context.py stops on a name it did not find, which
+    would cost the whole handoff, so the others are left out and logged; with none left, or when --list-skills fails, the
+    handoff goes out with --no-skills."""
+    want = os.environ.get("CLAUDE_AUTO_SKILLS", "").strip()
+    if want.lower() in ("", "none"):
+        return ["--no-skills"]
+    if want.lower() == "all":
+        return []
+    names = list(dict.fromkeys(n.strip() for n in want.split(",") if n.strip()))
+    try:
+        r = subprocess.run([sys.executable, script, transcript, "--list-skills"], capture_output=True, text=True,
+                           timeout=min(30, env_num("CLAUDE_AUTO_MAKE_TIMEOUT", 90)))
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log("CLAUDE_AUTO_SKILLS=%s: --list-skills failed (%s); no skills reloaded" % (want, e))
+        return ["--no-skills"]
+    if r.returncode != 0:
+        log("CLAUDE_AUTO_SKILLS=%s: --list-skills exit %s: %s; no skills reloaded" % (want, r.returncode, (r.stderr or r.stdout)[-200:].strip()))
+        return ["--no-skills"]
+    loaded = [line[len("skill: "):].rsplit(" | ", 1)[0] for line in r.stdout.splitlines()
+              if line.startswith("skill: ") and line.endswith(" characters") and " | " in line]
+    chosen = [n for n in names if n in loaded]
+    if len(chosen) < len(names):
+        log("CLAUDE_AUTO_SKILLS: not loaded by this session, left out: %s (loaded: %s)" % (
+            ", ".join(n for n in names if n not in loaded), ", ".join(loaded) or "none"))
+    return ["--skills", ",".join(chosen)] if chosen else ["--no-skills"]
 
 
 def safe(s):
@@ -470,8 +503,8 @@ def handle(d):
         return None
     out = handoff_dir(sid)
     try:
-        r = subprocess.run([sys.executable, script, transcript, out], capture_output=True, text=True,
-                           timeout=env_num("CLAUDE_AUTO_MAKE_TIMEOUT", 90))
+        r = subprocess.run([sys.executable, script, transcript, out, *skills_args(script, transcript)],
+                           capture_output=True, text=True, timeout=env_num("CLAUDE_AUTO_MAKE_TIMEOUT", 90))
     except (subprocess.TimeoutExpired, OSError) as e:
         log("make_context.py failed: %s" % e)
         shutil.rmtree(out, ignore_errors=True)
