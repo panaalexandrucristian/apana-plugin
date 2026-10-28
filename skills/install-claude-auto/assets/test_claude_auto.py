@@ -1579,6 +1579,24 @@ class ResumeFlags(unittest.TestCase):
                     self.assertEqual(c[1]["argv"][-2], "--")
                     self.assertIn("HANDOFF.md", c[1]["argv"][-1])
 
+    def test_resume_fork_is_kept_only_on_the_first_launch(self):
+        for delimited in (False, True):
+            for fork in (False, True):
+                with self.subTest(delimited=delimited, fork=fork):
+                    self.fresh_state()
+                    args = ["--model", "opus", "--resume", "s-1"]
+                    if fork:
+                        args += ["--fork-session"]
+                    if delimited:
+                        args += ["--", "go on"]
+                    r = self.wrap(*args, FAKE_MODE="handoff")
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    c = self.calls()
+                    self.assertEqual(len(c), 2, r.stderr)
+                    self.assertEqual(c[0]["argv"][2:], args)
+                    self.assertEqual(c[1]["argv"][2:-2], ["--model", "opus"])
+                    self.assertIn("HANDOFF.md", c[1]["argv"][-1])
+
     def test_a_prompt_that_looks_like_a_picking_flag_keeps_the_bootstrap(self):
         r = self.wrap("--model", "sonnet", "--", "--resume", FAKE_MODE="bootstrap")
         self.assertEqual(r.returncode, 0, r.stderr)

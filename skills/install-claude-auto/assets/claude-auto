@@ -641,7 +641,7 @@ def without_session_pick(head):
     kept, i = [], 0
     while i < len(head):
         name, eq, _ = head[i].partition("=")
-        n = PICK_SESSION.get(name)
+        n = 0 if name == "--fork-session" else PICK_SESSION.get(name)
         if n is None:
             kept.append(head[i])
         elif not eq and i + 1 < len(head) and (n == 1 or n == 2 and not head[i + 1].startswith("-")):
