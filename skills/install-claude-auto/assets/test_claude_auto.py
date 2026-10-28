@@ -1524,6 +1524,70 @@ class Sticky(unittest.TestCase):
                 self.assertEqual(m.sticky_args(args), want)
 
 
+class ResumeFlags(unittest.TestCase):
+    """A session picked with --resume, --continue and the like starts as typed, and no later session of the run picks it again."""
+    wrap, calls = Wrapper.wrap, Wrapper.calls
+    PICKS = (["--resume", "s-1"], ["-r", "s-1"], ["--resume=s-1"], ["--resume"], ["-c"], ["--continue"],
+             ["--from-pr", "12"], ["--from-pr=12"], ["--teleport", "t-1"], ["--session-id", "11111111-2222-3333-4444-555555555555"])
+
+    def setUp(self):
+        Wrapper.setUp(self)
+        self.env["CLAUDE_AUTO_BOOTSTRAP"] = "1"       # the default: a warm-up session first, unless the user picks a session
+
+    def fresh_state(self):
+        shutil.rmtree(self.state)
+        os.makedirs(self.state)
+
+    def test_selects_session_and_session_args(self):
+        m = load()
+        for args, picks, kept in (
+                ([], False, []), (["fix the bug"], False, []), (["--model", "opus"], False, ["--model", "opus"]),
+                (["--resume", "s-1"], True, []), (["--model", "opus", "-r", "s-1"], True, ["--model", "opus"]),
+                (["--resume=s-1", "--verbose"], True, ["--verbose"]), (["--resume"], True, []), (["-c", "--chrome"], True, ["--chrome"]),
+                (["--from-pr", "12"], True, []), (["--session-id", "u"], True, []), (["--teleport"], True, []),
+                (["--", "--resume", "s-1"], False, []), (["--model", "opus", "--", "-c"], False, ["--model", "opus"])):
+            with self.subTest(args=args):
+                self.assertEqual(m.selects_session(args), picks)
+                self.assertEqual(m.session_args(args), kept)
+        # the delimited form keeps every other flag, and the optional value of the picking flag goes with it
+        self.assertEqual(m.session_args(["--add-dir", "/src", "--resume", "s-1", "--model", "opus", "--", "go"]),
+                         ["--add-dir", "/src", "--model", "opus"])
+        self.assertEqual(m.session_args(["--resume", "--model", "opus", "--", "go"]), ["--model", "opus"])
+
+    def test_the_first_run_gets_the_picking_flags_as_typed_with_the_default_bootstrap(self):
+        for picks in self.PICKS:
+            for args in (picks, ["--model", "opus"] + picks, picks + ["--model", "opus"], picks + ["--", "go on"]):
+                with self.subTest(args=args):
+                    self.fresh_state()
+                    r = self.wrap(*args)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    c = self.calls()
+                    self.assertEqual(len(c), 1, r.stderr)
+                    self.assertEqual(c[0]["argv"][2:], args)
+
+    def test_the_handoff_after_a_picked_session_starts_a_new_one_with_the_note(self):
+        for picks in self.PICKS:
+            for args in (["--model", "opus"] + picks, ["--model", "opus"] + picks + ["--", "go on"]):
+                with self.subTest(args=args):
+                    self.fresh_state()
+                    r = self.wrap(*args, FAKE_MODE="handoff")
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    c = self.calls()
+                    self.assertEqual(len(c), 2, r.stderr)
+                    self.assertEqual(c[0]["argv"][2:], args)
+                    self.assertEqual(c[1]["argv"][2:-2], ["--model", "opus"])
+                    self.assertEqual(c[1]["argv"][-2], "--")
+                    self.assertIn("HANDOFF.md", c[1]["argv"][-1])
+
+    def test_a_prompt_that_looks_like_a_picking_flag_keeps_the_bootstrap(self):
+        r = self.wrap("--model", "sonnet", "--", "--resume", FAKE_MODE="bootstrap")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        c = self.calls()
+        self.assertEqual(len(c), 2, r.stderr)
+        self.assertEqual(c[0]["argv"][2:], ["--model", "sonnet", "--", "Răspunde exact: ANCHOR_READY"])
+        self.assertEqual(c[1]["argv"][2:], ["--model", "sonnet", "--resume", "anchor-123", "--fork-session", "--", "--resume"])
+
+
 class SystemPromptRule(unittest.TestCase):
     """The variant-check rule appended to the system prompt of every session claude-auto starts."""
     wrap, calls = Wrapper.wrap, Wrapper.calls

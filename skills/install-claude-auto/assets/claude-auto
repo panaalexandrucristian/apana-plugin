@@ -78,6 +78,8 @@ VARIANT_RULE = ("Before writing any matcher or filter over text records, list ev
                 "that actually occurs in the real data and handle each one; after the change, diff your output against "
                 "the old output on real data and explain every difference.")
 OWN_SYSTEM_PROMPT = ("--append-system-prompt", "--append-system-prompt-file")
+# Flags that pick the session a run starts from: 0 = no value, 1 = one value, 2 = a value only when the next argument is not a flag.
+PICK_SESSION = {"-c": 0, "--continue": 0, "-r": 2, "--resume": 2, "--from-pr": 2, "--teleport": 2, "--session-id": 1}
 # What a terminal UI may leave on after it is killed: cursor, bracketed paste, focus reports, kitty keyboard, mouse.
 TERMINAL_RESET = "\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[<u\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
 PENDING_CHUNK = 24000    # characters per pending file: one Read in the next session must open it (25000-token cap)
@@ -595,11 +597,32 @@ def rule_args(*arglists):
     return ["--append-system-prompt", VARIANT_RULE]
 
 
+def selects_session(args):
+    """True when the flags before `--` pick the session to start from (--resume, --continue, ...)."""
+    head = args[:args.index("--")] if "--" in args else args
+    return any(a.partition("=")[0] in PICK_SESSION for a in head)
+
+
+def without_session_pick(head):
+    """head without the flags that pick a session, and their values: a follow-up session must not open the old one again."""
+    kept, i = [], 0
+    while i < len(head):
+        name, eq, _ = head[i].partition("=")
+        n = PICK_SESSION.get(name)
+        if n is None:
+            kept.append(head[i])
+        elif not eq and i + 1 < len(head) and (n == 1 or n == 2 and not head[i + 1].startswith("-")):
+            i += 1
+        i += 1
+    return kept
+
+
 def session_args(args):
-    """Keep every explicit session-shaping argument before `--`; callers with variadic flags must delimit the prompt."""
+    """Keep every explicit session-shaping argument before `--`, except the ones that pick a session; callers with
+    variadic flags must delimit the prompt."""
     if "--" not in args:
         return sticky_args(args)
-    head, kept, i = args[:args.index("--")], [], 0
+    head, kept, i = without_session_pick(args[:args.index("--")]), [], 0
     while i < len(head):
         if head[i] == "--settings":
             i += 2
@@ -844,7 +867,8 @@ def wrapper(args):
         signal.signal(signal.SIGHUP, on_term_signal)
         rule = rule_args(first_args, next_args)      # decided once: the same system prompt in every session of the run
         anchor = os.environ.get("CLAUDE_AUTO_ANCHOR_ID")
-        bootstrap = not bool(anchor) and os.environ.get("CLAUDE_AUTO_BOOTSTRAP", "1") != "0"
+        # The warm-up session would start a new one and drop the flags that pick the user's; then the first run is as typed.
+        bootstrap = not bool(anchor) and os.environ.get("CLAUDE_AUTO_BOOTSTRAP", "1") != "0" and not selects_session(first_args)
         work_prompt = initial_prompt(first_args)
         handoffs, cwd = 0, None
         argv = next_args + ["--", "Răspunde exact: ANCHOR_READY"] if bootstrap else first_args
