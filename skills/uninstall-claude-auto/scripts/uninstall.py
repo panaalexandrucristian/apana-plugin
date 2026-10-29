@@ -15,7 +15,7 @@ import argparse, os, re, shutil, stat, subprocess, sys, tempfile
 
 START = "# >>> claude-auto >>>"
 END = "# <<< claude-auto <<<"
-FILES = ("claude-auto", "test_claude_auto.py")
+FILES = ("claude-auto", "test_claude_auto.py", "claude_auto_managed.py", "test_managed.py")
 ENC = dict(encoding="utf-8", errors="surrogateescape", newline="")   # keep every byte and line ending of the rc as is
 
 problems = []
@@ -126,7 +126,7 @@ def remove_cooperation(target, dry):
         return True
     remaining = set(os.listdir(root))
     for directory, names in ((".claude-plugin", ("plugin.json",)),
-                             ("hooks", ("hooks.json", "register.ts")), ("scripts", ("registry.py",)),
+                             ("hooks", ("hooks.json", "register.ts")), ("scripts", ("registry.py", "managed_mcp.py")),
                              ("types", ("index.d.ts",))):
         folder = os.path.join(root, directory)
         if os.path.islink(folder) or not os.path.isdir(folder):

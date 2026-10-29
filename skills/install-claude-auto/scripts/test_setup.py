@@ -12,7 +12,8 @@ ASSETS = os.path.join(HERE, "..", "assets")
 START, END = "# >>> claude-auto >>>", "# <<< claude-auto <<<"
 ORIGINALS = [b"", b"a\n", b"a", b"a\n\n", b"a\nb\n", b"a\r\nb\r\n", b"\xff\xfe=\n", b"export X=1\n\n\n"]
 COOPERATION_FILES = (".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.ts", "scripts/registry.py",
-                     "types/index.d.ts")
+                     "scripts/managed_mcp.py", "types/index.d.ts")
+LAUNCHER_FILES = ("claude-auto", "test_claude_auto.py", "claude_auto_managed.py", "test_managed.py")
 
 
 class Setup(unittest.TestCase):
@@ -64,7 +65,7 @@ class Setup(unittest.TestCase):
 class Install(Setup):
     def test_fresh_install_copies_files_and_creates_the_rc(self):
         out = self.ok(self.install())
-        files = (("claude-auto", 0o755), ("test_claude_auto.py", 0o644)) + tuple(
+        files = tuple((name, 0o755 if name == "claude-auto" else 0o644) for name in LAUNCHER_FILES) + tuple(
             ("cooperation/" + name, 0o644) for name in COOPERATION_FILES)
         for name, mode in files:
             p = os.path.join(self.target, name)
@@ -83,11 +84,12 @@ class Install(Setup):
         os.makedirs(scripts)
         os.makedirs(assets)
         shutil.copy(INSTALL, os.path.join(scripts, "install.py"))
-        for name in ("claude-auto", "test_claude_auto.py"):
+        for name in LAUNCHER_FILES:
             shutil.copy(os.path.join(ASSETS, name), assets)
         files = {".claude-plugin/plugin.json": b'{"name":"cooperation"}\n',
                  "hooks/hooks.json": b'{}\n', "hooks/register.ts": b'// native fixture\n',
                  "scripts/registry.py": b'# registry fixture\n',
+                 "scripts/managed_mcp.py": b'# managed bridge fixture\n',
                  "types/index.d.ts": b'// persistent state contract\n'}
         for name, content in files.items():
             path = os.path.join(assets, "cooperation", name)
@@ -125,6 +127,16 @@ class Install(Setup):
         self.ok(self.run_script(script))
         self.assertEqual(open(os.path.join(self.target, "cooperation/hooks/register.ts")).read(), "// changed\n")
         self.assertEqual(open(unknown).read(), "not owned")
+
+    def test_run_tests_checks_both_launcher_modes(self):
+        script, assets, _ = self.fake_installer()
+        with open(os.path.join(assets, 'test_claude_auto.py'), 'w') as f:
+            f.write('print("LEGACY_SUITE")\n')
+        with open(os.path.join(assets, 'test_managed.py'), 'w') as f:
+            f.write('print("MANAGED_SUITE_FAILED")\nraise SystemExit(1)\n')
+        out = self.ok(self.run_script(script, '--run-tests'), 1)
+        self.assertIn('LEGACY_SUITE', out)
+        self.assertIn('MANAGED_SUITE_FAILED', out)
 
     def test_cooperation_missing_source_fails_before_install(self):
         script, assets, _ = self.fake_installer()
@@ -175,7 +187,7 @@ class Install(Setup):
         out = self.ok(self.install())
         self.assertEqual((self.read_rc(), os.stat(self.rc).st_mtime_ns), first)
         self.assertIn("already there", out)
-        self.assertEqual(out.count("unchanged"), 2 + len(COOPERATION_FILES))
+        self.assertEqual(out.count("unchanged"), len(LAUNCHER_FILES) + len(COOPERATION_FILES))
 
     def test_stale_install_is_updated(self):
         os.makedirs(self.target)

@@ -1833,8 +1833,11 @@ class ReloadedSkills(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, True)
 
-    def hand_off(self, want, loaded=None, list_fails=False):
-        """(argv of every make_context.py call, auto.log, whether HANDOFF.md was written) for one hand-off with CLAUDE_AUTO_SKILLS=want."""
+    def hand_off(self, want, loaded=None, list_fails=False, mention=None):
+        """(argv of every make_context.py call, auto.log, whether HANDOFF.md was written) for one hand-off with CLAUDE_AUTO_SKILLS=want.
+        `mention` is a text added to the transcript; a loaded skill is mentioned there by its own name, as in a real one."""
+        if mention is None and loaded:
+            mention = " ".join(n for n in loaded.split(",") if "caveman" in n)
         type(self).n += 1
         root = os.path.join(self.tmp, "r%d" % self.n)
         run = os.path.join(root, "run")
@@ -1848,6 +1851,9 @@ class ReloadedSkills(unittest.TestCase):
             env["CLAUDE_AUTO_SKILLS"] = want
         payload = {"hook_event_name": "PostToolUse", "session_id": "s", "cwd": "/w",
                    "transcript_path": transcript(os.path.join(root, "t.jsonl"), 500)}
+        if mention:
+            with open(payload["transcript_path"], "a") as f:      # the stub lists the skills, so only the bytes of the name matter here
+                f.write('{"type":"user","message":{"content":"%s"}}\\n' % mention)
         with mock.patch.dict(os.environ, env):
             if want is None:
                 os.environ.pop("CLAUDE_AUTO_SKILLS", None)
@@ -1869,7 +1875,7 @@ class ReloadedSkills(unittest.TestCase):
             with self.subTest(want=want):
                 calls, log, written = self.hand_off(want)
                 self.assertEqual(self.options(calls), ["--no-skills"])
-                self.assertEqual(len(calls), 1, "the skills are not listed when none are wanted")
+                self.assertEqual(len(calls), 1, "the skills are not listed when none are wanted and the transcript has no kept skill")
                 self.assertTrue(written)
 
     def test_all_passes_no_skills_option(self):
@@ -1917,6 +1923,47 @@ class ReloadedSkills(unittest.TestCase):
         self.assertEqual(self.options(calls), ["--no-skills"])
         self.assertIn("--list-skills exit 1", log)
         self.assertTrue(written)
+
+    def test_a_failing_list_with_none_wanted_does_not_cost_the_handoff(self):
+        for want in (None, "none"):
+            with self.subTest(want=want):
+                calls, log, written = self.hand_off(want, loaded=self.LOADED + ",caveman", list_fails=True)
+                self.assertEqual(self.options(calls), ["--no-skills"])
+                self.assertIn("CLAUDE_AUTO_SKILLS=none: --list-skills exit 1", log)
+                self.assertTrue(written)
+
+    def test_caveman_is_reloaded_whatever_is_wanted_when_the_session_loaded_it(self):
+        loaded = self.LOADED + ",caveman"
+        for want, expect in ((None, "caveman"), ("", "caveman"), ("none", "caveman"), ("android-cli", "android-cli,caveman"),
+                             ("caveman,android-cli", "caveman,android-cli"), ("caveman", "caveman")):
+            with self.subTest(want=want):
+                calls, log, written = self.hand_off(want, loaded=loaded)
+                self.assertEqual(self.options(calls), ["--skills", expect])
+                self.assertNotIn("left out", log)
+                self.assertTrue(written)
+
+    def test_caveman_is_matched_by_the_last_part_of_the_name_only(self):
+        for loaded, expect in (("android-cli,apana:caveman", "apana:caveman"), ("caveman:caveman,android-cli", "caveman:caveman"),
+                               ("caveman-commit,android-cli", None), ("not-caveman,apana:caveman-compress", None)):
+            with self.subTest(loaded=loaded):
+                calls, log, written = self.hand_off(None, loaded=loaded)
+                self.assertEqual(self.options(calls), ["--skills", expect] if expect else ["--no-skills"])
+                self.assertTrue(written)
+
+    def test_a_mention_without_a_load_is_listed_but_reloads_nothing(self):
+        calls, log, written = self.hand_off(None, mention="turn on caveman mode")
+        self.assertEqual(self.options(calls), ["--no-skills"])
+        self.assertTrue(any("--list-skills" in c for c in calls), "make_context.py decides, not the guard")
+        self.assertTrue(written)
+
+    def test_the_guard_finds_the_name_anywhere_and_not_in_a_missing_or_empty_file(self):
+        path = os.path.join(self.tmp, "guard.jsonl")
+        for body, expect in ((b"x" * 5000 + b"caveman" + b"y", True), (b"caveman", True), (b"x" * 5000 + b"cavemaN", False), (b"", False)):
+            with self.subTest(body=body[-12:]):
+                with open(path, "wb") as f:
+                    f.write(body)
+                self.assertEqual(self.m.mentions_kept_skill(path), expect)
+        self.assertFalse(self.m.mentions_kept_skill(os.path.join(self.tmp, "missing.jsonl")))
 
 
 if __name__ == "__main__":

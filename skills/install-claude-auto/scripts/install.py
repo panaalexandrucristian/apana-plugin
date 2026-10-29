@@ -21,8 +21,9 @@ BLOCK = (START + "\n"
          + END + "\n")
 # Runtime bundle only: generated native types, caches and development tests are never installed.
 COOPERATION_FILES = (".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.ts", "scripts/registry.py",
-                     "types/index.d.ts")
-FILES = (("claude-auto", 0o755), ("test_claude_auto.py", 0o644)) + tuple(
+                     "scripts/managed_mcp.py", "types/index.d.ts")
+FILES = (("claude-auto", 0o755), ("test_claude_auto.py", 0o644),
+         ("claude_auto_managed.py", 0o644), ("test_managed.py", 0o644)) + tuple(
     ("cooperation/" + name, 0o644) for name in COOPERATION_FILES)
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 ENC = dict(encoding="utf-8", errors="surrogateescape", newline="")   # keep every byte and line ending of the rc as is
@@ -194,14 +195,15 @@ def check_environment(home, script):
 
 def run_tests(target):
     say("info", "running the test suite (about a minute)")
-    r = subprocess.run([sys.executable, "-W", "ignore", os.path.join(target, "test_claude_auto.py")], cwd=target,
-                       capture_output=True, text=True, timeout=900)
-    shutil.rmtree(os.path.join(target, "__pycache__"), ignore_errors=True)
-    tail = (r.stderr or r.stdout).strip().splitlines()[-4:]
-    if r.returncode == 0:
-        say("ok", "tests passed: %s" % " | ".join(t for t in tail if t.strip()))
-    else:
-        attention("tests failed:\n      " + "\n      ".join(tail))
+    for suite in ("test_claude_auto.py", "test_managed.py"):
+        r = subprocess.run([sys.executable, "-B", "-W", "ignore", os.path.join(target, suite)], cwd=target,
+                           capture_output=True, text=True, timeout=900)
+        shutil.rmtree(os.path.join(target, "__pycache__"), ignore_errors=True)
+        tail = (r.stderr or r.stdout).strip().splitlines()[-4:]
+        if r.returncode == 0:
+            say("ok", "%s passed: %s" % (suite, " | ".join(t for t in tail if t.strip())))
+        else:
+            attention(suite + " failed:\n      " + "\n      ".join(tail))
 
 
 def main():

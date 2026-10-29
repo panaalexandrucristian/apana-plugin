@@ -20,4 +20,9 @@ describe("self tests of the Python programs", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /^make_context selftest OK: \d+ cases/);
   });
+
+  it("OpenCode selftest comparison survives clock boundaries without masking changes", () => {
+    const r = run("test/test_make_context_clock.py", []);
+    assert.equal(r.status, 0, r.stderr);
+  });
 });

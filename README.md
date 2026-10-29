@@ -23,6 +23,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:android-ui-step` | Taps a label on an Android emulator and prints a digest of the new screen. |
 | `apana:android-emulator-low-ram` | Measures Android Emulator memory and safely tunes a dedicated low-RAM AVD. |
 | `apana:scope` | Investigate a coding task, ask about unclear intent, then gate edits to exact paths after explicit user approval. |
+| `apana:review-diff` | Challenge every changed hunk and every new class of a diff (why, necessary, aligned with the project standard, optimal), fix what is not optimal and repeat. |
 | `apana:uninstall-claude-scope` | Remove an old standalone launcher and its marked PATH block without removing reports or unrelated files. |
 | `apana:jev-decision-loop` | A mode, switched on by the user, in which Jev picks every next step of the session from 2-5 options the model writes. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
@@ -49,9 +50,15 @@ On macOS, invoke `/apana:claude-openai` and ask it to install. Requires zsh, Pyt
 
 This is an unofficial subscription bridge, not a paid-API-key setup. It keeps normal `claude`, global/project rules, hooks and permissions unchanged. `/model` lists distinct gateway IDs once plus Claude's Default row. The launcher sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS=400000` only for its child processes and session-local settings; this fixed client limit does not establish the provider's capacity for every selectable model. If `claude-auto` is installed, interactive sessions run under its instruction policy and automatic handoff loop, including opt-outs; print mode starts the client directly. Credentials stay outside the plugin. Subscription limits and compatibility constraints still apply; see the skill's operations reference.
 
-With the updated wrapper, `--resume` and other session selectors open the requested session without a cache warm-up; a later handoff starts a fresh session. Automatic handoff notes no longer request skill reloads by default. `CLAUDE_AUTO_SKILLS=all` retains the previous behavior; a comma-separated list selects exact skill names loaded by the old session. Unmatched names are omitted and logged. This applies to both `claude-auto` and supervised `claude-openai`, not manual handoff generation. After updating the plugin, rerun `/apana:install-claude-auto` to update the wrapper and `/apana:claude-openai` to update the subscription launcher; already-running sessions are not retrofitted.
+With the updated wrapper, `--resume` and other session selectors open the requested session without a cache warm-up; a later handoff starts a fresh session. Automatic handoff notes no longer request skill reloads by default. `CLAUDE_AUTO_SKILLS=all` retains the previous behavior; a comma-separated list selects exact skill names loaded by the old session. Unmatched names are omitted and logged. The `caveman` skill is always reloaded when the old session called it. This applies to both `claude-auto` and supervised `claude-openai`, not manual handoff generation. After updating the plugin, rerun `/apana:install-claude-auto` to update the wrapper and `/apana:claude-openai` to update the subscription launcher; already-running sessions are not retrofitted.
 
 To remove the launcher and managed shell alias, invoke `/apana:uninstall-claude-openai`. It previews first and uses the existing bundled uninstaller. OAuth credentials, the state folder and backup, CLIProxyAPI, `claude-auto` and the plugin remain installed; this is not a full data purge. It does not stop running sessions. Existing shells may retain the alias until a new terminal is opened.
+
+### Hook-free text launcher
+
+After updating the plugin and rerunning `/apana:install-claude-auto`, `claude-auto --managed` explicitly selects a separate text interface with local session cooperation. It adds no launcher hooks, replaces the native terminal UI, and denies actions that require interactive approval. Existing settings and organizational restrictions still apply; use it only where the organization permits this launcher and local MCP.
+
+Read [managed mode](skills/install-claude-auto/references/managed-mode.md) for supported flags, local commands, handoff limits and permission behavior. The default launcher is unchanged. Offline tests cover the new runtime; live CLI and organizational-policy compatibility remain unverified.
 
 ### Guarded implementation tasks
 

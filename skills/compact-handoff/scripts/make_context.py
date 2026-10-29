@@ -602,9 +602,24 @@ def selftest_opencode():
     import itertools, sqlite3
     n = 0; d = tempfile.mkdtemp(); home = os.path.join(d, "home"); xdg = os.path.join(d, "xdg"); os.makedirs(home); os.makedirs(xdg)
     me = os.path.abspath(__file__)
-    def run_main(args, home_=None, xdg_=None, env_=None):
+    def run_main(args, home_=None, xdg_=None, env_=None, fixed_clock=False):
         env = dict(os.environ, HOME=home_ or home, XDG_DATA_HOME=xdg_ or xdg, PYTHONDONTWRITEBYTECODE="1", **(env_ or {}))
-        return subprocess.run([sys.executable, "-B", me] + args, capture_output=True, text=True, env=env)
+        cmd = [sys.executable, "-B", me] + args
+        if fixed_clock:
+            # Only the byte-for-byte comparison freezes generation time. Production
+            # still records wall time; no header or transcript text is filtered out.
+            bootstrap = """import datetime, runpy, sys
+class FixedClock(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        fixed = cls(2026, 1, 1, 10, 0)
+        return fixed if tz is None else fixed.astimezone(tz)
+datetime.datetime = FixedClock
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+            cmd = [sys.executable, "-B", "-c", bootstrap, me] + args
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
     def folder_text(out):
         md = open(os.path.join(out, "HANDOFF.md"), encoding="utf-8").read()
         blobs = [open(os.path.join(out, "blobs", f), encoding="utf-8").read() for f in sorted(os.listdir(os.path.join(out, "blobs")))] if os.path.isdir(os.path.join(out, "blobs")) else []
@@ -631,7 +646,7 @@ def selftest_opencode():
     # ---- a session with every message type and content kind, converted by the command line of measure_oc.py
     rows = oc.synthetic_rows(); sid = "ses_0123456789abcdefAAAAAA"; uri = next(b for t_, dd, _ in rows if t_ == "assistant" for part in dd.get("content", []) if part.get("type") == "tool" for b in part["state"].get("content", []) if b.get("type") == "file")["uri"]
     db = oc.make_db(os.path.join(d, "one.sqlite"), {sid: rows}); out = os.path.join(d, "out1")
-    r = run_main(["--opencode", db, out]); assert r.returncode == 0, r.stderr + r.stdout; n += 1
+    r = run_main(["--opencode", db, out], fixed_clock=True); assert r.returncode == 0, r.stderr + r.stdout; n += 1
     c = sqlite3.connect(db); total = c.execute("select sum(length(data)) from session_message").fetchone()[0]; c.close()
     assert "original %7d chars" % total in r.stdout and "roundtrip IDENTICAL" in r.stdout and re.search(r"sanitized records: [2-9]\d* of \d+", r.stdout), r.stdout; n += 2   # printed original = sum of length(data); the token input record is counted, not failed
     md, blobs = folder_text(out); allt = md + "\n".join(blobs)
@@ -650,8 +665,10 @@ def selftest_opencode():
     assert r.stdout.rstrip().endswith('start the new session with:\n  opencode --prompt "Citește %s și urmează instrucțiunile din el."' % os.path.join(out, "HANDOFF.md")); n += 1
     ro_n = int(re.search(r"(\d+) by the read-only rule", r.stdout).group(1)); assert ro_n == 4, ro_n; n += 1   # shell ls, read, grep and the image read (a read tool); the git commit and the patches stay inline
     assert "[tool_use shell] command: git commit -m 'x'" in md and "[tool_use patch] patchText: *** Begin Patch" in md; n += 1
-    # a second run is deterministic (same uuids, same bytes)
-    out1b = os.path.join(d, "out1b"); r2 = run_main(["--opencode", db, out1b]); assert r2.returncode == 0 and open(os.path.join(out1b, "HANDOFF.md"), encoding="utf-8").read().replace(out1b, out) == md.replace(out1b, out); n += 1
+    # A second run is deterministic with the same generation time (same uuids, same bytes).
+    out1b = os.path.join(d, "out1b"); r2 = run_main(["--opencode", db, out1b], fixed_clock=True)
+    assert r2.returncode == 0, r2.stderr + r2.stdout
+    assert open(os.path.join(out1b, "HANDOFF.md"), encoding="utf-8").read().replace(out1b, out) == md.replace(out1b, out); n += 1
     # a session without compactions and images: its introduction has neither clause
     plain_rows = [x for x in rows if x[0] != "compaction"]
     for part in plain_rows[6][1]["content"]:

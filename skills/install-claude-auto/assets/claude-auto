@@ -3,7 +3,15 @@
 compact-handoff note, in the same terminal window. Claude Code's own compaction is not involved.
 
     claude-auto [claude args...]    run claude (interactive); every argument goes to claude unchanged
+    claude-auto --managed [flags] -- "prompt"    opt-in hook-free text interface with session cooperation
     claude-auto __hook              internal: the hook that claude-auto adds with --settings
+
+Managed mode owns message admission and uses stream-json, not the native terminal UI.
+It adds no launcher hooks or permission grants; actions needing a permission dialog are denied.
+Existing configured hooks/settings remain subject to managed policy. Use only where the organization
+permits this launcher and local MCP. /help, /status and /quit are local commands; other slash commands
+are unavailable. Handoffs occur between completed turns, never mid-turn. Anchor/resume selectors and
+CLAUDE_AUTO_NEXT_ARGS are unsupported. See references/managed-mode.md in the install skill.
 
 How it works
   1. The wrapper writes a settings file with the PreToolUse, Stop, PostToolUse, SubagentStart and SubagentStop hooks and runs
@@ -45,7 +53,8 @@ Env (all optional)
   CLAUDE_AUTO_SKILLS         which skills the new session loads again from the one that is closed: none (default; the
                              handoff carries no skill text), all (every skill the old session loaded), or NAME,NAME
                              (only those, whole names as make_context.py --list-skills prints them, e.g.
-                             "apana:logic-test-debug,android-cli"; a name the old session did not load is left out and logged)
+                             "apana:logic-test-debug,android-cli"; a name the old session did not load is left out and logged).
+                             The skill caveman is the exception: when the old session called it, it is loaded again with none too
   CLAUDE_AUTO_MAX            handoffs per run (default 0 = unlimited); after that claude runs without the hook
   CLAUDE_AUTO_COOLDOWN       seconds between two handoffs of one run (default 60: limits the frequency if the new session
                              is itself over the threshold because the note is large)
@@ -63,7 +72,7 @@ Env (all optional)
   CLAUDE_AUTO_DEBUG=1        log every hook check
 Every hook failure is logged to auto.log and the hook exits 0: it never breaks a session.
 """
-import fcntl, glob, hashlib, json, os, shlex, shutil, signal, subprocess, sys, tempfile, time, uuid
+import fcntl, glob, hashlib, json, mmap, os, shlex, shutil, signal, subprocess, sys, tempfile, time, uuid
 
 try:
     import termios
@@ -199,32 +208,48 @@ def find_make_context():
     return found[-1] if found else None
 
 
+KEPT_SKILLS = frozenset(["caveman"])    # a mode that stays on until the user ends it: reloaded after every handoff when the session called it
+
+
+def mentions_kept_skill(transcript):
+    """Whether the transcript holds the bytes of a KEPT_SKILLS name anywhere: a cheap guard in front of --list-skills (which
+    decides whether the skill was loaded), so that a handoff without any such mention makes no extra call. A name only has
+    characters that JSON does not escape, so a loaded skill always leaves its bytes. An unreadable or empty file counts as no."""
+    try:
+        with open(transcript, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            return any(m.find(s.encode()) >= 0 for s in KEPT_SKILLS)
+    except (OSError, ValueError):                # ValueError: mmap of an empty file
+        return False
+
+
 def skills_args(script, transcript):
     """The make_context.py options for CLAUDE_AUTO_SKILLS: none (also unset or empty) -> --no-skills; all -> no option;
-    NAME,NAME -> --skills with the names that the session loaded. make_context.py stops on a name it did not find, which
-    would cost the whole handoff, so the others are left out and logged; with none left, or when --list-skills fails, the
-    handoff goes out with --no-skills."""
+    NAME,NAME -> --skills with the names that the session loaded. A skill of KEPT_SKILLS that the session loaded is
+    added to none and to NAME,NAME (the last part of its name, so `caveman` and `plugin:caveman`, not `caveman-commit`).
+    make_context.py stops on a name it did not find, which would cost the whole handoff, so the others are left out and
+    logged; with none left, or when --list-skills fails, the handoff goes out with --no-skills."""
     want = os.environ.get("CLAUDE_AUTO_SKILLS", "").strip()
-    if want.lower() in ("", "none"):
-        return ["--no-skills"]
     if want.lower() == "all":
         return []
-    names = list(dict.fromkeys(n.strip() for n in want.split(",") if n.strip()))
+    names = [] if want.lower() in ("", "none") else list(dict.fromkeys(n.strip() for n in want.split(",") if n.strip()))
+    if not names and not mentions_kept_skill(transcript):
+        return ["--no-skills"]
     try:
         r = subprocess.run([sys.executable, script, transcript, "--list-skills"], capture_output=True, text=True,
                            timeout=min(30, env_num("CLAUDE_AUTO_MAKE_TIMEOUT", 90)))
     except (subprocess.TimeoutExpired, OSError) as e:
-        log("CLAUDE_AUTO_SKILLS=%s: --list-skills failed (%s); no skills reloaded" % (want, e))
+        log("CLAUDE_AUTO_SKILLS=%s: --list-skills failed (%s); no skills reloaded" % (want or "none", e))
         return ["--no-skills"]
     if r.returncode != 0:
-        log("CLAUDE_AUTO_SKILLS=%s: --list-skills exit %s: %s; no skills reloaded" % (want, r.returncode, (r.stderr or r.stdout)[-200:].strip()))
+        log("CLAUDE_AUTO_SKILLS=%s: --list-skills exit %s: %s; no skills reloaded" % (want or "none", r.returncode, (r.stderr or r.stdout)[-200:].strip()))
         return ["--no-skills"]
     loaded = [line[len("skill: "):].rsplit(" | ", 1)[0] for line in r.stdout.splitlines()
               if line.startswith("skill: ") and line.endswith(" characters") and " | " in line]
     chosen = [n for n in names if n in loaded]
-    if len(chosen) < len(names):
-        log("CLAUDE_AUTO_SKILLS: not loaded by this session, left out: %s (loaded: %s)" % (
-            ", ".join(n for n in names if n not in loaded), ", ".join(loaded) or "none"))
+    chosen += [n for n in loaded if n.rsplit(":", 1)[-1] in KEPT_SKILLS and n not in chosen]
+    missing = [n for n in names if n not in loaded]
+    if missing:
+        log("CLAUDE_AUTO_SKILLS: not loaded by this session, left out: %s (loaded: %s)" % (", ".join(missing), ", ".join(loaded) or "none"))
     return ["--skills", ",".join(chosen)] if chosen else ["--no-skills"]
 
 
@@ -879,6 +904,16 @@ def wrapper(args):
         say("claude not found in PATH")
         return 127
     claude = os.path.abspath(claude)             # a follow-up session may start in another directory
+    if args[:1] == ["--managed"]:
+        assets = os.path.dirname(os.path.realpath(__file__))
+        for required in ("claude_auto_managed.py", "cooperation/scripts/registry.py",
+                         "cooperation/scripts/managed_mcp.py"):
+            if not os.path.isfile(os.path.join(assets, required)):
+                say("managed runtime is missing %s; reinstall claude-auto; nothing was started" % required)
+                return 2
+        sys.path.insert(0, assets)
+        import claude_auto_managed
+        return claude_auto_managed.run(sys.modules[__name__], claude, args[1:])
     if passthrough(args):
         os.execv(claude, [claude] + args)
     cooperation = os.environ.get("CLAUDE_AUTO_COOPERATE") == "1"
