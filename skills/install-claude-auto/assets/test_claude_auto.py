@@ -893,6 +893,7 @@ FAKE_CLAUDE = """
     state, mode = os.environ["FAKE_STATE"], os.environ.get("FAKE_MODE", "")
     n = len([f for f in os.listdir(state) if f.startswith("call-")])
     rec = {"n": n, "argv": sys.argv[1:], "cwd": os.getcwd(), "run": os.environ.get("CLAUDE_AUTO_RUN"), "pid": os.getpid()}
+    rec["cooperation"] = {key: value for key, value in os.environ.items() if key.startswith("CLAUDE_AUTO_COOP")}
     if "--settings" in sys.argv:
         rec["settings"] = open(sys.argv[sys.argv.index("--settings") + 1]).read()
     if os.isatty(0):
@@ -994,6 +995,9 @@ class Wrapper(unittest.TestCase):
                         CLAUDE_AUTO_COOLDOWN="0", CLAUDE_AUTO_BOOTSTRAP="0", FAKE_CWD=self.cwd2)
         for k in ("CLAUDE_AUTO_RUN", "CLAUDE_AUTO_NEXT_ARGS", "CLAUDE_AUTO_MAX", "CLAUDE_AUTO_TOKENS"):
             self.env.pop(k, None)
+        for key in list(self.env):
+            if key.startswith("CLAUDE_AUTO_COOP"):
+                self.env.pop(key)
         self.env["CLAUDE_AUTO_RULE"] = "off"       # the tests below pin positions in argv; SystemPromptRule tests the rule
 
     def wrap(self, *args, cwd=None, **env):
@@ -1012,6 +1016,131 @@ class Wrapper(unittest.TestCase):
                 return
             time.sleep(0.05)
         self.fail("process %d is still alive" % pid)
+
+    def cooperation_plugin(self):
+        plugin = os.path.join(os.path.dirname(os.path.realpath(self.auto)), "cooperation")
+        os.makedirs(os.path.join(plugin, ".claude-plugin"))
+        os.makedirs(os.path.join(plugin, "scripts"))
+        os.makedirs(os.path.join(plugin, "hooks"))
+        os.makedirs(os.path.join(plugin, "types"))
+        with open(os.path.join(plugin, "types", "index.d.ts"), "w") as f:
+            f.write("// persistent state contract\n")
+        for name in ("hooks.json", "register.ts"):
+            with open(os.path.join(plugin, "hooks", name), "w") as f:
+                f.write("{}")
+        with open(os.path.join(plugin, ".claude-plugin", "plugin.json"), "w") as f:
+            json.dump({"name": "cooperation"}, f)
+        write_script(os.path.join(plugin, "scripts", "registry.py"), '''
+            import json, os, sys
+            with open(os.path.join(os.environ["FAKE_STATE"], "closed"), "w") as f:
+                json.dump({"db": sys.argv[1], "request": json.load(sys.stdin), "isolated": sys.flags.isolated}, f)
+        ''')
+        return plugin
+
+    def test_cooperation_real_children_keep_member_and_advance_generation(self):
+        import uuid
+        plugin = self.cooperation_plugin()
+        db = os.path.join(self.tmp, "registry.sqlite3")
+        result = self.wrap("task", FAKE_MODE="chain", CLAUDE_AUTO_COOPERATE="1",
+                           CLAUDE_AUTO_COOP_DB=db, CLAUDE_AUTO_COOP_MEMBER="inherited",
+                           CLAUDE_AUTO_COOP_GENERATION="90", CLAUDE_AUTO_COOP_CONTINUATION="1",
+                           CLAUDE_AUTO_MAX="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 3)
+        member = calls[0]["cooperation"]["CLAUDE_AUTO_COOP_MEMBER"]
+        self.assertEqual(str(uuid.UUID(member)), member)
+        self.assertNotEqual(member, "inherited")
+        for generation, call in enumerate(calls, 1):
+            env = call["cooperation"]
+            self.assertEqual(env["CLAUDE_AUTO_COOP_MEMBER"], member)
+            self.assertEqual(env["CLAUDE_AUTO_COOP_GENERATION"], str(generation))
+            self.assertEqual(env["CLAUDE_AUTO_COOP_DB"], db)
+            self.assertEqual(env.get("CLAUDE_AUTO_COOP_CONTINUATION"), "1" if generation > 1 else None)
+            at = call["argv"].index("--plugin-dir")
+            self.assertEqual(call["argv"][at + 1], plugin)
+        self.assertEqual(calls[0]["run"], calls[1]["run"])
+        self.assertIsNone(calls[-1]["run"], "Cooperation survives the handoff limit")
+        with open(os.path.join(self.state, "closed")) as f:
+            self.assertEqual(json.load(f), {"db": db, "request": {"op": "close", "member": member, "generation": 3}, "isolated": 1})
+        self.assertEqual(self.run_folders(), [])
+
+    def test_cooperation_bootstrap_is_not_a_member_or_continuation(self):
+        self.cooperation_plugin()
+        result = self.wrap("task", FAKE_MODE="bootstrap_then_handoff", CLAUDE_AUTO_BOOTSTRAP="1",
+                           CLAUDE_AUTO_COOPERATE="1", CLAUDE_AUTO_COOP_MEMBER="inherited",
+                           CLAUDE_AUTO_COOP_GENERATION="90", CLAUDE_AUTO_COOP_CONTINUATION="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        bootstrap, work, continuation = self.calls()
+        self.assertEqual(bootstrap["cooperation"], {})
+        self.assertNotIn("--plugin-dir", bootstrap["argv"])
+        self.assertEqual(work["cooperation"]["CLAUDE_AUTO_COOP_GENERATION"], "1")
+        self.assertNotIn("CLAUDE_AUTO_COOP_CONTINUATION", work["cooperation"])
+        self.assertEqual(continuation["cooperation"]["CLAUDE_AUTO_COOP_GENERATION"], "2")
+        self.assertEqual(continuation["cooperation"]["CLAUDE_AUTO_COOP_CONTINUATION"], "1")
+        self.assertEqual(work["cooperation"]["CLAUDE_AUTO_COOP_MEMBER"], continuation["cooperation"]["CLAUDE_AUTO_COOP_MEMBER"])
+
+    def test_cooperation_initial_interactive_and_resume_prompts_are_not_continuations(self):
+        self.cooperation_plugin()
+        members = set()
+        for args in ([], ["--resume", "existing"], ["--resume=existing", "new task"]):
+            with self.subTest(args=args):
+                shutil.rmtree(self.state), os.makedirs(self.state)
+                result = self.wrap(*args, FAKE_MODE="exit7", CLAUDE_AUTO_COOPERATE="1",
+                                   CLAUDE_AUTO_COOP_CONTINUATION="1", HOME=self.tmp)
+                self.assertEqual(result.returncode, 7, result.stderr)
+                env = self.calls()[0]["cooperation"]
+                self.assertNotIn("CLAUDE_AUTO_COOP_CONTINUATION", env)
+                self.assertEqual(env["CLAUDE_AUTO_COOP_GENERATION"], "1")
+                self.assertEqual(env["CLAUDE_AUTO_COOP_DB"], os.path.join(self.tmp, ".claude/cooperation/registry.sqlite3"))
+                members.add(env["CLAUDE_AUTO_COOP_MEMBER"])
+        self.assertEqual(len(members), 3)
+
+    def test_cooperation_missing_plugin_fails_only_for_opted_in_interactive(self):
+        result = self.wrap("task", CLAUDE_AUTO_COOPERATE="1")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("cooperation", result.stderr)
+        self.assertIn("nothing was started", result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.run_folders(), [])
+        result = self.wrap("task", FAKE_MODE="exit7")
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertNotIn("--plugin-dir", self.calls()[0]["argv"])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "closed")))
+
+    def test_cooperation_missing_state_contract_fails_before_launch(self):
+        plugin = self.cooperation_plugin()
+        os.remove(os.path.join(plugin, "types", "index.d.ts"))
+        result = self.wrap("task", FAKE_MODE="exit7", CLAUDE_AUTO_COOPERATE="1")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("types/index.d.ts", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_cooperation_passthrough_stays_unchanged_without_plugin(self):
+        for args in (["-p", "task"], ["--print", "task"], ["--version"], ["mcp", "list"]):
+            with self.subTest(args=args):
+                shutil.rmtree(self.state), os.makedirs(self.state)
+                result = self.wrap(*args, FAKE_MODE="exit7", CLAUDE_AUTO_COOPERATE="1")
+                self.assertEqual(result.returncode, 7, result.stderr)
+                self.assertEqual(self.calls()[0]["argv"], args)
+                self.assertNotIn("CLAUDE_AUTO_COOP_MEMBER", self.calls()[0]["cooperation"])
+                self.assertEqual(self.run_folders(), [])
+
+    def test_cooperation_rejects_relative_database_before_launch(self):
+        self.cooperation_plugin()
+        result = self.wrap("task", CLAUDE_AUTO_COOPERATE="1", CLAUDE_AUTO_COOP_DB="relative.sqlite3")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("absolute", result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.run_folders(), [])
+
+    def test_cooperation_cleanup_failure_preserves_child_exit(self):
+        plugin = self.cooperation_plugin()
+        write_script(os.path.join(plugin, "scripts", "registry.py"), 'raise RuntimeError("cleanup failed")')
+        result = self.wrap("task", FAKE_MODE="exit7", CLAUDE_AUTO_COOPERATE="1")
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.run_folders(), [])
 
     def test_exit_code_passes_through_and_nothing_is_relaunched(self):
         r = self.wrap("--model", "opus", FAKE_MODE="exit7")
@@ -1437,6 +1566,21 @@ class PendingFiles(unittest.TestCase):
         many = self.m.new_session_prompt(dict(sig, pending=["/n/pending/f%d.txt" % i for i in range(13)]))
         self.assertIn("toate cele 13 fișiere din /n/pending", many)
         self.assertIn("~151k tokeni", many)
+
+    def test_automatic_resume_preserves_the_users_response_format(self):
+        for count in (0, 1, 12, 13):
+            with self.subTest(pending=count):
+                prompt = self.m.new_session_prompt({
+                    "handoff": "/n/HANDOFF.md", "tokens": 151000,
+                    "pending": ["/n/pending/f%d.txt" % i for i in range(count)],
+                })
+                self.assertIn("reia imediat lucrul", prompt)
+                self.assertIn("Dacă pasul următor este ireversibil sau cere decizia mea", prompt)
+                self.assertTrue(prompt.endswith(
+                    "Aceasta este continuarea aceleiași sarcini, nu o cerere de rezumat al transferului. "
+                    "Păstrează cerințele utilizatorului pentru răspunsul final, inclusiv formatul exact. "
+                    "Dacă utilizatorul a cerut doar un anumit text, răspunsul final conține numai acel text, "
+                    "fără rezumat, explicații sau raport suplimentar despre transfer."))
 
     def test_handoff_folder_names_follow_the_helpers_convention(self):
         with mock.patch.dict(os.environ, {"CLAUDE_AUTO_DIR": self.tmp}):

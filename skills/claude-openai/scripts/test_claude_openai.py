@@ -177,7 +177,7 @@ class InstallerTests(unittest.TestCase):
                 installed.write_text(fixture)
                 self.assertEqual(mod.claude_auto_wrapper(['task']), installed)
 
-    def run_claude_with(self, td, source_text, user_args):
+    def run_claude_with(self, td, source_text, user_args, inherited=None):
         from contextlib import contextmanager
         from unittest.mock import patch
         mod = self.module()
@@ -188,7 +188,7 @@ class InstallerTests(unittest.TestCase):
         @contextmanager
         def sidecar(_):
             yield 'http://127.0.0.1:12345', 'local-test-key', [{'id': 'gpt-6-astra'}], state, None
-        with patch.object(mod.os, 'environ', {'PATH': '/unit'}), \
+        with patch.object(mod.os, 'environ', dict({'PATH': '/unit'}, **(inherited or {}))), \
              patch.object(mod, 'proxy_session', sidecar), patch.object(mod, 'login'), \
              patch.object(mod.shutil, 'which', side_effect=lambda name: {
                  'claude': '/opt/bin/claude',
@@ -223,6 +223,64 @@ class InstallerTests(unittest.TestCase):
             self.assertNotIn('permissions', settings)
             self.assertNotIn('--append-system-prompt', call.args[0], 'The wrapper appends the rule itself')
 
+    def test_cooperation_inherits_openai_routing_across_real_wrapper_handoff(self):
+        import subprocess
+        import sys
+        import textwrap
+        wrapper = ROOT.parent.parent / 'install-claude-auto/assets/claude-auto'
+        with tempfile.TemporaryDirectory(dir=ROOT) as td:
+            home = Path(td)
+            database = str(home / 'registry.sqlite3')
+            inherited = {'PATH': os.environ['PATH'], 'HOME': td,
+                         'CLAUDE_AUTO_COOPERATE': '1', 'CLAUDE_AUTO_COOP_DB': database,
+                         'CLAUDE_AUTO_BOOTSTRAP': '0', 'CLAUDE_AUTO_RULE': 'off',
+                         'CLAUDE_AUTO_DIR': str(home / 'handoffs'),
+                         'CLAUDE_AUTO_POLL': '0.02', 'CLAUDE_AUTO_GRACE': '0.02'}
+            _, _, source, call = self.run_claude_with(td, wrapper.read_text(), ['task'], inherited)
+            plugin = home / 'cooperation'
+            (plugin / '.claude-plugin').mkdir(parents=True)
+            (plugin / '.claude-plugin/plugin.json').write_text('{"name":"cooperation"}')
+            (plugin / 'scripts').mkdir()
+            (plugin / 'scripts/registry.py').write_text('')
+            (plugin / 'hooks').mkdir()
+            (plugin / 'hooks/hooks.json').write_text('{}')
+            (plugin / 'hooks/register.ts').write_text('')
+            (plugin / 'types').mkdir()
+            (plugin / 'types/index.d.ts').write_text('')
+            calls_file = home / 'calls.jsonl'
+            fake = home / 'fake-claude'
+            fake.write_text('#!' + sys.executable + '\n' + textwrap.dedent('''
+                import json, os, pathlib, sys, time
+                calls = pathlib.Path(os.environ['HOME']) / 'calls.jsonl'
+                first = not calls.exists()
+                settings = json.loads(pathlib.Path(sys.argv[sys.argv.index('--settings') + 1]).read_text())
+                with calls.open('a') as output:
+                    output.write(json.dumps({'argv': sys.argv[1:], 'env': dict(os.environ), 'settings': settings}) + '\\n')
+                if first:
+                    signal = pathlib.Path(os.environ['CLAUDE_AUTO_RUN']) / 'signal.json'
+                    signal.write_text(json.dumps({'handoff': str(calls.parent / 'HANDOFF.md'), 'session_id': 'first'}))
+                    time.sleep(60)
+            '''))
+            fake.chmod(0o755)
+            env = dict(call.kwargs['env'], CLAUDE_AUTO_CLAUDE=str(fake))
+            result = subprocess.run(call.args[0], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+            self.assertEqual(len(calls), 2)
+            member = calls[0]['env']['CLAUDE_AUTO_COOP_MEMBER']
+            for generation, child in enumerate(calls, 1):
+                self.assertEqual(child['env']['CLAUDE_AUTO_COOP_MEMBER'], member)
+                self.assertEqual(child['env']['CLAUDE_AUTO_COOP_GENERATION'], str(generation))
+                self.assertEqual(child['env']['CLAUDE_AUTO_COOP_DB'], database)
+                self.assertEqual(child['env'].get('CLAUDE_AUTO_COOP_CONTINUATION'), '1' if generation > 1 else None)
+                self.assertEqual(child['env']['ANTHROPIC_BASE_URL'], 'http://127.0.0.1:12345')
+                self.assertEqual(child['env']['ANTHROPIC_MODEL'], 'gpt-6-astra')
+                self.assertEqual(child['env']['ANTHROPIC_AUTH_TOKEN'], 'local-test-key')
+                self.assertEqual(child['settings']['env']['ANTHROPIC_MODEL'], 'gpt-6-astra')
+                self.assertIn('--plugin-dir', child['argv'])
+                self.assertIn('gpt-6-astra', child['argv'])
+            self.assertEqual(calls[0]['env']['CLAUDE_AUTO_RUN'], calls[1]['env']['CLAUDE_AUTO_RUN'])
+
     def test_run_starts_claude_directly_for_print_mode_and_when_claude_auto_is_absent(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as td:
             mod, state, _, call = self.run_claude_with(td, self.WRAPPER, ['-p', 'hello'])
@@ -251,7 +309,9 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(models, [])
                 with self.assertRaises(urllib.error.HTTPError) as error:
                     urllib.request.urlopen(url + '/v1/models')
-                self.assertEqual(error.exception.code, 401)
+                with error.exception:
+                    self.assertEqual(error.exception.code, 401)
+                self.assertTrue(error.exception.closed)
                 self.assertIsNone(process.poll())
             self.assertIsNotNone(process.poll())
             self.assertFalse(run_dir.exists())
@@ -368,6 +428,53 @@ class InstallerTests(unittest.TestCase):
                      'OPENAI_API_KEY': 'test-paid-key', 'ANTHROPIC_API_KEY': 'test-paid-key', 'DEPLOY': 'cloud'}
         env = mod.proxy_environment(inherited, Path('/private/run'))
         self.assertEqual(env, {'PATH': '/bin', 'HOME': '/safe/home', 'TMPDIR': '/private/run'})
+
+    def assert_runtime_image_policy(self, multimedia, expected):
+        from unittest.mock import patch, MagicMock
+        import io
+        mod = self.module()
+        with tempfile.TemporaryDirectory(dir=ROOT) as td:
+            state = Path(td)
+            config = {'config-version': 8, 'server': {'host': '127.0.0.1', 'port': 18317},
+                      'access': {'api-keys': ['source-only-key']},
+                      'observability': {'logs': {'request-log': True}}}
+            if multimedia is not None:
+                config['multimedia'] = multimedia
+            source = state / 'proxy.json'
+            source.write_text(json.dumps(config, indent=2) + '\n')
+            original = source.read_bytes()
+            opener = MagicMock()
+            opener.open.return_value = io.StringIO('{"data": [{"id": "gpt-test"}]}')
+            process = MagicMock()
+            process.poll.return_value = None
+            with patch.object(mod.shutil, 'which', return_value='/mock/cliproxyapi'), \
+                 patch.object(mod.socket, 'socket') as socket, \
+                 patch.object(mod.urllib.request, 'build_opener', return_value=opener), \
+                 patch.object(mod.subprocess, 'Popen', return_value=process):
+                socket.return_value.__enter__.return_value.getsockname.return_value = ('127.0.0.1', 23456)
+                with mod.proxy_session(state) as (_, key, _, run_dir, _):
+                    runtime = json.loads((run_dir / 'proxy.json').read_text())
+                    self.assertEqual(source.read_bytes(), original)
+                    self.assertEqual(runtime.get('multimedia', {}).get('disable-image-generation'), expected)
+                    expected_config = json.loads(original)
+                    expected_config['server']['port'] = 23456
+                    expected_config['access']['api-keys'] = [key]
+                    expected_config.setdefault('multimedia', {})['disable-image-generation'] = expected
+                    self.assertEqual(runtime, expected_config)
+                self.assertEqual(source.read_bytes(), original)
+                self.assertFalse(run_dir.exists())
+                process.terminate.assert_called_once()
+
+    def test_runtime_defaults_image_generation_to_passthrough_without_persisting(self):
+        for multimedia in (None, {}, {'gpt-image-2-base-model': 'gpt-test'}):
+            with self.subTest(multimedia=multimedia):
+                self.assert_runtime_image_policy(multimedia, 'passthrough')
+
+    def test_runtime_preserves_explicit_image_generation_policy_without_persisting(self):
+        for value in (False, True, 'chat', 'passthrough'):
+            with self.subTest(value=value):
+                self.assert_runtime_image_policy(
+                    {'disable-image-generation': value, 'gpt-image-2-base-model': 'gpt-test'}, value)
 
     def test_proxy_waits_for_async_model_registration(self):
         from unittest.mock import patch, MagicMock

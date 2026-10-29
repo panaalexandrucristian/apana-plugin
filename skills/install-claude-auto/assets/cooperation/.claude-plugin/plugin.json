@@ -1,0 +1,6 @@
+{
+  "name": "apana-cooperation",
+  "version": "0.1.0",
+  "types": "./types/index.d.ts",
+  "description": "Opt-in local session cooperation with isolated cancellable assistance."
+}

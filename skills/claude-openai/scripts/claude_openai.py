@@ -166,6 +166,8 @@ def proxy_session(state):
         config['server']['port'] = port
         config['server']['host'] = '127.0.0.1'
         config['access']['api-keys'] = [key]
+        # Keep client tool declarations unchanged unless the user chose another policy.
+        config.setdefault('multimedia', {}).setdefault('disable-image-generation', 'passthrough')
         private_write(run_dir / 'proxy.json', json.dumps(config))
         url = 'http://127.0.0.1:' + str(port)
         # No provider API keys from the shell can become an alternate upstream.

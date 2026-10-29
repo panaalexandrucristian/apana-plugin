@@ -1,0 +1,14 @@
+# Versions of the environment in which the code-rag retrieval was measured (Python 3.12.13, Apple M3).
+torch==2.15.0
+transformers==5.21.0
+sentence-transformers==6.2.0
+huggingface-hub==2.3.0
+tokenizers==0.23.3
+safetensors==0.8.0
+numpy==2.5.4
+scipy==1.18.1
+nltk==3.10.4
+bm25s==0.3.16
+llama-index-core==0.14.25
+tree-sitter==0.26.0
+tree-sitter-language-pack==0.13.0

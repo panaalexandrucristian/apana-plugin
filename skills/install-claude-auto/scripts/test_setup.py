@@ -11,6 +11,8 @@ UNINSTALL = os.path.join(HERE, "..", "..", "uninstall-claude-auto", "scripts", "
 ASSETS = os.path.join(HERE, "..", "assets")
 START, END = "# >>> claude-auto >>>", "# <<< claude-auto <<<"
 ORIGINALS = [b"", b"a\n", b"a", b"a\n\n", b"a\nb\n", b"a\r\nb\r\n", b"\xff\xfe=\n", b"export X=1\n\n\n"]
+COOPERATION_FILES = (".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.ts", "scripts/registry.py",
+                     "types/index.d.ts")
 
 
 class Setup(unittest.TestCase):
@@ -28,6 +30,7 @@ class Setup(unittest.TestCase):
         os.chmod(os.path.join(bin_dir, "claude"), 0o755)
         self.env = dict(os.environ, HOME=self.home, PATH=bin_dir + os.pathsep + os.environ["PATH"])
         self.env.pop("ZDOTDIR", None)
+        self.env.pop("CLAUDE_AUTO_CLAUDE", None)
         self.fake_apana()
 
     def fake_apana(self):
@@ -61,7 +64,9 @@ class Setup(unittest.TestCase):
 class Install(Setup):
     def test_fresh_install_copies_files_and_creates_the_rc(self):
         out = self.ok(self.install())
-        for name, mode in (("claude-auto", 0o755), ("test_claude_auto.py", 0o644)):
+        files = (("claude-auto", 0o755), ("test_claude_auto.py", 0o644)) + tuple(
+            ("cooperation/" + name, 0o644) for name in COOPERATION_FILES)
+        for name, mode in files:
             p = os.path.join(self.target, name)
             self.assertTrue(filecmp.cmp(p, os.path.join(ASSETS, name), shallow=False), name)
             self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), mode, name)
@@ -72,6 +77,97 @@ class Install(Setup):
         self.assertIn("150000 tokens", out)                     # the threshold is read from the script
         self.assertFalse(os.path.exists(self.rc + ".claude-auto.bak"))   # there was no rc to save
 
+    def fake_installer(self):
+        source = os.path.join(self.tmp, "source")
+        scripts, assets = os.path.join(source, "scripts"), os.path.join(source, "assets")
+        os.makedirs(scripts)
+        os.makedirs(assets)
+        shutil.copy(INSTALL, os.path.join(scripts, "install.py"))
+        for name in ("claude-auto", "test_claude_auto.py"):
+            shutil.copy(os.path.join(ASSETS, name), assets)
+        files = {".claude-plugin/plugin.json": b'{"name":"cooperation"}\n',
+                 "hooks/hooks.json": b'{}\n', "hooks/register.ts": b'// native fixture\n',
+                 "scripts/registry.py": b'# registry fixture\n',
+                 "types/index.d.ts": b'// persistent state contract\n'}
+        for name, content in files.items():
+            path = os.path.join(assets, "cooperation", name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(content)
+        return os.path.join(scripts, "install.py"), assets, files
+
+    def test_cooperation_subtree_install_updates_only_owned_files_idempotently(self):
+        script, assets, files = self.fake_installer()
+        excluded = (".claude-plugin/types/index.d.ts", "scripts/__pycache__/registry.pyc", "hooks/cooperation.test.ts")
+        for name in excluded:
+            path = os.path.join(assets, "cooperation", name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write("development only")
+        self.ok(self.run_script(script))
+        for name in excluded:
+            self.assertFalse(os.path.exists(os.path.join(self.target, "cooperation", name)))
+        installed = {}
+        for name, content in files.items():
+            path = os.path.join(self.target, "cooperation", name)
+            self.assertTrue(os.path.isfile(path), name)
+            self.assertEqual(open(path, "rb").read(), content)
+            installed[path] = os.stat(path).st_mtime_ns
+        unknown = os.path.join(self.target, "cooperation", "keep.txt")
+        with open(unknown, "w") as f:
+            f.write("not owned")
+        self.ok(self.run_script(script))
+        for path, modified in installed.items():
+            self.assertEqual(os.stat(path).st_mtime_ns, modified)
+        source = os.path.join(assets, "cooperation", "hooks", "register.ts")
+        with open(source, "w") as f:
+            f.write("// changed\n")
+        self.ok(self.run_script(script))
+        self.assertEqual(open(os.path.join(self.target, "cooperation/hooks/register.ts")).read(), "// changed\n")
+        self.assertEqual(open(unknown).read(), "not owned")
+
+    def test_cooperation_missing_source_fails_before_install(self):
+        script, assets, _ = self.fake_installer()
+        shutil.rmtree(os.path.join(assets, "cooperation"))
+        out = self.ok(self.run_script(script), 2)
+        self.assertIn("cooperation", out)
+        self.assertFalse(os.path.exists(self.target))
+        self.assertFalse(os.path.exists(self.rc))
+
+    def test_cooperation_uninstall_removes_only_bundle_and_preserves_registry(self):
+        script, _, files = self.fake_installer()
+        self.ok(self.run_script(script))
+        registry = os.path.join(self.home, ".claude/cooperation/registry.sqlite3")
+        os.makedirs(os.path.dirname(registry))
+        with open(registry, "w") as f:
+            f.write("private registry")
+        self.ok(self.uninstall("--dry-run"))
+        for name in files:
+            self.assertTrue(os.path.isfile(os.path.join(self.target, "cooperation", name)))
+        self.ok(self.uninstall())
+        self.assertFalse(os.path.exists(self.target))
+        self.assertEqual(open(registry).read(), "private registry")
+        self.ok(self.uninstall())
+
+    def test_cooperation_uninstall_keeps_unknown_files_and_symlink_targets(self):
+        script, _, files = self.fake_installer()
+        self.ok(self.run_script(script))
+        unknown = os.path.join(self.target, "cooperation/hooks/keep.txt")
+        with open(unknown, "w") as f:
+            f.write("keep me")
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        with open(os.path.join(outside, "registry.py"), "w") as f:
+            f.write("not owned")
+        scripts = os.path.join(self.target, "cooperation/scripts")
+        shutil.rmtree(scripts)
+        os.symlink(outside, scripts)
+        self.ok(self.uninstall(), 1)
+        self.assertEqual(open(unknown).read(), "keep me")
+        self.assertEqual(open(os.path.join(outside, "registry.py")).read(), "not owned")
+        self.assertTrue(os.path.islink(scripts))
+        self.assertFalse(os.path.exists(os.path.join(self.target, "cooperation/hooks/register.ts")))
+
     def test_second_run_changes_nothing(self):
         self.write_rc(b"export A=1\n")
         self.ok(self.install())
@@ -79,7 +175,7 @@ class Install(Setup):
         out = self.ok(self.install())
         self.assertEqual((self.read_rc(), os.stat(self.rc).st_mtime_ns), first)
         self.assertIn("already there", out)
-        self.assertEqual(out.count("unchanged"), 2)
+        self.assertEqual(out.count("unchanged"), 2 + len(COOPERATION_FILES))
 
     def test_stale_install_is_updated(self):
         os.makedirs(self.target)

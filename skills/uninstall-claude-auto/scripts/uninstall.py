@@ -5,7 +5,7 @@
 
   1. removes the block the install-claude-auto skill added to the rc file (and the one blank line before it), nothing
      else in the rc; the <rc>.claude-auto.bak copy goes too when the rc is back to exactly what it saved;
-  2. removes claude-auto and test_claude_auto.py from ~/.claude/claude-auto/, then the folder if nothing else is in it;
+  2. removes the wrapper, its tests and known cooperation runtime files, then their folders only when empty;
   3. keeps the handoff notes in ~/.claude/handoffs/auto/ unless --purge-notes is given.
 
 Running it twice is fine. ~/.claude/settings.json is only read, never edited. Exit codes: 0 done, 1 done but something
@@ -117,6 +117,39 @@ def running_wrappers(script):
     return [l.strip() for l in r.stdout.splitlines() if script in l and str(os.getpid()) != l.split()[0]]
 
 
+def remove_cooperation(target, dry):
+    """Remove only known runtime files and empty owned folders, never traverse directory symlinks."""
+    root = os.path.join(target, "cooperation")
+    if not os.path.lexists(root):
+        return False
+    if os.path.islink(root) or not os.path.isdir(root):
+        return True
+    remaining = set(os.listdir(root))
+    for directory, names in ((".claude-plugin", ("plugin.json",)),
+                             ("hooks", ("hooks.json", "register.ts")), ("scripts", ("registry.py",)),
+                             ("types", ("index.d.ts",))):
+        folder = os.path.join(root, directory)
+        if os.path.islink(folder) or not os.path.isdir(folder):
+            continue
+        left = set(os.listdir(folder))
+        for name in names:
+            path = os.path.join(folder, name)
+            if os.path.islink(path) or os.path.isfile(path):
+                if not dry:
+                    os.remove(path)
+                left.discard(name)
+                say("ok", "%s: %sremoved" % (path, "would be " if dry else ""))
+        if not left:
+            if not dry:
+                os.rmdir(folder)
+            remaining.discard(directory)
+    if not remaining:
+        if not dry:
+            os.rmdir(root)
+        say("ok", "%s: %sfolder removed" % (root, "would be " if dry else ""))
+    return bool(remaining)
+
+
 def remove_files(target, dry):
     if os.path.islink(target) or (os.path.lexists(target) and not os.path.isdir(target)):
         attention("%s is not a plain folder; it was left alone" % target)
@@ -136,7 +169,11 @@ def remove_files(target, dry):
     cache = os.path.join(target, "__pycache__")
     if os.path.isdir(cache) and not os.path.islink(cache) and not dry:
         shutil.rmtree(cache)
-    left = sorted(n for n in os.listdir(target) if n not in FILES and n != "__pycache__")
+    cooperation_left = remove_cooperation(target, dry)
+    removed = set(FILES) | {"__pycache__"}
+    if not cooperation_left:
+        removed.add("cooperation")
+    left = sorted(n for n in os.listdir(target) if n not in removed)
     if left:
         attention("%s kept, it also holds files that are not claude-auto's: %s" % (target, ", ".join(left)))
     elif dry:

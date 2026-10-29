@@ -54,6 +54,8 @@ Env (all optional)
                              at that size claude-auto hands off anyway and the subagent ends with the old session
   CLAUDE_AUTO_DIR            where notes and auto.log go (default ~/.claude/handoffs/auto)
   CLAUDE_AUTO_CLAUDE         the claude binary (default: claude from PATH)
+  CLAUDE_AUTO_COOPERATE=1    opt in to the bundled session-cooperation plugin for interactive work (not bootstrap)
+  CLAUDE_AUTO_COOP_DB        absolute registry path (default ~/.claude/cooperation/registry.sqlite3)
   CLAUDE_AUTO_MAKE_CONTEXT   path to make_context.py (default: the newest apana plugin copy)
   CLAUDE_AUTO_GRACE          seconds between the signal and ending claude (default 1.0: the last reply stays on screen)
   CLAUDE_AUTO_KILL_WAIT      seconds claude gets after SIGTERM before SIGKILL (default 5; also when you SIGTERM claude-auto)
@@ -61,7 +63,7 @@ Env (all optional)
   CLAUDE_AUTO_DEBUG=1        log every hook check
 Every hook failure is logged to auto.log and the hook exits 0: it never breaks a session.
 """
-import fcntl, glob, hashlib, json, os, shlex, shutil, signal, subprocess, sys, tempfile, time
+import fcntl, glob, hashlib, json, os, shlex, shutil, signal, subprocess, sys, tempfile, time, uuid
 
 try:
     import termios
@@ -576,7 +578,11 @@ def new_session_prompt(sig):
             "acțiuni deja terminate. Dacă pasul următor este ireversibil sau cere decizia mea, oprește-te și întreabă.%s"
             % (sig["handoff"], int(sig.get("tokens") or 0) // 1000,
                " Citește și, în ordine, %s: conțin ultimele evenimente ale sesiunii precedente, încă nescrise în "
-               "transcript (un eveniment împărțit în părți se citește în întregime)." % which if files else ""))
+               "transcript (un eveniment împărțit în părți se citește în întregime)." % which if files else "")
+            + " Aceasta este continuarea aceleiași sarcini, nu o cerere de rezumat al transferului. "
+              "Păstrează cerințele utilizatorului pentru răspunsul final, inclusiv formatul exact. "
+              "Dacă utilizatorul a cerut doar un anumit text, răspunsul final conține numai acel text, "
+              "fără rezumat, explicații sau raport suplimentar despre transfer.")
 
 
 def sticky_args(args):
@@ -855,6 +861,18 @@ def initial_prompt(args):
     return " ".join(out)
 
 
+def close_cooperation(plugin, database, member, generation):
+    """Closing membership must never change the wrapped process's exit status."""
+    if not member or not generation:
+        return
+    try:
+        subprocess.run(["python3", "-I", os.path.join(plugin, "scripts", "registry.py"), database],
+                       input=json.dumps({"op": "close", "member": member, "generation": generation}),
+                       text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def wrapper(args):
     claude = shutil.which(os.environ.get("CLAUDE_AUTO_CLAUDE") or "claude")
     if not claude:
@@ -863,6 +881,21 @@ def wrapper(args):
     claude = os.path.abspath(claude)             # a follow-up session may start in another directory
     if passthrough(args):
         os.execv(claude, [claude] + args)
+    cooperation = os.environ.get("CLAUDE_AUTO_COOPERATE") == "1"
+    plugin = database = member = None
+    generation = 0
+    if cooperation:
+        plugin = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cooperation")
+        for required in (".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.ts", "scripts/registry.py",
+                         "types/index.d.ts"):
+            if not os.path.isfile(os.path.join(plugin, required)):
+                say("bundled cooperation plugin is missing %s; reinstall claude-auto; nothing was started" % required)
+                return 2
+        database = os.environ.get("CLAUDE_AUTO_COOP_DB") or os.path.expanduser("~/.claude/cooperation/registry.sqlite3")
+        if not os.path.isabs(database):
+            say("CLAUDE_AUTO_COOP_DB must be an absolute path; nothing was started")
+            return 2
+        member = str(uuid.uuid4())              # never reuse an inherited wrapper's identity
     try:
         env_next = shlex.split(os.environ["CLAUDE_AUTO_NEXT_ARGS"]) if "CLAUDE_AUTO_NEXT_ARGS" in os.environ else None
     except ValueError as e:
@@ -903,9 +936,11 @@ def wrapper(args):
         # The warm-up session would start a new one and drop the flags that pick the user's; then the first run is as typed.
         bootstrap = not bool(anchor) and os.environ.get("CLAUDE_AUTO_BOOTSTRAP", "1") != "0" and not selects_session(first_args)
         work_prompt = initial_prompt(first_args)
-        handoffs, cwd = 0, None
+        handoffs, cwd, continuation = 0, None, False
         argv = next_args + ["--", "Răspunde exact: ANCHOR_READY"] if bootstrap else first_args
         while True:
+            if Child.stop:
+                return 128 + Child.signum
             hooked = not maximum or handoffs < maximum
             env = dict(os.environ)
             env.pop("CLAUDE_AUTO_RUN", None)
@@ -914,8 +949,20 @@ def wrapper(args):
                 env["CLAUDE_AUTO_RUN"] = run
             if bootstrap:
                 env["CLAUDE_AUTO_BOOTSTRAP"] = "1"
+            plugin_args = []
+            if cooperation:
+                for key in ("CLAUDE_AUTO_COOPERATE", "CLAUDE_AUTO_COOP_MEMBER", "CLAUDE_AUTO_COOP_GENERATION",
+                            "CLAUDE_AUTO_COOP_DB", "CLAUDE_AUTO_COOP_CONTINUATION"):
+                    env.pop(key, None)
+                if not bootstrap:
+                    generation += 1
+                    env.update(CLAUDE_AUTO_COOPERATE="1", CLAUDE_AUTO_COOP_MEMBER=member,
+                               CLAUDE_AUTO_COOP_GENERATION=str(generation), CLAUDE_AUTO_COOP_DB=database)
+                    if continuation:
+                        env["CLAUDE_AUTO_COOP_CONTINUATION"] = "1"
+                    plugin_args = ["--plugin-dir", plugin]
             use = (settings if handoffs == 0 else settings_next) if hooked else plain
-            cmd = [claude] + (["--settings", use] if use else []) + rule + argv
+            cmd = [claude] + (["--settings", use] if use else []) + plugin_args + rule + argv
             rc, sig = run_once(cmd, env, cwd, run if hooked else None)
             # claude resets the terminal modes it set when it exits by itself; killed (by us, by a signal) it cannot
             terminal.restore(reset_modes=bool(sig) or Child.stop or rc < 0)
@@ -938,6 +985,7 @@ def wrapper(args):
             fork = ["--resume", anchor, "--fork-session"] if anchor else []
             carried = next_args if env_next is not None else carry_session_flags(next_args, sig)      # an explicit CLAUDE_AUTO_NEXT_ARGS wins
             argv = carried + fork + ["--", new_session_prompt(sig)]      # `--`: a variadic option must not swallow the prompt
+            continuation = True                    # only this explicit handoff prompt preserves the owner revision
             say("%dk tokeni de context; nota: %s. Pornesc sesiunea nouă în aceeași fereastră." % (
                 int(sig.get("tokens") or 0) // 1000, sig["handoff"]))
             log("handoff %d: claude ended (exit %s), new session from %s (cwd %s, %d pending file(s))" % (
@@ -946,6 +994,7 @@ def wrapper(args):
         terminal.restore(reset_modes=True)
         raise
     finally:
+        close_cooperation(plugin, database, member, generation)
         shutil.rmtree(run, ignore_errors=True)
 
 

@@ -33,3 +33,17 @@ jobs:
       # Offline bridge tests; the real proxy lifecycle case skips when CLIProxyAPI is not installed.
       - name: subscription bridge (offline Python suite)
         run: npm run test:claude-openai
+      # Registry, bundled API and live-driver regressions use only temporary fixtures; no model credentials.
+      - name: session cooperation (offline Python suite)
+        run: npm run test:cooperation
+      - name: code-rag setup (offline Python suite)
+        run: npm run test:code-rag-setup
+      # Test dependencies only; no torch, embedding model or installer execution.
+      - name: Install code-rag test dependencies
+        run: python3 -m pip install -c skills/code-rag-setup/scripts/requirements.txt numpy scipy bm25s llama-index-core tree-sitter tree-sitter-language-pack
+      - name: code-rag (offline Python suite, skips fail)
+        env:
+          CODE_RAG_FAKE_EMBED: "1"
+          HF_HUB_OFFLINE: "1"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: npm run test:code-rag
