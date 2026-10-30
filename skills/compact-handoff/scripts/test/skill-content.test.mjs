@@ -70,6 +70,20 @@ describe("the skills to load again", () => {
   });
 });
 
+describe("the Claude Code session given by id section", () => {
+  const headings = [...body.matchAll(/^## (.*)$/gm)].map((m) => m[1]);
+  const section = /\n## A Claude Code session given by id\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
+  it("sits between Steps and În OpenCode", () => {
+    assert.deepEqual(headings.slice(headings.indexOf("Steps"), headings.indexOf("Steps") + 3), ["Steps", "A Claude Code session given by id", "În OpenCode"]);
+  });
+
+  it("replaces the marker by the id, lists the skills first, makes the handoff with the choice and stops at an unknown id", () => {
+    for (const part of ["do not use `--marker` or `--current`", "make_context.py <id> --list-skills", "choose the skills as in step 2", "without `--list-skills`", "`--skills name1,name2`", "`--no-skills`", "Tell the user as in step 3",
+      "do not say that the transcript ends before the current reply", "the session may still be running", "a snapshot of that moment", "`0 transcripts found`", "report that error and stop", "do not try another id"]) assert.ok(section.includes(part), part);
+    assert.ok(section.indexOf("<id> --list-skills") < section.indexOf("without `--list-skills`") && section.indexOf("without `--list-skills`") < section.indexOf("`0 transcripts found`"), "list, make, then the unknown id");
+  });
+});
+
 describe("the OpenCode section", () => {
   const section = /\n## În OpenCode\n([\s\S]*?)\n## /.exec(body)?.[1] ?? "";
   it("exists, names the option that skips a broken database and says to report the error to the user first", () => {

@@ -31,6 +31,15 @@ Write every command in full as one plain command with literal paths: no `$VAR`, 
 
    If the script printed a `skills to reload:` line, the skills this session loaded (a Skill tool call or a slash command; never compact-handoff itself) are listed in the handoff, and the new session loads them again with its Skill tool before it answers, so that their instructions are in its context. Name them to the user with the size from the line: each load puts that text into the new session's context. Without a choice made in step 2 every loaded skill is listed; `--skills` keeps only the named ones and `--no-skills` leaves them all out. The transcript keeps only a marker for the text of a loaded skill, so without this the new session would not have the instructions.
 
+## A Claude Code session given by id
+
+When the user gives the id of a Claude Code session to hand off, do not use `--marker` or `--current`: the id takes the place of the marker.
+
+- List what that session loaded with `python3 ${CLAUDE_SKILL_DIR}/scripts/make_context.py <id> --list-skills`, then choose the skills as in step 2.
+- Make the handoff with the same command without `--list-skills`, adding `--skills name1,name2` for some or `--no-skills` for none (nothing for all).
+- Tell the user as in step 3, but do not say that the transcript ends before the current reply: say that the session may still be running, so the handoff is a snapshot of that moment.
+- If the script prints `0 transcripts found`, no transcript has that id: report that error and stop; do not try another id.
+
 ## În OpenCode
 
 When this skill runs inside an OpenCode session, the two steps above are the same. What differs:
