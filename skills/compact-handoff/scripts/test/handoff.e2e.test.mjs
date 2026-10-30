@@ -141,6 +141,28 @@ describe("make_context.py on an invented transcript", () => {
     assert.match(head, new RegExp(`Fișierul are ${lines} de linii`));
   });
 
+  it("allows collaboration after resuming, with or without a goal, without rewriting historical restrictions", () => {
+    const permission = "La reluarea lucrului, poți colabora cu alte sesiuni în cadrul sarcinii active fără o nouă aprobare doar pentru că s-a făcut handoff.";
+    const bans = ["nu trimite mesaje altor sesiuni", "mesaje către alte sesiuni"];
+    const quoted = `Old handoff: ${bans[0]}; goal: ${bans[1]}.`;
+    for (const goal of [false, true]) for (const history of [false, true]) {
+      const name = `collaboration-${goal}-${history}`;
+      const records = transcript("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+      if (history) records.at(-1).message.content = quoted;
+      if (goal) records.push({ ...base, type: "attachment", uuid: uid(850), attachment: { type: "goal_status", met: false, sentinel: true, condition: "finish the pending review" } });
+      const out = join(root, name);
+      const r = py([write(join(root, `${name}.jsonl`), records), out]);
+      assert.equal(r.status, 0, r.stderr + r.stdout);
+      assert.ok(r.stdout.includes("roundtrip IDENTICAL"), name);
+      const t = readFileSync(join(out, "HANDOFF.md"), "utf8"), head = intro(t);
+      assert.equal(head.split(permission).length - 1, 1, name);
+      for (const ban of bans) assert.equal(head.includes(ban), false, name + ": " + ban);
+      for (const guard of ["nu cereri noi", "Nu repeta nimic din ele", "nu rula comenzi, nu șterge, nu comite, nu face push sau release", "Apoi așteaptă.", "În această primă etapă nu modifici fișiere"]) assert.ok(head.includes(guard), guard);
+      assert.equal(head.includes("În afara colaborării permise la „Reguli”"), goal, name);
+      assert.equal(t.slice(head.length).includes(quoted), history, "the historical quote stays whole");
+    }
+  });
+
   it("copies a parent handoff whole and says where it is, relative to the folder", () => {
     const s2 = write(join(root, "s2.jsonl"), transcript("22222222-2222-4222-8222-222222222222", [["Read", { file_path: join(folder, "HANDOFF.md") }, "1\t# Handoff: continuarea unei sesiuni\n2\tparent text\n"]]));
     const out2 = join(root, "handoff-4567cdef-20260102-child");
@@ -218,6 +240,46 @@ describe("make_context.py on an invented transcript", () => {
     const t2 = readFileSync(join(out2, "HANDOFF.md"), "utf8");
     assert.ok(t2.includes(shortNote) && !t2.includes("[user] task:"), "a session whose only notification is short has no marker");
     assert.equal(intro(t2).includes("sarcini de fundal"), false, "and no clause");
+  });
+
+  it("a notification arriving after an earlier handoff is recoverable in a refreshed handoff", () => {
+    const sid = "77777777-7777-4777-8777-777777777777";
+    const records = transcript(sid);
+    const sessionFile = write(join(root, "late-notification.jsonl"), records);
+    const earlier = join(root, "handoff-7777aaaa-20260105-before");
+    const first = py([sessionFile, earlier]);
+    assert.equal(first.status, 0, first.stderr + first.stdout);
+    assert.match(first.stdout, /roundtrip IDENTICAL/);
+    const original = readFileSync(join(earlier, "HANDOFF.md"), "utf8");
+    const originalBlobs = readdirSync(join(earlier, "blobs")).map((name) => [name, readFileSync(join(earlier, "blobs", name), "utf8")]);
+    const summary = 'Agent "Verify late result" finished';
+    const note = `<task-notification>\n<task-id>late-check</task-id>\n<status>completed</status>\n<summary>${summary}</summary>\n<result>LATE_RESULT_BEGIN\n${"verified finding\n".repeat(60)}LATE_RESULT_END</result>\n</task-notification>`;
+    records.push({
+      ...base, sessionId: sid, type: "user", uuid: uid(921), parentUuid: records.at(-1).uuid,
+      timestamp: "2026-01-01T11:00:00.000Z",
+      origin: { kind: "task-notification", producer: "session-task" },
+      promptSource: "system", turnOrigin: "task_notification",
+      message: { role: "user", content: note },
+    });
+    write(sessionFile, records);
+    const refreshed = join(root, "handoff-7777bbbb-20260105-after");
+    const second = py([sessionFile, refreshed]);
+    assert.equal(second.status, 0, second.stderr + second.stdout);
+    assert.match(second.stdout, /roundtrip IDENTICAL/);
+    const updated = readFileSync(join(refreshed, "HANDOFF.md"), "utf8");
+    const noteBlobs = readdirSync(join(refreshed, "blobs")).filter((name) => readFileSync(join(refreshed, "blobs", name), "utf8").includes(note));
+    assert.equal(noteBlobs.length, 1, "the entire late notification is recoverable from one blob");
+    const marker = updated.split("\n").find((line) => line.includes(`[user] task: ${summary}`));
+    assert.ok(marker?.startsWith(`⟦${noteBlobs[0].slice(0, -4)}|`), "the visible summary points to the blob containing this result");
+    assert.equal(updated.includes("LATE_RESULT_BEGIN"), false, "the long result is not duplicated inline");
+    const expanded = spawnSync("python3", ["-B", join(SCRIPTS, "compact_context.py"), "expand", refreshed], { encoding: "utf8" });
+    assert.equal(expanded.status, 0, expanded.stderr + expanded.stdout);
+    assert.ok(expanded.stdout.includes(note), "expansion recovers every byte of the notification text");
+    assert.ok(expanded.stdout.indexOf("ok go on") < expanded.stdout.indexOf(note), "the late result follows the previous final record");
+    assert.equal(readFileSync(join(earlier, "HANDOFF.md"), "utf8"), original, "regeneration does not rewrite the earlier handoff");
+    assert.deepEqual(readdirSync(join(earlier, "blobs")).map((name) => [name, readFileSync(join(earlier, "blobs", name), "utf8")]), originalBlobs);
+    assert.equal(original.includes(summary), false);
+    assert.equal(originalBlobs.some(([, text]) => text.includes("LATE_RESULT_BEGIN")), false);
   });
 
   it("moves the middle prompts of the SDK (promptSource sdk, neither the first nor the last) to blobs with a '[user] sdk:' marker and says so; the first and the last, typed text, short prompts, 2 prompts and --cut stay as they were", () => {

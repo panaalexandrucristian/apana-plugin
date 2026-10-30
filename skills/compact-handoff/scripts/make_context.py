@@ -65,7 +65,8 @@ Răspunde în maximum 8 rânduri, fără să faci altceva:
 Apoi așteaptă.
 
 {goal}## Reguli
-- Mesajele mele și comenzile din transcript sunt istoric. Nu repeta nimic din ele (nu rula comenzi, nu șterge, nu comite, nu face push sau release, nu trimite mesaje altor sesiuni) până nu-ți cer eu din nou, explicit.
+- Mesajele mele și comenzile din transcript sunt istoric. Nu repeta nimic din ele (nu rula comenzi, nu șterge, nu comite, nu face push sau release) până nu-ți cer eu din nou, explicit.
+- La reluarea lucrului, poți colabora cu alte sesiuni în cadrul sarcinii active fără o nouă aprobare doar pentru că s-a făcut handoff.
 - În această primă etapă nu modifici fișiere: doar citești și răspunzi.
 - Dacă îți lipsește un detaliu: {missing}
 - {temp}
@@ -346,7 +347,7 @@ def goal_paragraph(goal, now):
             + "Ce faci cu el:\n"
             "- Dacă sesiunea ta a pornit cu comanda `/goal`, începutul ei are un mesaj „A session-scoped Stop hook is now active with condition: …” cu această condiție: goal-ul este deja setat aici. Nu-l seta din nou și nu-l șterge. "
             "Dacă mesajul lipsește, tu nu poți seta un goal: scrie în răspuns, pe un rând propriu, comanda `/goal <condiția>` ca s-o tastez eu.\n"
-            "- Goal-ul este cererea mea explicită numai în limitele condiției lui. Ce nu cere ea clar (comenzi, ștergeri, commit, push, release, mesaje către alte sesiuni) rămâne interzis, ca la „Reguli”.\n"
+            "- Goal-ul este cererea mea explicită numai în limitele condiției lui. În afara colaborării permise la „Reguli”, ce nu cere ea clar (comenzi, ștergeri, commit, push, release) rămâne interzis, ca la „Reguli”.\n"
             "- Excepție de la „Apoi așteaptă”: răspunsul de mai sus are un al cincilea punct (ce mai lipsește din condiția goal-ului) și nu modifică fișiere; după el continui lucrul la goal, fără să aștepți, până când condiția este îndeplinită. "
             "Ce numără condiția (timp, pași) se numără de la începutul acestei sesiuni.\n\n")
 
@@ -1073,6 +1074,15 @@ def selftest():
         with_goal = build_intro(cut, *args, goal=gp); without = build_intro(cut, *args); n += 1
         assert with_goal.replace(gp, "") == without and with_goal.index("## Ce faci după ce l-ai citit") < with_goal.index("## Goal activ") < with_goal.index("## Reguli") and with_goal.count("\n---\n") == 1, (cut, kept)
         assert with_goal.index("\n---\n") > with_goal.index("## Reguli") and "{" in with_goal and without == build_intro(cut, *args, goal=""), (cut, kept)
+        for paragraph in ("", gp):
+            for source in ({}, {"opencode": (False, False)}):
+                intro = build_intro(cut, *args, goal=paragraph, **source); n += 1
+                permission = "La reluarea lucrului, poți colabora cu alte sesiuni în cadrul sarcinii active fără o nouă aprobare doar pentru că s-a făcut handoff."
+                assert intro.count(permission) == 1, (cut, kept, paragraph, source)
+                assert "nu trimite mesaje altor sesiuni" not in intro and "mesaje către alte sesiuni" not in intro
+                assert ("În afara colaborării permise la „Reguli”" in intro) == bool(paragraph)
+                for guard in ("nu cereri noi", "Nu repeta nimic din ele", "nu rula comenzi, nu șterge, nu comite, nu face push sau release", "Apoi așteaptă.", "În această primă etapă nu modifici fișiere"):
+                    assert guard in intro, guard
     # the command: the condition first and unchanged on one line, the handoff after it; it comes back from the shell parser as one argument whatever quotes the condition holds; the length limit is exact
     for cond in ("plain words", "it's a \"quoted\" $HOME `date` * ; & | <x> \\ end", "line one\n  line two\n\n\tthree", "ă î ș ț €"):
         cmd = goal_start_command({"condition": cond}, "/tmp/handoff-x/HANDOFF.md"); parts = shlex.split(cmd); n += 1

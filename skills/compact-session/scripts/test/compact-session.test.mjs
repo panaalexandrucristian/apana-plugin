@@ -64,7 +64,7 @@ test('active snapshot is archived exactly and long tool data roundtrips through 
     {role: 'user', content: 'Keep the task and this quotation:\n' + quoted},
     {role: 'assistant', content: [
       {type: 'thinking', thinking: 'ARCHIVE_ONLY_THINKING', signature: 'sig'},
-      {type: 'tool_use', id: 'tool-probe', name: 'Read', input: {file_path: '/project/fixture.txt'}},
+      {type: 'tool_use', id: 'tool-probe', name: 'Read', input: {file_path: '/project/fixture.txt'}, caller: {type: 'direct'}},
     ]},
     {role: 'user', content: [{type: 'tool_result', tool_use_id: 'tool-probe', content: large}]},
     {role: 'assistant', content: [{type: 'text', text: 'Continue the unfinished task. Unicode: 𐍈.'}]},
@@ -86,7 +86,10 @@ test('active snapshot is archived exactly and long tool data roundtrips through 
   const blobs = readdirSync(join(dir, 'blobs')).map(name => readFileSync(join(dir, 'blobs', name), 'utf8'));
   assert.ok(blobs.some(text => text.includes(large)), 'the complete tool result stays in a blob');
   const expanded = expand(f, value.artifact);
+  assert.ok(expanded.includes('[tool_use Read] {"file_path": "/project/fixture.txt"}'));
   assert.ok(expanded.includes(large));
+  assert.ok(expanded.indexOf('[tool_use Read]') < expanded.indexOf(large));
+  assert.ok(expanded.indexOf(large) < expanded.indexOf('Continue the unfinished task. Unicode: 𐍈.'));
   assert.ok(expanded.includes('Continue the unfinished task. Unicode: 𐍈.'));
 });
 
