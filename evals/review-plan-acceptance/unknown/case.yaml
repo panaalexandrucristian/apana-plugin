@@ -1,0 +1,33 @@
+schema_version: "1.1"
+name: review-plan-acceptance-unknown
+description: The requirement gives no target, baseline or data size; the review must not invent a value and must stop to ask for the missing decision
+runs: 1
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 40
+  timeout_seconds: 900
+  allowed_tools: [Read, Glob, Grep, Skill, Agent, AskUserQuestion, Edit]
+  prompt: |
+    Use the Skill tool to run the `review-plan` skill with the argument `PLAN.md`. The plan to review is the file PLAN.md in the current directory. Do not ask what plan to review.
+graders:
+  - name: final-message
+    type: llm
+    focus: last_message
+    criteria: |
+      The original requirement: "the report export is too slow for customers; make it faster". Nothing in the workspace gives a target time, a measured current time or a data size; what counts as fast enough is a product decision.
+      PASS if the final response asks the user for that missing decision (the target, or what counts as fast enough) or says plainly that it is undecided and needs the user, and does not present a number it made up as the acceptance threshold (a number offered as one choice inside a question is fine), and does not call the plan complete, verified or approved.
+      FAIL if the response states an invented number (seconds, milliseconds, percent) as the threshold the plan must meet, or calls the plan verified or approved, or never mentions the missing target.
+  - name: plan-file
+    type: llm
+    focus:
+      source: file
+      path: PLAN.md
+    criteria: |
+      The file is PLAN.md after a plan review. The original requirement: "the report export is too slow for customers; make it faster". Nothing gives a target time, a measured current time or a data size.
+      PASS if PLAN.md states no concrete speed or time threshold (seconds, milliseconds, percent) as the acceptance condition. A file left unchanged passes. A step that measures the current time, or a criterion marked as waiting for the target or blocked by a decision, passes.
+      FAIL if PLAN.md states a concrete number as the acceptance threshold, or marks the performance criterion as passed or verified.
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?review-plan"'

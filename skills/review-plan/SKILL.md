@@ -15,7 +15,7 @@ If `$ARGUMENTS` is empty, review nothing yet. Ask one question in one message, "
 - a file (its path)
 - something else (text pasted into the conversation)
 
-Then list the steps as a numbered list, one line each, and the requirement the plan serves: its own Context or Goal section, the request in this session, the issue or the branch name. If the plan has no steps you can number, or you cannot name a requirement, ask instead of guessing. Use this same list in every part.
+Then list the steps as a numbered list, one line each, and the requirement the plan serves: its own Context or Goal section, the request in this session, the issue or the branch name. Then list the results the requirement asks for, one line each: what must be true or observable when the plan is done. If the plan has no steps you can number, or you cannot name a requirement, ask instead of guessing. Use these same lists in every part.
 
 ## Where fixes go
 
@@ -63,13 +63,21 @@ For each, answer with evidence:
 
 - **Coverage.** Go the other way round: every item of the requirement, and the step that serves it, or "no step".
 - **Order and dependencies.** A step that uses something a later step creates, or that cannot be checked before a later one.
-- **Verification.** For each step that changes behaviour, how it will be shown to work, and the test or check the project's own standards ask for. "Run the tests" without saying which is not a check.
+- **Verification.** For each step that changes behaviour, how it will be shown to work, and the test or check the project's own standards ask for. "Run the tests" without saying which is not a check. Every result the requirement asks for also needs an acceptance criterion in the plan; this holds for refactors, documentation and skills as well. A criterion states:
+  - the **scenario**: the input and the conditions that matter;
+  - the **observable result**: what is inspected (an interface, an API response, CLI output, a stored state, a document, the behaviour of a skill);
+  - the **acceptance condition**: what counts as pass and what as fail;
+  - the **check and evidence**: the concrete procedure, and where or how its output is inspected.
+  - **Shape:** one compact line, adapted to the plan: "Criterion — result / steps: in situation X we observe Y; passes if Z. Check: method. Evidence: artefact or output. Status: planned, not run, or blocked by a decision."
+  - **Proportion:** a criterion follows the requirement, not the number of files; one criterion may cover several steps, and a criterion that is already good stays as it is. A yes/no condition is measurable: do not force percentages or scores. "Visible" means inspectable: do not ask for screenshots when there is nothing to look at. Cover the error cases and limits the requirement names, and no more.
+  - **Comparative gains** (speed, size, memory): name the baseline, the conditions, the sample and a justified threshold. A measurement nobody has taken becomes a measuring step; a threshold that is a product decision becomes a question for the user. Never invent a value.
+  - **Planned, not run:** this review runs nothing and does not show that the plan works. Mark every criterion "planned, not run", never "passes" or "verified".
 - **Hard to undo.** Steps that delete, overwrite, migrate, push, publish or release. Mark each one as needing the user's go-ahead in the plan.
 - **Unevidenced assumptions and open questions.** What the plan takes for granted without a `file:line`, or leaves undecided. Ask the user instead of guessing.
 
 ### After a fix
 
-If any answer is "not optimal", "no reason", "not correct", "not aligned" or "does not hold", or Part C finds a gap, fix the plan text: remove or shrink the step, reshape it to match the standard, correct the false assumption, add the missing step. Keep the plan's structure and touch only what the finding concerns. Do not add steps for improvements nobody asked for. If the fix needs a decision about the requirement or the scope, stop and ask instead of guessing. After the edit, re-read the plan and check the step numbers and the cross-references.
+If any answer is "not optimal", "no reason", "not correct", "not aligned" or "does not hold", or Part C finds a gap, fix the plan text: remove or shrink the step, reshape it to match the standard, correct the false assumption, add the missing step. A result with no criterion, or a criterion that lacks a part, is a gap: add or repair the criterion in the plan, from the requirement and the neighbouring tests. Keep the plan's structure and touch only what the finding concerns. Do not add steps for improvements nobody asked for. If the fix needs a decision about the requirement or the scope (a threshold, an expected behaviour), stop and ask instead of guessing; the report lists that criterion as blocked. After the edit, re-read the plan and check the step numbers and the cross-references.
 
 ## Place questions
 
@@ -81,15 +89,15 @@ Search the web only when you are not sure about a fact the answer depends on (AP
 
 ## Stop
 
-Stop when a full pass changes nothing, or after 3 passes (then list what is still open).
+Stop when a full pass changes nothing, or after 3 passes (then list what is still open). Stopping is not approval: a plan whose essential criteria are still blocked by a decision is not approved, and the report says so.
 
 ## Report
 
-Start with the standards files found (path and what each governs), or "none found". Then one table per part, one row per step or class, each answer in a few words with its `file:line`:
+Start with the standards files found (path and what each governs), or "none found". Then one table for Part A and one for Part B, one row per step or class, each answer in a few words with its `file:line`:
 
 | step | why | necessary | aligned | holds | right place | optimal | action |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | login fix | yes | yes, like `b.kt:40` | yes, `a.kt:12` | yes | yes | none |
 | 2 | no reason | no | n/a | n/a | n/a | n/a | removed |
 
-The class table has a `correct` column after `optimal` and no `holds` column. Part C is a short list: check, finding, action. Then the "Place questions" list and the open questions. Say what you read and what the agents returned; say what you could not check. No build or test was run, and do not claim otherwise. Do not stage or commit.
+The class table has a `correct` column after `optimal` and no `holds` column. Part C is a short list, not a table: check, finding, action. Under Verification, say which criteria you added or corrected, which you kept and which are blocked by a decision, each with where it is in the plan; the full criteria stay in the plan, so do not copy them into the report. Then the "Place questions" list and the open questions. Say what you read and what the agents returned; say what you could not check. No build or test was run, and do not claim otherwise. Do not stage or commit.
