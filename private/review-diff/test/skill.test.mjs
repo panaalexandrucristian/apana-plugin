@@ -27,8 +27,21 @@ describe("review-diff skill", () => {
     assert.match(text, /gh pr diff N -R <owner\/repo>/);
   });
 
-  it("includes untracked files when the target is a ref", () => {
-    assert.match(source(), /`git diff \$ARGUMENTS\.\.\.HEAD`, the uncommitted changes and the untracked files/);
+  it("takes one diff against the merge base, untracked files included, when the target is a ref", () => {
+    const text = source();
+    assert.match(text, /everything since the merge base of the ref and `HEAD`, committed or not, and the untracked files\. Run the `ref` command below with it/);
+    assert.ok(!text.includes("git diff $ARGUMENTS...HEAD"));
+  });
+
+  it("takes the hunks and the new files from diff-target and keeps the git commands as a fallback", () => {
+    const text = source();
+    assert.match(text, /from the `hunks` list of the script; do not rebuild the list/);
+    assert.match(text, /files marked `A` in the script's `files` list \(untracked ones too\)/);
+    assert.match(text, /with no Node, take the diff by hand: `git diff HEAD` plus `git ls-files --others --exclude-standard`/);
+  });
+
+  it("reports a table per part with the five answers and the action", () => {
+    assert.match(source(), /^\| hunk or class \| why \| necessary \| aligned \| right place \| optimal \| action \|$/m);
   });
 
   it("asks whether each hunk and each new class is in the right place, without moving anything alone", () => {
