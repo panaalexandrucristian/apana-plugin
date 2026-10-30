@@ -28,7 +28,6 @@ Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measuremen
 ## Tests
 
 - Node suite (hooks, skills, the self tests and the end-to-end test of `compact-handoff`): `npm test`. Run it alone: it leaves temporary folders in `$TMPDIR` and a run in parallel with the Python suites failed once in the plugin it came from.
-- `omlx` (stdlib only): `npm run test:omlx`.
 - `claude-auto` and its installer and uninstaller (stdlib only, a fake `claude`): `npm run test:claude-auto`.
 - `claude-openai` (stdlib tests, no provider credentials): `npm run test:claude-openai`. The loopback proxy lifecycle test skips if CLIProxyAPI is absent.
 - Needs Node 22, Python 3 and ripgrep. CI runs the Node and Python suites on Linux; live subscription login/inference is verified separately on macOS.

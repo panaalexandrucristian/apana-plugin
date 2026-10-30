@@ -25,7 +25,6 @@ Follow the steps in order. Push and tag only when the owner asked for a release 
 5. **Test and commit.**
    ```sh
    npm test
-   npm run test:omlx
    npm run test:claude-auto
    git add <the files you changed>
    git commit -m "Plugin X.Y.Z: <what changed, one line>"

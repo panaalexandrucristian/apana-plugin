@@ -15,7 +15,6 @@
   },
   "scripts": {
     "test": "node --test private/*/test/*.mjs skills/*/scripts/test/*.mjs",
-    "test:omlx": "$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3) -B -W ignore::ResourceWarning -m unittest discover -s skills/omlx/scripts -p 'test_*.py'",
     "test:claude-auto": "(cd skills/install-claude-auto/assets && python3 -B -W ignore test_claude_auto.py && python3 -B -W ignore test_managed.py) && (cd skills/install-claude-auto/scripts && python3 -B -W ignore test_setup.py)",
     "test:claude-openai": "python3 -B -m unittest discover -s skills/claude-openai/scripts -p 'test_*.py'",
     "test:cooperation": "python3 -B -m unittest discover -s private/session-cooperation -p 'test_*.py'",
