@@ -24,6 +24,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:android-emulator-low-ram` | Measures Android Emulator memory and safely tunes a dedicated low-RAM AVD. |
 | `apana:scope` | Investigate a coding task, ask about unclear intent, then gate edits to exact paths after explicit user approval. |
 | `apana:review-diff` | Ask what to review (uncommitted changes, a commit, a PR) when given no argument; challenge every changed hunk and every new class of the diff (why, necessary, aligned with the project standard, in the right place, optimal), fix what is not optimal and repeat. A bundled script (`diff-target.mjs`) lists the files and hunks of the target. |
+| `apana:review-plan` | Ask what plan to review when given no argument; two subagents first (one finds the project's standards files, one looks up official best practices), then every step of the plan, every new class or file it adds and what it leaves out are challenged (why, necessary, aligned with the project standard, holds, in the right place, optimal), and the plan text, never the code, is fixed and the pass repeated. |
 | `apana:uninstall-claude-scope` | Remove an old standalone launcher and its marked PATH block without removing reports or unrelated files. |
 | `apana:jev-decision-loop` | A mode, switched on by the user, in which Jev picks every next step of the session from 2-5 options the model writes. |
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
