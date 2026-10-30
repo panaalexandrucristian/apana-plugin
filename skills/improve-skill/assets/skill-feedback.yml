@@ -1,0 +1,60 @@
+name: Skill feedback
+description: A bug or an improvement for one skill, from usage digests
+title: "[skill] "
+body:
+  - type: input
+    id: kind
+    attributes: { label: kind (improvement or bug) }
+    validations: { required: true }
+  - type: input
+    id: skill
+    attributes: { label: skill }
+    validations: { required: true }
+  - type: input
+    id: plugin_version
+    attributes: { label: plugin_version }
+    validations: { required: true }
+  - type: input
+    id: cc_version
+    attributes: { label: cc_version }
+    validations: { required: true }
+  - type: input
+    id: skill_hash
+    attributes: { label: skill_hash }
+    validations: { required: true }
+  - type: input
+    id: improve_skill_version
+    attributes: { label: improve_skill_version }
+    validations: { required: true }
+  - type: dropdown
+    id: severity
+    attributes: { label: severity, options: [blocker, major, minor] }
+    validations: { required: true }
+  - type: dropdown
+    id: trigger
+    attributes: { label: trigger, options: [user-slash, claude-proactive] }
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes: { label: evidence (digest record ids; each number labelled measured/calculated/guessed, with n) }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: expected }
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes: { label: actual }
+    validations: { required: true }
+  - type: textarea
+    id: proposed_change
+    attributes: { label: proposed_change }
+    validations: { required: true }
+  - type: dropdown
+    id: laptop_class
+    attributes: { label: laptop_class, options: [personal, gestionat] }
+    validations: { required: true }
+  - type: dropdown
+    id: status
+    attributes: { label: status, options: [open, accepted, rejected, done] }
+    validations: { required: true }
