@@ -1,0 +1,26 @@
+schema_version: "1.1"
+name: review-plan-acceptance-adequate
+description: The plan already has good criteria; the review must keep them, without duplicates or stricter conditions nobody asked for
+runs: 1
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 40
+  timeout_seconds: 900
+  allowed_tools: [Read, Glob, Grep, Skill, Agent, AskUserQuestion, Edit]
+  prompt: |
+    Use the Skill tool to run the `review-plan` skill with the argument `PLAN.md`. The plan to review is the file PLAN.md in the current directory. Do not ask what plan to review.
+graders:
+  - name: criteria
+    type: llm
+    focus:
+      source: file
+      path: PLAN.md
+    criteria: |
+      The file is PLAN.md after a plan review. The original requirement: a sign-up with a required field (`name` or `email`) left empty must not send a save request to the server; a complete sign-up is still saved. Before the review the plan already had two acceptance criteria: an incomplete sign-up is not sent (no request recorded, `ok: false`), and a complete sign-up is still saved (the existing test still passes).
+      PASS if PLAN.md still has a criterion for each of the two outcomes, each with a scenario, an observable result, an acceptance condition and a check with evidence, and with the same meaning as before. A review that changed nothing, or only reworded or tightened them to match the requirement, passes.
+      FAIL if either criterion was dropped or weakened, if one outcome now has two criteria that repeat each other, if a condition nobody asked for was added (a percentage, a score, a screenshot, a message text, email format validation), or if the plan says a check already passed or was verified.
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?review-plan"'

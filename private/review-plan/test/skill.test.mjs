@@ -74,4 +74,51 @@ describe("review-plan skill", () => {
     assert.match(text, /after 3 passes/);
     assert.match(text, /Start with the standards files found \(path and what each governs\), or "none found"/);
   });
+
+  it("lists the results the requirement asks for and asks for a criterion for each, with four parts", () => {
+    const text = source();
+    assert.match(text, /list the results the requirement asks for, one line each/);
+    assert.match(text, /Every result the requirement asks for also needs an acceptance criterion in the plan; this holds for refactors, documentation and skills as well/);
+    for (const part of ["**scenario**", "**observable result**", "**acceptance condition**", "**check and evidence**"]) {
+      assert.ok(text.includes(part), part);
+    }
+    assert.match(text, /Criterion — result \/ steps: in situation X we observe Y; passes if Z\. Check: method\. Evidence: artefact or output\./);
+  });
+
+  it("keeps good criteria, follows the requirement and forces neither numbers nor screenshots", () => {
+    const text = source();
+    assert.match(text, /follows the requirement, not the number of files/);
+    assert.match(text, /a criterion that is already good stays as it is/);
+    assert.match(text, /A yes\/no condition is measurable: do not force percentages or scores/);
+    assert.match(text, /do not ask for screenshots when there is nothing to look at/);
+    assert.match(text, /Cover the error cases and limits the requirement names, and no more/);
+  });
+
+  it("asks a comparative gain for baseline, conditions, sample and threshold, and never invents a value", () => {
+    const text = source();
+    assert.match(text, /name the baseline, the conditions, the sample and a justified threshold/);
+    assert.match(text, /A measurement nobody has taken becomes a measuring step; a threshold that is a product decision becomes a question for the user/);
+    assert.match(text, /Never invent a value/);
+  });
+
+  it("repairs a missing criterion in the plan and asks, not guesses, when a decision is missing", () => {
+    const text = source();
+    assert.match(text, /A result with no criterion, or a criterion that lacks a part, is a gap: add or repair the criterion in the plan/);
+    assert.match(text, /\(a threshold, an expected behaviour\), stop and ask instead of guessing; the report lists that criterion as blocked/);
+  });
+
+  it("keeps a planned check apart from a check that was run, and does not approve a plan that is still blocked", () => {
+    const text = source();
+    assert.match(text, /Mark every criterion "planned, not run", never "passes" or "verified"/);
+    assert.match(text, /this review runs nothing and does not show that the plan works/);
+    assert.match(text, /Stopping is not approval: a plan whose essential criteria are still blocked by a decision is not approved, and the report says so/);
+  });
+
+  it("reports criteria added, corrected, kept and blocked without copying them, with tables for Parts A and B only", () => {
+    const text = source();
+    assert.match(text, /one table for Part A and one for Part B/);
+    assert.match(text, /Part C is a short list, not a table: check, finding, action/);
+    assert.match(text, /which criteria you added or corrected, which you kept and which are blocked by a decision, each with where it is in the plan/);
+    assert.match(text, /the full criteria stay in the plan, so do not copy them into the report/);
+  });
 });

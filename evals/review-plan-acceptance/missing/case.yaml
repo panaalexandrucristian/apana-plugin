@@ -1,0 +1,26 @@
+schema_version: "1.1"
+name: review-plan-acceptance-missing
+description: The plan names no result to observe; the review must add a criterion with scenario, observable result, acceptance condition and check
+runs: 1
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 40
+  timeout_seconds: 900
+  allowed_tools: [Read, Glob, Grep, Skill, Agent, AskUserQuestion, Edit]
+  prompt: |
+    Use the Skill tool to run the `review-plan` skill with the argument `PLAN.md`. The plan to review is the file PLAN.md in the current directory. Do not ask what plan to review.
+graders:
+  - name: criteria
+    type: llm
+    focus:
+      source: file
+      path: PLAN.md
+    criteria: |
+      The file is PLAN.md after a plan review. The original requirement: a sign-up with a required field (`name` or `email`) left empty must not send a save request to the server and the person stays on the form; a complete sign-up is still saved.
+      PASS if PLAN.md contains an acceptance criterion for the incomplete sign-up that states all four of: (1) a scenario (an empty required field, the input and the condition), (2) an observable result (no save request is sent, that is `send` is not called, and what is returned), (3) an acceptance condition that says what passes and what fails, (4) a concrete check with where or how its output is inspected (a named test or command and its output). The plan's own steps are still there.
+      FAIL if the plan still has only a vague check such as "check that it works" or "run the tests", if the criterion lacks any of the four parts, if the plan says a check already passed or was verified, if the file is unchanged, or if the review added a requirement nobody asked for (email format validation, a message text, a screenshot).
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?review-plan"'
