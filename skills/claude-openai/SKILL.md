@@ -1,7 +1,7 @@
 ---
 name: claude-openai
 description: "Use when running Claude Code with an OpenAI subscription."
-version: 0.3.0
+version: 0.4.0
 author: Hermes Agent
 license: MIT
 platforms: [macos]
@@ -33,7 +33,7 @@ Passwords/2FA stay in the provider UI (use the vault for browser automation). Pa
 
 ## Commands and verification
 
-In a new terminal: `claude-openai`. Choose a listed GPT model with `--model` or `CLAUDE_OPENAI_MODEL`.
+In a new terminal: `claude-openai`. Each new launch checks catalog metadata and rebuilds its session-only model lineup; `claude-auto` handoffs keep that launch's snapshot. Choose a listed GPT model with `--model` or `CLAUDE_OPENAI_MODEL` (the flag wins); an explicit model that disappears is an error, not an automatic switch. Catalog/compatibility warnings mean freshness is unconfirmed, not that the valid proxy inventory is unusable. Read [operations](references/operations.md#catalog-snapshots-and-evidence) for sources, bounds and evidence limits; inference success alone does not prove synchronization. Installation overwrite and real verification requests require the owner's approval.
 
 Run `python3 <skill-dir>/scripts/claude_openai.py` with:
 - `models`: list models; `login`: repeat OAuth; `verify`: real request.

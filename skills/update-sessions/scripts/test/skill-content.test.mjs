@@ -32,11 +32,12 @@ describe("SKILL.md", () => {
     assert.match(body, /--dry-run/);
   });
 
-  it("explains every exit code, including that exit 3 also covers typed, not confirmed and held, so the model does not report such a session as skipped", () => {
+  it("explains every exit code, including that exit 3 also covers typed, not confirmed, held and failed, so the model does not report such a session as skipped", () => {
     for (const code of ["Exit 0", "Exit 3", "Exit 4", "Exit 5"]) assert.ok(body.includes(code), `${code} is explained`);
     assert.match(body, /typed, not confirmed/);
     assert.match(body, /received the command|got the command/i, "a typed, not confirmed session did receive the command");
     assert.match(body, /held/);
+    assert.match(body, /`failed`/);
     assert.match(body, /\/reload-plugins --force/);
   });
 

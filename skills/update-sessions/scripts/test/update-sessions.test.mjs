@@ -143,6 +143,24 @@ describe("main: the whole flow", () => {
     assert.match(rowOf(text, "alpha"), /held\s+.*\/reload-plugins --force/);
   });
 
+  it("reports a session that iTerm2 cannot be read or typed into as failed with the command to type by hand, keeps the other rows, and exits 3 instead of throwing", async () => {
+    const read = world([idle(1, "alpha"), idle(2, "bravo")]);
+    const readOk = read.deps.iterm.read;
+    read.deps.iterm.read = (tty) => { if (tty === "/dev/ttys001") throw new ItermError("no iTerm2 session on /dev/ttys001"); return readOk(tty); };
+    const afterRead = await main([], read.deps);
+    assert.equal(afterRead.code, 3);
+    assert.match(rowOf(afterRead.text, "alpha"), /failed\s+.*no iTerm2 session on \/dev\/ttys001.*\/reload-plugins/);
+    assert.match(rowOf(afterRead.text, "bravo"), /reloaded/);
+    const write = world([idle(1, "alpha")]);
+    write.deps.iterm.write = () => { throw new ItermError("osascript failed"); };
+    const afterWrite = await main([], write.deps);
+    assert.equal(afterWrite.code, 3);
+    assert.match(rowOf(afterWrite.text, "alpha"), /failed\s+.*osascript failed/);
+    const bug = world([idle(1, "alpha")]);
+    bug.deps.iterm.read = () => { throw new TypeError("not an iTerm2 error"); };
+    await assert.rejects(main([], bug.deps), TypeError);
+  });
+
   it("skips the invoking session as any other when its prompt has text", async () => {
     const w = world([{ pid: 1, tty: "ttys001", name: "me", status: "busy", sessionId: "me-id", text: "typing now" }]);
     const { code, text } = await main(["--self", "me-id"], w.deps);
@@ -159,6 +177,16 @@ describe("main: the update on disk", () => {
     assert.equal(code, 4);
     assert.match(text, /claude plugin update apana@apana-private/);
     assert.match(text, /boom: marketplace unreachable/);
+    assert.deepEqual(w.log, []);
+  });
+
+  it("gives the reason of a command that could not start (claude not on PATH, timeout) instead of exit null with no output", async () => {
+    const w = world([idle(1, "alpha")]);
+    w.deps.runCmd = () => ({ status: null, stdout: null, stderr: null, error: new Error("spawnSync claude ENOENT") });
+    const { code, text } = await main([], w.deps);
+    assert.equal(code, 4);
+    assert.match(text, /claude plugin marketplace update apana-private failed/);
+    assert.match(text, /spawnSync claude ENOENT/);
     assert.deepEqual(w.log, []);
   });
 

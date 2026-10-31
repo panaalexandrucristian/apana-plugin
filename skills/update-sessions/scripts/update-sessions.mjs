@@ -31,7 +31,7 @@ function parseArgs(argv) {
 function updateOnDisk(deps) {
   for (const args of [["plugin", "marketplace", "update", MARKETPLACE], ["plugin", "update", PLUGIN]]) {
     const r = deps.runCmd("claude", args, { cwd: deps.home });
-    if (r.status !== 0) return `claude ${args.join(" ")} failed (exit ${r.status}): ${String(r.stderr || r.stdout || "no output").trim()}`;
+    if (r.status !== 0) return `claude ${args.join(" ")} failed (exit ${r.status}): ${String(r.error?.message || r.stderr || r.stdout || "no output").trim()}`;
   }
   return null;
 }
@@ -45,22 +45,27 @@ async function handle(proc, ctx, isSelf) {
   const row = { name: entry?.name ?? `pid ${proc.pid}`, tty: proc.tty.replace("/dev/", ""), done: false };
   const gate = gateBeforeScreen({ entry, matches: itermSessions.filter((s) => s.tty === proc.tty).length, isSelf });
   if (!gate.ok) return { ...row, state: "skipped", result: gate.reason };
-  const before = deps.iterm.read(proc.tty);
-  const screen = classifyScreen(before);
-  if (screen.state !== "empty") return { ...row, state: "skipped", result: screen.state === "text" ? TEXT_IN_PROMPT : screen.reason };
-  if (options.dryRun) return { ...row, state: isSelf ? "would queue" : "would reload", result: isSelf ? SELF_RESULT : "idle, prompt empty", done: true };
-  deps.iterm.write(proc.tty, COMMAND);
-  if (isSelf) return { ...row, state: "queued", result: SELF_RESULT, done: true };
-  const deadline = deps.now() + CONFIRM_MS;
-  do {
-    await deps.sleep(POLL_MS);
-    const c = confirmReload(before, deps.iterm.read(proc.tty));
-    if (!c.confirmed) continue;
-    if (c.status === "held") return { ...row, state: "held", result: `an MCP change was held back: type ${COMMAND} --force in that session to apply it` };
-    const shown = c.counts ? countsText(c.counts) : c.line;
-    return { ...row, state: c.status, result: [shown, ...(c.status === "warning" ? c.notes : [])].join(" | "), done: true };
-  } while (deps.now() < deadline);
-  return { ...row, state: "typed, not confirmed", result: `the session got the command but no Reloaded: line appeared in ${CONFIRM_MS / 1000} s: look at it, or type ${COMMAND} again` };
+  try {
+    const before = deps.iterm.read(proc.tty);
+    const screen = classifyScreen(before);
+    if (screen.state !== "empty") return { ...row, state: "skipped", result: screen.state === "text" ? TEXT_IN_PROMPT : screen.reason };
+    if (options.dryRun) return { ...row, state: isSelf ? "would queue" : "would reload", result: isSelf ? SELF_RESULT : "idle, prompt empty", done: true };
+    deps.iterm.write(proc.tty, COMMAND);
+    if (isSelf) return { ...row, state: "queued", result: SELF_RESULT, done: true };
+    const deadline = deps.now() + CONFIRM_MS;
+    do {
+      await deps.sleep(POLL_MS);
+      const c = confirmReload(before, deps.iterm.read(proc.tty));
+      if (!c.confirmed) continue;
+      if (c.status === "held") return { ...row, state: "held", result: `an MCP change was held back: type ${COMMAND} --force in that session to apply it` };
+      const shown = c.counts ? countsText(c.counts) : c.line;
+      return { ...row, state: c.status, result: [shown, ...(c.status === "warning" ? c.notes : [])].join(" | "), done: true };
+    } while (deps.now() < deadline);
+    return { ...row, state: "typed, not confirmed", result: `the session got the command but no Reloaded: line appeared in ${CONFIRM_MS / 1000} s: look at it, or type ${COMMAND} again` };
+  } catch (error) {
+    if (!(error instanceof ItermError)) throw error;
+    return { ...row, state: "failed", result: `iTerm2: ${error.message.replace(/\s+/g, " ")}: look at that session, it may or may not have got the command; type ${COMMAND} if it did not reload` };
+  }
 }
 
 function table(rows) {
