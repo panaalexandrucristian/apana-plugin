@@ -1015,6 +1015,9 @@ def wrapper(args):
                 os.remove(os.path.join(run, "deferred"))
             sig["pending"] = collect_pending(run, sig)
             handoffs += 1
+            if bootstrap:
+                bootstrap = False                  # the warm-up ended in a handoff, not an anchor: the next session must not become one
+                log("handoff %d: the warm-up session ended without an anchor; the sessions after it start without a fork" % handoffs)
             if sig.get("cwd") and os.path.isdir(sig["cwd"]):
                 cwd = sig["cwd"]
             fork = ["--resume", anchor, "--fork-session"] if anchor else []

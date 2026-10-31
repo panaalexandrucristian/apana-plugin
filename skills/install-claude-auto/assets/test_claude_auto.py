@@ -894,6 +894,7 @@ FAKE_CLAUDE = """
     n = len([f for f in os.listdir(state) if f.startswith("call-")])
     rec = {"n": n, "argv": sys.argv[1:], "cwd": os.getcwd(), "run": os.environ.get("CLAUDE_AUTO_RUN"), "pid": os.getpid()}
     rec["cooperation"] = {key: value for key, value in os.environ.items() if key.startswith("CLAUDE_AUTO_COOP")}
+    rec["bootstrap"] = os.environ.get("CLAUDE_AUTO_BOOTSTRAP")
     if "--settings" in sys.argv:
         rec["settings"] = open(sys.argv[sys.argv.index("--settings") + 1]).read()
     if os.isatty(0):
@@ -963,6 +964,14 @@ FAKE_CLAUDE = """
             time.sleep(60)
         elif n == 1:
             fire("work-456")
+            time.sleep(60)
+    elif mode == "bootstrap_handoff_without_anchor":
+        if n == 0:   # no Stop of the warm-up reached the hook with the bootstrap variable, so no anchor: the first signal is a handoff
+            os.environ.pop("CLAUDE_AUTO_BOOTSTRAP")
+            fire("s0")
+            time.sleep(60)
+        elif n == 1:
+            fire("s1")
             time.sleep(60)
     elif mode == "handoff_then_quit":
         fire("s0")
@@ -1284,6 +1293,18 @@ class Wrapper(unittest.TestCase):
         self.assertEqual(c[2]["argv"][2:-2], ["--model", "sonnet", "--resume", "anchor-123", "--fork-session"])
         self.assertEqual(c[2]["argv"][-2], "--")
         self.assertIn("HANDOFF.md", c[2]["argv"][-1])
+
+    def test_a_warm_up_that_ends_in_a_handoff_leaves_no_anchor_for_the_sessions_after_it(self):
+        r = self.wrap("task", FAKE_MODE="bootstrap_handoff_without_anchor", CLAUDE_AUTO_BOOTSTRAP="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        c = self.calls()
+        self.assertEqual(len(c), 3, r.stderr)
+        self.assertEqual(c[0]["bootstrap"], "1")
+        for call in c[1:]:
+            self.assertIsNone(call["bootstrap"])
+            self.assertNotIn("--resume", call["argv"])
+            self.assertNotIn("--fork-session", call["argv"])
+        self.assertIn("without an anchor", open(os.path.join(self.base, "auto.log")).read())
 
     def test_next_args_override(self):
         self.wrap("--model", "opus", FAKE_MODE="handoff", CLAUDE_AUTO_NEXT_ARGS="--permission-mode 'accept Edits'")
