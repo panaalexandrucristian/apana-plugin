@@ -1,0 +1,10 @@
+※ recap: sample summary line that carries no project data.
+  second line of the sample summary.
+ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ aplică redenumirea HttpStatus.kt 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ apana-cooperation: Cooperation: owner task has priority 
+  [Sonnet 5.5] │ project git:(main*) 
+  Context █░░░░░░░░░ 6% │ Usage Weekly ██░░░░░░░░ 15% (resets in 3d 21h) 
+  ⏵⏵ bypass permissions on (shift+tab to cycle) 

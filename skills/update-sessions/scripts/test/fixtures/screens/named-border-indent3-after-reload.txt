@@ -1,0 +1,5 @@
+   ❯ /reload-plugins
+     ⎿  Reloaded: 5 plugins · 51 skills · 11 agents · 2 hooks · 0 plugin MCP servers · 0 plugin LSP servers
+   ──── danae ─
+   ❯
+   ────

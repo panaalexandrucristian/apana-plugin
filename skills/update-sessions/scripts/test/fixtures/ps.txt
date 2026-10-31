@@ -1,0 +1,14 @@
+  PID  PPID TTY      COMMAND
+ 2640  1689 ??       /Applications/Claude.app/Contents/Helpers/chrome-native-host chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/
+32021     1 ??       /opt/homebrew/bin/cliproxyapi -config /Users/me/.local/share/claude-openai/session-wnvf1kc0/proxy.json -local-model
+39482 42469 ttys000  /Users/me/.nvm/versions/node/v22.23.1/bin/claude --settings /Users/me/.claude/handoffs/auto/run-s5y9dkpu/settings.json --plugin-dir /Users/me/.claude/claude-auto/cooperation
+42465 42059 ttys000  /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /Users/me/.local/share/claude-openai/claude_openai.py run
+42469 42465 ttys000  /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /Users/me/.claude/claude-auto/claude-auto --settings /Users/me/.claude/handoffs/auto/run-s5y9dkpu/settings.json
+50301 49889 ttys001  /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /Users/me/.claude/claude-auto/claude-auto
+99347 50301 ttys001  /Users/me/.nvm/versions/node/v22.23.1/bin/claude --settings /Users/me/.claude/handoffs/auto/run-er3rof33/settings.json --plugin-dir /Users/me/.claude/claude-auto/cooperation
+54654 68559 ttys002  /Users/me/.nvm/versions/node/v22.23.1/bin/claude --settings /Users/me/.claude/handoffs/auto/run-q4vss4n9/settings.json --plugin-dir /Users/me/.claude/claude-auto/cooperation
+68559 68551 ttys002  /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /Users/me/.claude/claude-auto/claude-auto --settings /Users/me/.claude/handoffs/auto/run-q4vss4n9/settings.json
+87284 63737 ttys003  /Users/me/.nvm/versions/node/v22.23.1/bin/claude --settings /Users/me/.claude/handoffs/auto/run-5q817qdy/settings.json --plugin-dir /Users/me/.claude/claude-auto/cooperation
+86055 49466 ttys004  /Users/me/.nvm/versions/node/v22.23.1/bin/claude --settings /Users/me/.claude/handoffs/auto/run-2qnilk5z/settings.json --plugin-dir /Users/me/.claude/claude-auto/cooperation
+42358 25563 ttys006  /Users/me/.nvm/versions/node/v22.23.1/bin/claude --settings /Users/me/.claude/handoffs/auto/run-7_f7x399/settings.json --plugin-dir /Users/me/.claude/claude-auto/cooperation
+11111 22222 ttys007  claude --resume 7bed6499-0000-0000-0000-000000000000

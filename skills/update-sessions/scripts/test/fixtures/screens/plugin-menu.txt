@@ -1,0 +1,5 @@
+ 
+  Plugins 
+  ❯ apana@apana-private Version: 0.9.0 
+    caveman@anthropic-plugin-directory Version: 1.1.2 
+  ↑↓ navigate · Enter select · Esc back 

@@ -1,0 +1,13 @@
+※ recap: sample summary line that carries no project data.
+  second line of the sample summary.
+ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ apana-cooperation: Cooperation: owner task has priority 
+  [gpt-6.1-sol] │ project git:(main*) 
+  Context ███░░░░░░░ 31% 
+  ⏵⏵ bypass permissions on (shift+tab to cycle) 
+ 
+  ⏺ main 
+  ◯ general-purpose  sample background task

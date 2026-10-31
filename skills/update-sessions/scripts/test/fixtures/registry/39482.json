@@ -1,0 +1,25 @@
+{
+ "pid": 39482,
+ "sessionId": "00039482-0000-0000-0000-000000000000",
+ "cwd": "/Users/me/alpha",
+ "startedAt": 1793386081213,
+ "procStart": "Fri Oct 30 18:48:00 2026",
+ "version": "2.1.314",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "interactive",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "asksForConvertedSkills": null,
+ "messagingSocketPath": "/tmp/sample.sock",
+ "name": "alpha",
+ "nameSource": "derived",
+ "nameSince": 1793386081214,
+ "status": "idle",
+ "updatedAt": 1793388521018,
+ "statusUpdatedAt": 1793388521018
+}
