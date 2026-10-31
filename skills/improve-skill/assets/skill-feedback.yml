@@ -32,7 +32,7 @@ body:
     validations: { required: true }
   - type: dropdown
     id: trigger
-    attributes: { label: trigger, options: [user-slash, claude-proactive] }
+    attributes: { label: trigger, options: [user-slash, claude-proactive, after-handoff] }
     validations: { required: true }
   - type: textarea
     id: evidence

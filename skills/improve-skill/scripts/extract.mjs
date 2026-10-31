@@ -10,6 +10,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WINDOW = 8;                  // records after an invocation that are searched for its base directory and signals
 const SETTLE_MS = 10 * 60 * 1000;  // a file touched more recently may still gain records for the last invocations
 const DEFAULT_ALIASES = { 'jev:logic-test-debug': 'apana:logic-test-debug' };
+const HANDOFF_START = /^Citește\s+\S*HANDOFF\.md\s+și urmează instrucțiunile din el/;  // how claude-auto and compact-handoff start the first message of a continued session
 const CORRECTION = /^\s*(nu\b|nu,|stop\b|gre[sș]it|no\b|wrong\b|that'?s not|not what|de ce\b)/i;
 
 const sha = (s, n = 10) => createHash('sha256').update(s).digest('hex').slice(0, n);
@@ -40,6 +41,17 @@ export function skillHash(dir) {
   try { return sha(readFileSync(join(dir, 'SKILL.md')), 12); } catch { return unknown('SKILL.md not readable'); }
 }
 
+// The last message the user typed before record i: not a meta record, a tool result, a local-command output or a task notification (the harness writes those).
+const lastTyped = (recs, i) => {
+  for (let j = i - 1; j >= 0; j--) {
+    const r = recs[j];
+    if (r.type !== 'user' || r.isMeta || (Array.isArray(r.message?.content) && r.message.content.some((p) => p.type === 'tool_result'))) continue;
+    const t = textOf(r).trim();
+    if (t && !t.startsWith('<local-command-') && !t.startsWith('<task-notification>')) return t;
+  }
+  return '';
+};
+
 // Pure: records of one transcript file -> invocation records. `recs` are parsed JSON objects in file order.
 export function findInvocations(recs, ctx) {
   const out = [];
@@ -47,7 +59,7 @@ export function findInvocations(recs, ctx) {
     let skill, trigger, model;
     if (rec.type === 'assistant' && Array.isArray(rec.message?.content)) {
       const use = rec.message.content.find((p) => p.type === 'tool_use' && p.name === 'Skill');
-      if (use && typeof use.input?.skill === 'string') { skill = use.input.skill; trigger = 'claude-proactive'; model = rec.message.model; }
+      if (use && typeof use.input?.skill === 'string') { skill = use.input.skill; trigger = HANDOFF_START.test(lastTyped(recs, i)) ? 'after-handoff' : 'claude-proactive'; model = rec.message.model; }
     } else if (rec.type === 'user') {
       const t = textOf(rec).trim();
       if (t.startsWith('<command-message>')) {

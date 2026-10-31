@@ -5,8 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extract, classifyBase } from '../extract.mjs';
-import { validateReport, dedupReports, scanRedaction, REQUIRED } from '../report.mjs';
+import { extract, classifyBase, findInvocations } from '../extract.mjs';
+import { validateReport, dedupReports, scanRedaction, REQUIRED, ENUMS } from '../report.mjs';
 import { publish, loadDigests, summarize } from '../sync.mjs';
 
 const SKILL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -170,4 +170,63 @@ test('SKILL.md frontmatter has name, a one-line description under 800 characters
   assert.equal(fm[0], 'name: improve-skill');
   assert.match(fm[1], /^description: ".*"$/);
   assert.ok(fm[1].length - 'description: '.length < 800);
+});
+
+const CTX = { salt: 'x', aliases: {}, version: '1', quotes: false, home: '/h' };
+const skillCall = () => assistant([{ type: 'tool_use', id: 't9', name: 'Skill', input: { skill: 'apana:review-plan' } }]);
+const triggerAfter = (...before) => findInvocations([...before, skillCall()], CTX).map((r) => r.trigger);
+const HOME_HANDOFF = 'Citește /Users/apana/.claude/handoffs/auto/handoff-d712132a-20261031-c1feexcb/HANDOFF.md și urmează instrucțiunile din el';
+const TMP_HANDOFF = 'Citește /tmp/handoff-d86da71f-20261026-iny1lf94/HANDOFF.md și urmează instrucțiunile din el';
+const AUTO_TAIL = '. Sesiunea precedentă a fost oprită automat la ~123k tokeni de context, ca lucrul să continue în această sesiune nouă.';
+const EXTRA_TAIL = `${AUTO_TAIL} Citește și, în ordine, /x/e1.md: conțin ultimele evenimente ale sesiunii precedente.`;
+
+test('a Skill call that follows a handoff continuation message is after-handoff, not claude-proactive', () => {
+  for (const head of [HOME_HANDOFF, TMP_HANDOFF]) {
+    for (const tail of [AUTO_TAIL, '.', '', EXTRA_TAIL]) {
+      assert.deepEqual(triggerAfter(user(head + tail)), ['after-handoff'], head + tail);
+    }
+  }
+  const asParts = rec({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: HOME_HANDOFF + '.' }] } });
+  assert.deepEqual(triggerAfter(asParts), ['after-handoff']);
+});
+
+test('the continuation counts when the claude-auto anchor message came first', () => {
+  assert.deepEqual(triggerAfter(user('Răspunde exact: ANCHOR_READY'), assistant([{ type: 'text', text: 'ANCHOR_READY' }]), user(HOME_HANDOFF + AUTO_TAIL)), ['after-handoff']);
+});
+
+test('what the user did not type between the continuation and the call does not break the attribution', () => {
+  const toolResult = rec({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } });
+  const meta = rec({ type: 'user', isMeta: true, message: { role: 'user', content: 'Base directory for this skill: /x' } });
+  const between = [assistant([{ type: 'text', text: 'citesc nota' }]), toolResult, meta, user('<local-command-stdout>Set effort</local-command-stdout>'), user('<task-notification>\n<task-id>a1</task-id>\n</task-notification>')];
+  assert.deepEqual(triggerAfter(user(HOME_HANDOFF + AUTO_TAIL), ...between), ['after-handoff']);
+});
+
+test('a message the user typed after the continuation keeps the call claude-proactive', () => {
+  const cont = user(HOME_HANDOFF + AUTO_TAIL);
+  for (const typed of [user('nu, fă altfel'), slash('clear'), user('[Request interrupted by user]')]) {
+    assert.deepEqual(triggerAfter(cont, assistant([{ type: 'text', text: 'ok' }]), typed), ['claude-proactive']);
+  }
+});
+
+test('text that is not a handoff continuation message stays claude-proactive', () => {
+  assert.deepEqual(triggerAfter(user('Read /tmp/handoff-x/HANDOFF.md completely using these offset:limit ranges in order: 1:281.')), ['claude-proactive']);
+  assert.deepEqual(triggerAfter(user('Te rog: ' + HOME_HANDOFF)), ['claude-proactive'], 'only a message that starts with it counts');
+  assert.deepEqual(triggerAfter(user('Citește /x/NOTES.md și urmează instrucțiunile din el')), ['claude-proactive']);
+  assert.deepEqual(triggerAfter(assistant([{ type: 'text', text: 'ok' }])), ['claude-proactive']);
+});
+
+test('a slash command after the continuation is still user-slash', () => {
+  assert.deepEqual(findInvocations([user(HOME_HANDOFF + AUTO_TAIL), slash('apana:review-plan')], CTX).map((r) => r.trigger), ['user-slash']);
+});
+
+test('the three lists of trigger values agree and the report check accepts after-handoff', () => {
+  const md = readFileSync(join(SKILL_DIR, 'references/report-template.md'), 'utf8');
+  const yml = readFileSync(join(SKILL_DIR, 'assets/skill-feedback.yml'), 'utf8');
+  const inTemplate = [...(/^\| `trigger` \| (.+) \|$/m.exec(md)[1]).matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const inForm = /label: trigger, options: \[([^\]]+)\]/.exec(yml)[1].split(',').map((v) => v.trim());
+  assert.ok(ENUMS.trigger.includes('after-handoff'));
+  assert.deepEqual(inTemplate, ENUMS.trigger);
+  assert.deepEqual(inForm, ENUMS.trigger);
+  assert.deepEqual(validateReport({ ...good(), trigger: 'after-handoff' }, new Set(['u1'])), []);
+  assert.ok(validateReport({ ...good(), trigger: 'handoff-reload' }, new Set(['u1'])).length);
 });

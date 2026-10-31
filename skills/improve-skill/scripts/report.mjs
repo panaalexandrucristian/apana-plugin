@@ -7,7 +7,7 @@ export const REQUIRED = ['kind', 'skill', 'plugin_version', 'cc_version', 'skill
 export const ENUMS = {
   kind: ['improvement', 'bug'],
   severity: ['blocker', 'major', 'minor'],
-  trigger: ['user-slash', 'claude-proactive'],
+  trigger: ['user-slash', 'claude-proactive', 'after-handoff'],
   laptop_class: ['personal', 'gestionat'],
   status: ['open', 'accepted', 'rejected', 'done'],
 };
