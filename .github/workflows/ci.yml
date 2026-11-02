@@ -30,6 +30,9 @@ jobs:
       # Offline bridge tests; the real proxy lifecycle case skips when CLIProxyAPI is not installed.
       - name: subscription bridge (offline Python suite)
         run: npm run test:claude-openai
+      # Copilot bridge uses only offline fixtures: no native download, login or inference.
+      - name: Copilot bridge (offline Python suite)
+        run: npm run test:claude-copilot
       # Registry, bundled API and live-driver regressions use only temporary fixtures; no model credentials.
       - name: session cooperation (offline Python suite)
         run: npm run test:cooperation

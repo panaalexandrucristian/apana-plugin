@@ -17,6 +17,7 @@
     "test": "node --test private/*/test/*.mjs skills/*/scripts/test/*.mjs",
     "test:claude-auto": "(cd skills/install-claude-auto/assets && python3 -B -W ignore test_claude_auto.py && python3 -B -W ignore test_managed.py) && (cd skills/install-claude-auto/scripts && python3 -B -W ignore test_setup.py)",
     "test:claude-openai": "python3 -B -m unittest discover -s skills/claude-openai/scripts -p 'test_*.py'",
+    "test:claude-copilot": "python3 -B -m unittest discover -s skills/claude-copilot/scripts -p 'test_*.py'",
     "test:cooperation": "python3 -B -m unittest discover -s private/session-cooperation -p 'test_*.py'",
     "test:cooperation-native": "claude plugin test skills/install-claude-auto/assets/cooperation",
     "test:code-rag-setup": "python3 -B -W ignore -m unittest discover -s skills/code-rag-setup/scripts -p 'test_*.py'",

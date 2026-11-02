@@ -29,6 +29,8 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:install-claude-auto`, `apana:uninstall-claude-auto` | Put the `claude-auto` wrapper (a fresh session at a token threshold) on PATH, or remove it. |
 | `apana:claude-openai` | Install or verify a separate launcher using an OpenAI subscription through local CLIProxyAPI and Codex OAuth. |
 | `apana:uninstall-claude-openai` | Preview and remove the owned launcher and shell alias, keeping credentials, state and shared dependencies. |
+| `apana:claude-copilot` | Install or verify a separate GitHub Copilot subscription launcher with fresh account models and a fail-closed model guard. |
+| `apana:uninstall-claude-copilot` | Preview and remove only its owned launcher/alias, retaining credentials, state, native plugin and dependencies. |
 
 OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.
 
@@ -53,6 +55,14 @@ This is an unofficial subscription bridge, not a paid-API-key setup. It keeps no
 With the updated wrapper, `--resume` and other session selectors open the requested session without a cache warm-up; a later handoff starts a fresh session. Automatic handoff notes no longer request skill reloads by default. `CLAUDE_AUTO_SKILLS=all` retains the previous behavior; a comma-separated list selects exact skill names loaded by the old session. Unmatched names are omitted and logged. The `caveman` skill is always reloaded when the old session called it. This applies to both `claude-auto` and supervised `claude-openai`, not manual handoff generation. After updating the plugin, rerun `/apana:install-claude-auto` to update the wrapper and `/apana:claude-openai` to update the subscription launcher; already-running sessions are not retrofitted.
 
 To remove the launcher and managed shell alias, invoke `/apana:uninstall-claude-openai`. It previews first and uses the existing bundled uninstaller. OAuth credentials, the state folder and backup, CLIProxyAPI, `claude-auto` and the plugin remain installed; this is not a full data purge. It does not stop running sessions. Existing shells may retain the alias until a new terminal is opened.
+
+### GitHub Copilot subscription launcher
+
+Invoke `/apana:claude-copilot` to install on macOS arm64 with the reviewed CLIProxyAPI/native plugin combination. Native execution, device login and quota-consuming verification require explicit consent. The native binary is not bundled or automatically downloaded; licensing/attestation limits and the exact archive pin are in [operations](skills/claude-copilot/references/operations.md).
+
+Each `claude-copilot` launch fetches the whole authenticated Copilot API catalog, reconciles a cold registry and selects CLI `--model`, then `CLAUDE_COPILOT_MODEL`, then `copilot/gemini-4-argon`. Missing models, failed refreshes and unaccepted substitutions stop without stale-cache, another-model or paid-key fallback. Explicit switching keeps normal policy/confirmation; the guard requires matching hooks before forwarding. Context/output ceilings are calculated from all eligible models, so small legacy models can reduce the entire session's allowance. Catalog metadata is not a per-model live capability guarantee.
+
+Normal hooks/permissions remain active. Interactive sessions use compatible installed `claude-auto`; other modes pass through, and an absent wrapper permits standalone use. Updating Apana does not update the installed copy: rerun the installer and start a new session. Running sessions are unchanged. `/apana:uninstall-claude-copilot` previews before explicit removal, retains credentials/backup/native plugin/dependencies, and does not stop sessions or edit global settings.
 
 ### Hook-free text launcher
 
@@ -109,6 +119,7 @@ The existing environment variables remain compatible and take precedence when ex
     npm run test:claude-auto  # offline Python suites of claude-auto and its installer
     npm run test:claude-scope # Node scope gates and Python legacy-uninstaller tests
     npm run test:claude-openai # offline bridge suite; proxy lifecycle skips if CLIProxyAPI is absent
+    npm run test:claude-copilot # offline Copilot fixtures; no native download/login/inference
     claude plugin test .      # native compact-session hook tests on a supporting build
 
 Node 22 and Python 3 are needed; `class-graph` and `find-usages` also need ripgrep (`rg`). `AGENTS.md` says how to work in this repository.
