@@ -150,7 +150,7 @@ class SupervisorTest(unittest.TestCase):
         output = root / 'handoff'
         launcher = self.s.launcher
         launcher.env_num.side_effect = lambda name, default: default
-        launcher.context_tokens.return_value = 160000
+        launcher.context_tokens.return_value = 200000
         launcher.find_make_context.return_value = str(writer)
         launcher.handoff_dir.return_value = str(output)
         launcher.skills_args.return_value = []
@@ -183,7 +183,7 @@ class SupervisorTest(unittest.TestCase):
         writer.write_text('# fixture\n')
         launcher = self.s.launcher
         launcher.env_num.side_effect = lambda name, default: default
-        launcher.context_tokens.return_value = 160000
+        launcher.context_tokens.return_value = 200000
         launcher.find_make_context.return_value = str(writer)
         launcher.skills_args.side_effect = runpy.run_path(str(HERE / 'claude-auto'))['skills_args']
         for policy, human in itertools.product(('none', 'other', 'all'), (True, False)):
