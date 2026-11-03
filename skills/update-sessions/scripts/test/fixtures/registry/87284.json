@@ -1,0 +1,25 @@
+{
+ "pid": 87284,
+ "sessionId": "00087284-0000-0000-0000-000000000000",
+ "cwd": "/Users/me/echo",
+ "startedAt": 1793467948160,
+ "procStart": "Sat Oct 31 17:32:27 2026",
+ "version": "2.1.316",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "interactive",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "asksForConvertedSkills": null,
+ "messagingSocketPath": "/tmp/sample.sock",
+ "name": "echo",
+ "nameSource": "derived",
+ "nameSince": 1793467948160,
+ "status": "busy",
+ "updatedAt": 1793468710011,
+ "statusUpdatedAt": 1793468710011
+}

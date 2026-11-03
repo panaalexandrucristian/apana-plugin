@@ -1,0 +1,25 @@
+{
+ "pid": 54654,
+ "sessionId": "00054654-0000-0000-0000-000000000000",
+ "cwd": "/Users/me/charlie",
+ "startedAt": 1793466872535,
+ "procStart": "Sat Oct 31 17:14:32 2026",
+ "version": "2.1.316",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "interactive",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "asksForConvertedSkills": null,
+ "messagingSocketPath": "/tmp/sample.sock",
+ "name": "charlie",
+ "nameSource": "derived",
+ "nameSince": 1793466872535,
+ "status": "busy",
+ "updatedAt": 1793468895654,
+ "statusUpdatedAt": 1793468895654
+}

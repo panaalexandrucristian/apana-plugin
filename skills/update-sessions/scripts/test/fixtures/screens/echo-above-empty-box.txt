@@ -1,0 +1,8 @@
+ 
+❯ /reload-plugins
+  ⎿  Reloaded: 6 plugins · 53 skills · 11 agents · 2 hooks · 0 plugin MCP servers · 0 plugin LSP servers
+ 
+──────────────────────────────────────────────────────────────────────────────────────────
+❯  
+──────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) 

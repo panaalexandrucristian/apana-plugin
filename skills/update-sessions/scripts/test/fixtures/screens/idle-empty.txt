@@ -1,0 +1,10 @@
+※ recap: sample summary line that carries no project data.
+  second line of the sample summary.
+ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ apana-cooperation: Cooperation paused: membership is not live; register a newer generation 
+  [gpt-6-astra] │ project git:(main*) 
+  Context ██░░░░░░░░ 22% 
+  ⏵⏵ bypass permissions on (shift+tab to cycle) 

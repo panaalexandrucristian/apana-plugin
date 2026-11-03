@@ -1,0 +1,25 @@
+{
+ "pid": 99347,
+ "sessionId": "00099347-0000-0000-0000-000000000000",
+ "cwd": "/Users/me/self-session",
+ "startedAt": 1793468799760,
+ "procStart": "Sat Oct 31 17:46:39 2026",
+ "version": "2.1.316",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "interactive",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "asksForConvertedSkills": false,
+ "messagingSocketPath": "/tmp/sample.sock",
+ "name": "self-session",
+ "nameSource": "derived",
+ "nameSince": 1793468799760,
+ "status": "busy",
+ "updatedAt": 1793468924088,
+ "statusUpdatedAt": 1793468924088
+}

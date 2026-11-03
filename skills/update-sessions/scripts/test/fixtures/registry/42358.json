@@ -1,0 +1,25 @@
+{
+ "pid": 42358,
+ "sessionId": "00042358-0000-0000-0000-000000000000",
+ "cwd": "/Users/me/bravo",
+ "startedAt": 1793368592909,
+ "procStart": "Fri Oct 30 13:56:31 2026",
+ "version": "2.1.314",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "interactive",
+ "entrypoint": "cli",
+ "pidDomain": "darwin",
+ "asksForConvertedSkills": false,
+ "messagingSocketPath": "/tmp/sample.sock",
+ "name": "bravo",
+ "nameSource": "derived",
+ "nameSince": 1793368592909,
+ "status": "idle",
+ "updatedAt": 1793396526501,
+ "statusUpdatedAt": 1793396526501
+}
