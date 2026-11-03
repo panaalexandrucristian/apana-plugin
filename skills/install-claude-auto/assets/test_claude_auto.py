@@ -152,7 +152,7 @@ class BootstrapBudget(unittest.TestCase):
                     os.remove(os.path.join(run, "signal.json"))
                     for i, event in enumerate(("PreToolUse", "PostToolUse", "Stop")):
                         sid = "fork-%d" % i
-                        limit = 120000 if event == "PreToolUse" else 150000
+                        limit = 185000 if event == "PreToolUse" else 200000
                         self.assertIsNone(m.handle(payload(sid, event, limit - 1)))
                         if i:
                             os.utime(marker, (1000, 1000))
@@ -846,9 +846,9 @@ class HookProcess(unittest.TestCase):
             os.remove(os.path.join(self.tmp, "run", "signal.json"))
             os.remove(os.path.join(self.tmp, "run", "last-handoff"))
 
-    def test_default_threshold_is_150000(self):
+    def test_default_threshold_is_200000(self):
         self.env.pop("CLAUDE_AUTO_TOKENS")
-        for tokens, handoff in ((99999, False), (100000, False), (149999, False), (150000, True)):
+        for tokens, handoff in ((99999, False), (100000, False), (150000, False), (199999, False), (200000, True)):
             with self.subTest(tokens=tokens):
                 t = transcript(os.path.join(self.tmp, "t%d.jsonl" % tokens), tokens)
                 r = self.hook(json.dumps({"hook_event_name": "Stop", "session_id": "d%d" % tokens, "transcript_path": t, "cwd": "/w"}))
@@ -905,7 +905,7 @@ FAKE_CLAUDE = """
 
     def fire(sid):
         t = os.path.join(state, "t%d.jsonl" % n)
-        last = {"type": "assistant", "message": {"usage": {"input_tokens": 150000}}}
+        last = {"type": "assistant", "message": {"usage": {"input_tokens": 200000}}}
         if os.environ.get("FAKE_MODEL"):
             last["requestedModel"] = os.environ["FAKE_MODEL"]
         if os.environ.get("FAKE_EFFORT"):
@@ -1219,7 +1219,7 @@ class Wrapper(unittest.TestCase):
                 prompt = second[-1]
                 handoff = prompt.split(" ")[1]
                 self.assertTrue(handoff.endswith("/HANDOFF.md") and os.path.isfile(handoff), prompt)
-                self.assertIn("150k tokeni", prompt)
+                self.assertIn("200k tokeni", prompt)
                 pdir = os.path.join(os.path.dirname(handoff), "pending")
                 files = sorted(os.listdir(pdir))                         # moved next to the note before the new session
                 self.assertEqual(len(files), 1)

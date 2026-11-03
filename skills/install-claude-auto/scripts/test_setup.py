@@ -75,7 +75,7 @@ class Install(Setup):
         self.assertEqual(rc.count(START), 1)
         self.assertIn('export PATH="$HOME/.claude/claude-auto:$PATH"', rc)
         self.assertIn("9.9.9 (stub)", out)                      # claude-auto --version reached claude
-        self.assertIn("150000 tokens", out)                     # the threshold is read from the script
+        self.assertIn("200000 tokens", out)                     # the threshold is read from the script
         self.assertFalse(os.path.exists(self.rc + ".claude-auto.bak"))   # there was no rc to save
 
     def fake_installer(self):

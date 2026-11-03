@@ -23,13 +23,13 @@
 
 ## Handoff rotation under claude-auto, skill v0.3.0
 
-An interactive launch with `claude-auto` installed now runs `claude-auto` with the routing `--settings` file, the selected `--model` and `CLAUDE_AUTO_CLAUDE` set to the real `claude`, so the 150k-token handoff, the pre-tool guard and the appended rule apply to `claude-openai` sessions. Print mode, help, subcommands and an absent `claude-auto` start `claude` directly as before.
+An interactive launch with `claude-auto` installed now runs `claude-auto` with the routing `--settings` file, the selected `--model` and `CLAUDE_AUTO_CLAUDE` set to the real `claude`, so the 200k-token handoff, the pre-tool guard and the appended rule apply to `claude-openai` sessions. Print mode, help, subcommands and an absent `claude-auto` start `claude` directly as before.
 
 - Offline (n=1 run of the bundled suite): 15 tests pass. The two tests that replaced the v0.2.2 ones (wrapper lookup, and the exact argv and environment of the wrapper launch) were observed failing against the v0.2.2 `claude_openai.py` (1 failure, 1 error) and passing with the change.
 - Live, 2026-10-27, Claude Code 2.1.311, the `claude-auto` installed on 2026-10-23, real `claude` on a pty, `CLAUDE_AUTO_TOKENS=1` and `CLAUDE_AUTO_MAX=1`, two short turns, n=2 runs. Both rotated once (11666 tokens at the handoff, measured from `auto.log`), and the transcripts of both sessions show only `gpt-6-astra`. One proxy process served the two sessions, and `claude-auto` sat between the launcher and `claude`.
   - Run 2 ended with `/exit`: the launcher exited 0, no proxy process and no `session-*` folder were left, and `~/.claude/settings.json` kept its hash.
   - Run 1 ended with SIGTERM on the launcher: the proxy (`start_new_session`) and its `session-*` folder were left, because `proxy_session` cleans up in a `finally` that SIGTERM skips. That code is not changed here; it was not measured on v0.2.2.
-  - Not measured: the default 150000 limit, a rotation after a long real task, a second rotation.
+  - Not measured: the default limit (150000 when this was written, 200000 now), a rotation after a long real task, a second rotation.
 
 ## Model picker cleanup, skill v0.2.1
 

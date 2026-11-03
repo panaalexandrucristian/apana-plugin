@@ -413,7 +413,7 @@ class Supervisor:
             return
         transcript = paths[0]
         tokens = self.launcher.context_tokens(transcript)
-        if tokens < self.launcher.env_num('CLAUDE_AUTO_TOKENS', 150000):
+        if tokens < self.launcher.env_num('CLAUDE_AUTO_TOKENS', 200000):
             return
         script = self.launcher.find_make_context()
         if not script or not os.path.isfile(script):
