@@ -68,7 +68,7 @@ Normal hooks/permissions remain active. Interactive sessions use compatible inst
 
 ### Hook-free text launcher
 
-After updating the plugin and rerunning `/apana:install-claude-auto`, `claude-auto --managed` explicitly selects a separate text interface with local session cooperation. It adds no launcher hooks, replaces the native terminal UI, and denies actions that require interactive approval. Existing settings and organizational restrictions still apply; use it only where the organization permits this launcher and local MCP.
+After updating the plugin and rerunning `/apana:install-claude-auto`, `claude-auto --managed` explicitly selects a separate text interface. It adds no launcher hooks, replaces the native terminal UI, and denies actions that require interactive approval. Existing settings and organizational restrictions still apply; use it only where the organization permits this launcher.
 
 Read [managed mode](skills/install-claude-auto/references/managed-mode.md) for supported flags, local commands, handoff limits and permission behavior. The default launcher is unchanged. Offline tests cover the new runtime; live CLI and organizational-policy compatibility remain unverified.
 

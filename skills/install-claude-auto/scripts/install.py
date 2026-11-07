@@ -3,7 +3,7 @@
 
     install.py [--dry-run] [--no-rc] [--run-tests] [--rc FILE] [--home DIR]
 
-  1. copies the wrapper, its tests and the cooperation runtime bundle to ~/.claude/claude-auto/ (only what differs);
+  1. copies the wrapper, the managed-mode module and their tests to ~/.claude/claude-auto/ (only what differs);
   2. adds one marked block to the zsh rc file that puts that folder on PATH (an existing block is updated in place;
      the original rc is saved once as <rc>.claude-auto.bak);
   3. checks the result: the script compiles, `claude-auto --version` reaches `claude`, the apana plugin is there.
@@ -19,12 +19,8 @@ BLOCK = (START + "\n"
          "# Added by the install-claude-auto skill. Remove it with the uninstall-claude-auto skill.\n"
          'export PATH="$HOME/.claude/claude-auto:$PATH"\n'
          + END + "\n")
-# Runtime bundle only: generated native types, caches and development tests are never installed.
-COOPERATION_FILES = (".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.ts", "scripts/registry.py",
-                     "scripts/managed_mcp.py", "types/index.d.ts")
 FILES = (("claude-auto", 0o755), ("test_claude_auto.py", 0o644),
-         ("claude_auto_managed.py", 0o644), ("test_managed.py", 0o644)) + tuple(
-    ("cooperation/" + name, 0o644) for name in COOPERATION_FILES)
+         ("claude_auto_managed.py", 0o644), ("test_managed.py", 0o644))
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 ENC = dict(encoding="utf-8", errors="surrogateescape", newline="")   # keep every byte and line ending of the rc as is
 

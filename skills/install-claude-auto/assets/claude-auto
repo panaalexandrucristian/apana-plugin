@@ -3,13 +3,13 @@
 compact-handoff note, in the same terminal window. Claude Code's own compaction is not involved.
 
     claude-auto [claude args...]    run claude (interactive); every argument goes to claude unchanged
-    claude-auto --managed [flags] -- "prompt"    opt-in hook-free text interface with session cooperation
+    claude-auto --managed [flags] -- "prompt"    opt-in hook-free text interface
     claude-auto __hook              internal: the hook that claude-auto adds with --settings
 
 Managed mode owns message admission and uses stream-json, not the native terminal UI.
 It adds no launcher hooks or permission grants; actions needing a permission dialog are denied.
 Existing configured hooks/settings remain subject to managed policy. Use only where the organization
-permits this launcher and local MCP. /help, /status and /quit are local commands; other slash commands
+permits this launcher. /help and /quit are local commands; other slash commands
 are unavailable. Handoffs occur between completed turns, never mid-turn. Anchor/resume selectors and
 CLAUDE_AUTO_NEXT_ARGS are unsupported. See references/managed-mode.md in the install skill.
 
@@ -35,7 +35,9 @@ them. So an event with an agent_id never starts a handoff; SubagentStart/Subagen
 run/agents/<agent_id> up to date, and while one was active within CLAUDE_AUTO_AGENT_IDLE seconds the handoff waits (one line
 in auto.log) for the next event of the session after the last SubagentStop, up to CLAUDE_AUTO_DEFER_EXTRA tokens above the
 threshold. A background launch and a SendMessage that resumes a finished subagent mark it, and TaskStop unmarks it (claude sends
-no SubagentStop for that), each at its own PostToolUse. Not covered: a background subagent whose finish has not reached the transcript yet, and processes that are not subagents.
+no SubagentStop for that), each at its own PostToolUse. A marker that never saw its SubagentStop when claude ends (still
+running, or silent; a foreground one is dropped at the Stop of the session, a background one that stopped is dated 0) is
+named in the prompt of the next session, which is asked to check it and relaunch it, and in one line of auto.log. Not covered: a background subagent whose finish has not reached the transcript yet, and processes that are not subagents.
 
 Env (all optional)
   CLAUDE_AUTO_TOKENS         threshold in tokens (default 200000)
@@ -63,8 +65,6 @@ Env (all optional)
                              at that size claude-auto hands off anyway and the subagent ends with the old session
   CLAUDE_AUTO_DIR            where notes and auto.log go (default ~/.claude/handoffs/auto)
   CLAUDE_AUTO_CLAUDE         the claude binary (default: claude from PATH)
-  CLAUDE_AUTO_COOPERATE=1    opt in to the bundled session-cooperation plugin for interactive work (not bootstrap)
-  CLAUDE_AUTO_COOP_DB        absolute registry path (default ~/.claude/cooperation/registry.sqlite3)
   CLAUDE_AUTO_MAKE_CONTEXT   path to make_context.py (default: the newest apana plugin copy)
   CLAUDE_AUTO_GRACE          seconds between the signal and ending claude (default 1.0: the last reply stays on screen)
   CLAUDE_AUTO_KILL_WAIT      seconds claude gets after SIGTERM before SIGKILL (default 5; also when you SIGTERM claude-auto)
@@ -72,7 +72,7 @@ Env (all optional)
   CLAUDE_AUTO_DEBUG=1        log every hook check
 Every hook failure is logged to auto.log and the hook exits 0: it never breaks a session.
 """
-import fcntl, glob, hashlib, json, mmap, os, shlex, shutil, signal, subprocess, sys, tempfile, time, uuid
+import fcntl, glob, hashlib, json, mmap, os, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 try:
     import termios
@@ -377,6 +377,19 @@ def running_agents(run):
     return found
 
 
+def unannounced_agents(run):
+    """Ids of the subagents that never sent their SubagentStop: still running, or gone silent. A background one that did stop is
+    kept as a marker dated 0 (see unmark_agent), and its result already reached the session."""
+    folder, found = os.path.join(run, "agents"), []
+    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        try:
+            if os.path.getmtime(os.path.join(folder, name)) > 0:
+                found.append(name)
+        except OSError:
+            pass
+    return found
+
+
 def deferral_logged(run, agents):
     """True if auto.log already says that this set of subagents holds the handoff back (one line per change, not per event)."""
     path = os.path.join(run, "deferred")
@@ -604,6 +617,11 @@ def new_session_prompt(sig):
             % (sig["handoff"], int(sig.get("tokens") or 0) // 1000,
                " Citește și, în ordine, %s: conțin ultimele evenimente ale sesiunii precedente, încă nescrise în "
                "transcript (un eveniment împărțit în părți se citește în întregime)." % which if files else "")
+            + (" Subagenții cu id-urile %s nu își anunțaseră oprirea când s-a făcut handoff-ul, iar sesiunea veche s-a "
+               "încheiat odată cu ei: dacă încă lucrau, au fost opriți fără rezultat. Verifică dacă mai rulează (de exemplu "
+               "cu ListAgents) și relansează-i numai dacă lucrul lor nu e terminat și nu i-am oprit eu. Nu aștepta o notificare "
+               "de la ei."
+               % ", ".join(sig["agents"]) if sig.get("agents") else "")
             + " Aceasta este continuarea aceleiași sarcini, nu o cerere de rezumat al transferului. "
               "Păstrează cerințele utilizatorului pentru răspunsul final, inclusiv formatul exact. "
               "Dacă utilizatorul a cerut doar un anumit text, răspunsul final conține numai acel text, "
@@ -886,18 +904,6 @@ def initial_prompt(args):
     return " ".join(out)
 
 
-def close_cooperation(plugin, database, member, generation):
-    """Closing membership must never change the wrapped process's exit status."""
-    if not member or not generation:
-        return
-    try:
-        subprocess.run(["python3", "-I", os.path.join(plugin, "scripts", "registry.py"), database],
-                       input=json.dumps({"op": "close", "member": member, "generation": generation}),
-                       text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-
 def wrapper(args):
     claude = shutil.which(os.environ.get("CLAUDE_AUTO_CLAUDE") or "claude")
     if not claude:
@@ -906,31 +912,14 @@ def wrapper(args):
     claude = os.path.abspath(claude)             # a follow-up session may start in another directory
     if args[:1] == ["--managed"]:
         assets = os.path.dirname(os.path.realpath(__file__))
-        for required in ("claude_auto_managed.py", "cooperation/scripts/registry.py",
-                         "cooperation/scripts/managed_mcp.py"):
-            if not os.path.isfile(os.path.join(assets, required)):
-                say("managed runtime is missing %s; reinstall claude-auto; nothing was started" % required)
-                return 2
+        if not os.path.isfile(os.path.join(assets, "claude_auto_managed.py")):
+            say("managed runtime is missing claude_auto_managed.py; reinstall claude-auto; nothing was started")
+            return 2
         sys.path.insert(0, assets)
         import claude_auto_managed
         return claude_auto_managed.run(sys.modules[__name__], claude, args[1:])
     if passthrough(args):
         os.execv(claude, [claude] + args)
-    cooperation = os.environ.get("CLAUDE_AUTO_COOPERATE") == "1"
-    plugin = database = member = None
-    generation = 0
-    if cooperation:
-        plugin = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cooperation")
-        for required in (".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.ts", "scripts/registry.py",
-                         "types/index.d.ts"):
-            if not os.path.isfile(os.path.join(plugin, required)):
-                say("bundled cooperation plugin is missing %s; reinstall claude-auto; nothing was started" % required)
-                return 2
-        database = os.environ.get("CLAUDE_AUTO_COOP_DB") or os.path.expanduser("~/.claude/cooperation/registry.sqlite3")
-        if not os.path.isabs(database):
-            say("CLAUDE_AUTO_COOP_DB must be an absolute path; nothing was started")
-            return 2
-        member = str(uuid.uuid4())              # never reuse an inherited wrapper's identity
     try:
         env_next = shlex.split(os.environ["CLAUDE_AUTO_NEXT_ARGS"]) if "CLAUDE_AUTO_NEXT_ARGS" in os.environ else None
     except ValueError as e:
@@ -971,7 +960,7 @@ def wrapper(args):
         # The warm-up session would start a new one and drop the flags that pick the user's; then the first run is as typed.
         bootstrap = not bool(anchor) and os.environ.get("CLAUDE_AUTO_BOOTSTRAP", "1") != "0" and not selects_session(first_args)
         work_prompt = initial_prompt(first_args)
-        handoffs, cwd, continuation = 0, None, False
+        handoffs, cwd = 0, None
         argv = next_args + ["--", "Răspunde exact: ANCHOR_READY"] if bootstrap else first_args
         while True:
             if Child.stop:
@@ -984,20 +973,8 @@ def wrapper(args):
                 env["CLAUDE_AUTO_RUN"] = run
             if bootstrap:
                 env["CLAUDE_AUTO_BOOTSTRAP"] = "1"
-            plugin_args = []
-            if cooperation:
-                for key in ("CLAUDE_AUTO_COOPERATE", "CLAUDE_AUTO_COOP_MEMBER", "CLAUDE_AUTO_COOP_GENERATION",
-                            "CLAUDE_AUTO_COOP_DB", "CLAUDE_AUTO_COOP_CONTINUATION"):
-                    env.pop(key, None)
-                if not bootstrap:
-                    generation += 1
-                    env.update(CLAUDE_AUTO_COOPERATE="1", CLAUDE_AUTO_COOP_MEMBER=member,
-                               CLAUDE_AUTO_COOP_GENERATION=str(generation), CLAUDE_AUTO_COOP_DB=database)
-                    if continuation:
-                        env["CLAUDE_AUTO_COOP_CONTINUATION"] = "1"
-                    plugin_args = ["--plugin-dir", plugin]
             use = (settings if handoffs == 0 else settings_next) if hooked else plain
-            cmd = [claude] + (["--settings", use] if use else []) + plugin_args + rule + argv
+            cmd = [claude] + (["--settings", use] if use else []) + rule + argv
             rc, sig = run_once(cmd, env, cwd, run if hooked else None)
             # claude resets the terminal modes it set when it exits by itself; killed (by us, by a signal) it cannot
             terminal.restore(reset_modes=bool(sig) or Child.stop or rc < 0)
@@ -1010,6 +987,7 @@ def wrapper(args):
                     json.dump({"anchor_session_id": anchor}, f)
                 argv = next_args + ["--resume", anchor, "--fork-session", "--", work_prompt]
                 continue
+            sig["agents"] = unannounced_agents(run)      # read before the folder goes: the new session is told which ones were lost
             shutil.rmtree(os.path.join(run, "agents"), ignore_errors=True)      # the subagents ended with that claude
             if os.path.exists(os.path.join(run, "deferred")):
                 os.remove(os.path.join(run, "deferred"))
@@ -1023,16 +1001,17 @@ def wrapper(args):
             fork = ["--resume", anchor, "--fork-session"] if anchor else []
             carried = next_args if env_next is not None else carry_session_flags(next_args, sig)      # an explicit CLAUDE_AUTO_NEXT_ARGS wins
             argv = carried + fork + ["--", new_session_prompt(sig)]      # `--`: a variadic option must not swallow the prompt
-            continuation = True                    # only this explicit handoff prompt preserves the owner revision
             say("%dk tokeni de context; nota: %s. Pornesc sesiunea nouă în aceeași fereastră." % (
                 int(sig.get("tokens") or 0) // 1000, sig["handoff"]))
             log("handoff %d: claude ended (exit %s), new session from %s (cwd %s, %d pending file(s))" % (
                 handoffs, rc, sig["handoff"], cwd or os.getcwd(), len(sig["pending"])))
+            if sig["agents"]:
+                log("handoff %d: %d subagent(s) had not announced their stop (%s); the new session is told" % (
+                    handoffs, len(sig["agents"]), ", ".join(sig["agents"])))
     except BaseException:
         terminal.restore(reset_modes=True)
         raise
     finally:
-        close_cooperation(plugin, database, member, generation)
         shutil.rmtree(run, ignore_errors=True)
 
 

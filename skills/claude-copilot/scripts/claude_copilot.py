@@ -371,8 +371,7 @@ def proxy_environment(inherited, directory):
 
 def supervisor_stop_timeout(inherited):
     # The wrapper can be in its handoff grace wait when termination arrives.
-    # Conservatively cover grace, both kill waits, polling and descendant reaping;
-    # the margin also covers close_cooperation's bounded finalization.
+    # Conservatively cover grace, both kill waits, polling and descendant reaping, plus a fixed margin.
     waits = []
     for name, default in (('CLAUDE_AUTO_KILL_WAIT', 5.0), ('CLAUDE_AUTO_REAP_WAIT', 1.0),
                           ('CLAUDE_AUTO_POLL', 0.2), ('CLAUDE_AUTO_GRACE', 1.0)):

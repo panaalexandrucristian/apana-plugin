@@ -17,7 +17,7 @@ This undoes what `apana:install-claude-auto` did. The bundled `scripts/uninstall
 
    It does four things:
    - removes the `# >>> claude-auto >>>` ... `# <<< claude-auto <<<` block from the zsh rc (`$ZDOTDIR/.zshrc`, else `~/.zshrc`). If the rc is then exactly what the installer saved in `~/.zshrc.claude-auto.bak`, that backup is deleted too; if the user changed the rc since, the backup is kept;
-   - deletes `claude-auto` and `test_claude_auto.py` from `~/.claude/claude-auto/`, then the folder if nothing else is in it. Unknown files in the folder stay, and the output says so;
+   - deletes `claude-auto`, `claude_auto_managed.py`, their two test files and the cooperation runtime files older versions installed from `~/.claude/claude-auto/`, then the folder if nothing else is in it. Unknown files in the folder stay, and the output says so;
    - keeps the handoff notes and `auto.log` in `~/.claude/handoffs/auto/`;
    - only reads `~/.claude/settings.json`, to tell the user if it mentions claude-auto.
 

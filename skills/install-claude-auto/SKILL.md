@@ -5,9 +5,9 @@ description: "Installs claude-auto, the wrapper that starts `claude`, writes a c
 
 # install-claude-auto
 
-`claude-auto` is a Python wrapper you start instead of `claude`. When the context of the running session reaches the threshold (200000 tokens), it writes a handoff note with the apana plugin's compact-handoff skill, ends that session and starts a fresh `claude` that reads the note, all in the same terminal window. Sessions started with plain `claude` are never affected: the hooks reach only the session the wrapper starts (through `--settings`), and `~/.claude/settings.json` stays untouched. A subagent that is working holds the handoff back (up to 30000 tokens above the threshold, `CLAUDE_AUTO_DEFER_EXTRA`): ending `claude` would end it without an answer.
+`claude-auto` is a Python wrapper you start instead of `claude`. When the context of the running session reaches the threshold (200000 tokens), it writes a handoff note with the apana plugin's compact-handoff skill, ends that session and starts a fresh `claude` that reads the note, all in the same terminal window. Sessions started with plain `claude` are never affected: the hooks reach only the session the wrapper starts (through `--settings`), and `~/.claude/settings.json` stays untouched. A subagent that is working holds the handoff back (up to 30000 tokens above the threshold, `CLAUDE_AUTO_DEFER_EXTRA`): ending `claude` would end it without an answer. A subagent that is still unfinished when the handoff goes ahead (or that never announced its stop) is named by id in the prompt of the new session, which is asked to check it and relaunch it.
 
-For an explicitly chosen **hook-free text interface**, read [managed mode](references/managed-mode.md) before recommending or running `claude-auto --managed`. It replaces the native terminal UI, enables cooperation without adding launcher hooks, and denies actions that need an interactive approval. It still requires organizational permission; installing it does not activate it.
+For an explicitly chosen **hook-free text interface**, read [managed mode](references/managed-mode.md) before recommending or running `claude-auto --managed`. It replaces the native terminal UI, adds no launcher hooks, and denies actions that need an interactive approval. It still requires organizational permission; installing it does not activate it.
 
 This skill puts it in place. The bundled `scripts/install.py` does the work, so run it instead of copying files or editing `~/.zshrc` by hand. It is idempotent, and it saves the original rc once as `~/.zshrc.claude-auto.bak`.
 
@@ -20,7 +20,7 @@ This skill puts it in place. The bundled `scripts/install.py` does the work, so 
    ```
 
    It does three things:
-   - copies `claude-auto`, its managed-mode module, test suites and cooperation runtime from `assets/` to `~/.claude/claude-auto/` (only what differs);
+   - copies `claude-auto`, its managed-mode module and test suites from `assets/` to `~/.claude/claude-auto/` (only what differs);
    - adds one marked block to the zsh rc (`$ZDOTDIR/.zshrc`, else `~/.zshrc`) that puts that folder on PATH. A block from an older install is updated in place, so there is never a second one;
    - checks the result: the script compiles, `claude-auto --version` reaches `claude`, and the compact-handoff script exists.
 

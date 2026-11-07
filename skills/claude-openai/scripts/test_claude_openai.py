@@ -223,30 +223,18 @@ class InstallerTests(unittest.TestCase):
             self.assertNotIn('permissions', settings)
             self.assertNotIn('--append-system-prompt', call.args[0], 'The wrapper appends the rule itself')
 
-    def test_cooperation_inherits_openai_routing_across_real_wrapper_handoff(self):
+    def test_openai_routing_is_inherited_across_real_wrapper_handoff(self):
         import subprocess
         import sys
         import textwrap
         wrapper = ROOT.parent.parent / 'install-claude-auto/assets/claude-auto'
         with tempfile.TemporaryDirectory(dir=ROOT) as td:
             home = Path(td)
-            database = str(home / 'registry.sqlite3')
             inherited = {'PATH': os.environ['PATH'], 'HOME': td,
-                         'CLAUDE_AUTO_COOPERATE': '1', 'CLAUDE_AUTO_COOP_DB': database,
                          'CLAUDE_AUTO_BOOTSTRAP': '0', 'CLAUDE_AUTO_RULE': 'off',
                          'CLAUDE_AUTO_DIR': str(home / 'handoffs'),
                          'CLAUDE_AUTO_POLL': '0.02', 'CLAUDE_AUTO_GRACE': '0.02'}
             _, _, source, call = self.run_claude_with(td, wrapper.read_text(), ['task'], inherited)
-            plugin = home / 'cooperation'
-            (plugin / '.claude-plugin').mkdir(parents=True)
-            (plugin / '.claude-plugin/plugin.json').write_text('{"name":"cooperation"}')
-            (plugin / 'scripts').mkdir()
-            (plugin / 'scripts/registry.py').write_text('')
-            (plugin / 'hooks').mkdir()
-            (plugin / 'hooks/hooks.json').write_text('{}')
-            (plugin / 'hooks/register.ts').write_text('')
-            (plugin / 'types').mkdir()
-            (plugin / 'types/index.d.ts').write_text('')
             calls_file = home / 'calls.jsonl'
             fake = home / 'fake-claude'
             fake.write_text('#!' + sys.executable + '\n' + textwrap.dedent('''
@@ -267,17 +255,11 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
             self.assertEqual(len(calls), 2)
-            member = calls[0]['env']['CLAUDE_AUTO_COOP_MEMBER']
-            for generation, child in enumerate(calls, 1):
-                self.assertEqual(child['env']['CLAUDE_AUTO_COOP_MEMBER'], member)
-                self.assertEqual(child['env']['CLAUDE_AUTO_COOP_GENERATION'], str(generation))
-                self.assertEqual(child['env']['CLAUDE_AUTO_COOP_DB'], database)
-                self.assertEqual(child['env'].get('CLAUDE_AUTO_COOP_CONTINUATION'), '1' if generation > 1 else None)
+            for child in calls:
                 self.assertEqual(child['env']['ANTHROPIC_BASE_URL'], 'http://127.0.0.1:12345')
                 self.assertEqual(child['env']['ANTHROPIC_MODEL'], 'gpt-6-astra')
                 self.assertEqual(child['env']['ANTHROPIC_AUTH_TOKEN'], 'local-test-key')
                 self.assertEqual(child['settings']['env']['ANTHROPIC_MODEL'], 'gpt-6-astra')
-                self.assertIn('--plugin-dir', child['argv'])
                 self.assertIn('gpt-6-astra', child['argv'])
             self.assertEqual(calls[0]['env']['CLAUDE_AUTO_RUN'], calls[1]['env']['CLAUDE_AUTO_RUN'])
 

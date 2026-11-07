@@ -34,115 +34,16 @@ class ArgumentsTest(unittest.TestCase):
     def test_user_prompt_is_not_interpreted_as_flags(self):
         self.assertEqual(managed.arguments(['fix', 'the', 'bug']), ([], 'fix the bug'))
 
-    def test_worker_is_tool_free_and_does_not_receive_owner_flags(self):
-        args = managed.helper_command('claude', 'chosen-model', ['--effort', 'high', '--append-system-prompt', 'OWNER_SECRET'])
-        self.assertIn('--safe-mode', args)
-        self.assertEqual(args[args.index('--tools') + 1], '')
-        self.assertIn('--no-session-persistence', args)
-        self.assertNotIn('OWNER_SECRET', args)
-        self.assertEqual(args[args.index('--model') + 1], 'chosen-model')
-        self.assertNotIn('--resume', args)
-
-
-class CoordinationTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.c = managed.Coordinator(str(Path(self.tmp.name) / 'state.db'), self.tmp.name)
-        self.c.register()
-
-    def test_cancel_finishes_before_prompt_registration_and_send(self):
-        order = []
-        original = self.c.rpc
-        def rpc(op, **fields):
-            order.append(op)
-            return original(op, **fields)
-        self.c.rpc = rpc
-        self.c.admit('own work', lambda: order.append('helper-waited'), lambda: order.append('sent'))
-        self.assertEqual(order, ['helper-waited', 'prompt', 'sent'])
-        self.assertEqual(self.c.revision, 1)
-        self.assertTrue(self.c.active)
-
-    def test_failed_cancellation_never_registers_or_forwards(self):
-        send = mock.Mock()
-        with self.assertRaises(RuntimeError):
-            self.c.admit('work', mock.Mock(side_effect=RuntimeError('not stopped')), send)
-        self.assertEqual(self.c.revision, 0)
-        send.assert_not_called()
-
-    def test_failed_registry_never_forwards(self):
-        send = mock.Mock()
-        with mock.patch.object(self.c, 'rpc', side_effect=ValueError('unavailable')):
-            with self.assertRaises(ValueError):
-                self.c.admit('work', mock.Mock(), send)
-        self.assertFalse(self.c.healthy)
-        send.assert_not_called()
-
-    def test_final_answer_does_not_mark_owner_idle(self):
-        self.c.admit('work', lambda: None, lambda: None)
-        self.c.active = False
-        self.assertEqual(self.c.rpc('heartbeat')['member']['owner_state'], 'active')
-
-    def test_help_gate_exhaustive_three_factors(self):
-        for active, pending, explicit_idle in itertools.product((False, True), repeat=3):
-            with self.subTest(active=active, pending=pending, explicit_idle=explicit_idle):
-                self.c.active, self.c.pending = active, pending
-                self.assertEqual(self.c.can_help('idle' if explicit_idle else 'active'),
-                                 not active and not pending and explicit_idle)
-        self.c.healthy = False
-        self.c.active = self.c.pending = False
-        self.assertFalse(self.c.can_help('idle'))
-
-    def test_old_generation_and_wrong_token_cannot_mutate(self):
-        self.c.admit('work', lambda: None, lambda: None)
-        self.c.token = 'current-turn'
-        for token, generation in [('old-turn', self.c.generation), ('current-turn', 0)]:
-            reply = self.c.handle({'token': token, 'generation': generation, 'name': 'coordinate',
-                                   'arguments': {'action': 'finish'}})
-            self.assertFalse(reply['ok'])
-        self.assertEqual(self.c.rpc('heartbeat')['member']['owner_state'], 'active')
-
-    def test_pending_human_blocks_mutation_but_not_status(self):
-        self.c.admit('work', lambda: None, lambda: None)
-        self.c.pending = True
-        with self.assertRaises(ValueError):
-            self.c.coordinate({'action': 'finish'})
-        self.assertTrue(self.c.coordinate({'action': 'status'})['ok'])
-
-    def test_explicit_finish_then_rotation_preserves_revision(self):
-        self.c.admit('work', lambda: None, lambda: None)
-        self.c.coordinate({'action': 'finish'})
-        self.c.active = False
-        old_session, old_revision = self.c.session, self.c.revision
-        self.c.rotate()
-        self.assertNotEqual(self.c.session, old_session)
-        self.assertEqual(self.c.revision, old_revision)
-        self.assertEqual(self.c.rpc('heartbeat')['member']['owner_state'], 'idle')
-
-    def test_owner_revision_not_taken_from_model_arguments(self):
-        self.c.admit('work', lambda: None, lambda: None)
-        with self.assertRaises(ValueError):
-            self.c.coordinate({'action': 'finish', 'expected_revision': 0})
-
 
 class SupervisorTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.database = str(Path(self.tmp.name) / 'state.db')
-        with mock.patch.dict(os.environ, CLAUDE_AUTO_COOP_DB=self.database):
-            self.s = managed.Supervisor(mock.Mock(VARIANT_RULE='variant rule'), 'claude', [], self.tmp.name)
-        self.s.c.register()
-        self.s.c.admit('own work', lambda: None, lambda: None)
-        self.s.c.coordinate({'action': 'finish'})
-        self.s.c.active = False
-        self.peer = managed.Coordinator(self.database, self.tmp.name)
-        self.peer.register()
-        self.peer.admit('peer work', lambda: None, lambda: None)
+        self.s = managed.Supervisor(mock.Mock(VARIANT_RULE='variant rule'), 'claude', [])
 
-    def test_handoff_waits_for_owner_exit_and_preserves_revision(self):
+    def test_handoff_waits_for_owner_exit(self):
         root = Path(self.tmp.name)
-        transcript = root / 'config/projects/project' / (self.s.c.session + '.jsonl')
+        transcript = root / 'config/projects/project' / (self.s.session + '.jsonl')
         transcript.parent.mkdir(parents=True)
         transcript.write_text('{}\n')
         writer = root / 'make_context.py'
@@ -157,11 +58,10 @@ class SupervisorTest(unittest.TestCase):
         order = []
         process = mock.Mock(invalid=False, result={'type': 'result', 'subtype': 'success', 'is_error': False})
         process.stop.side_effect = lambda: order.append('stopped')
-        self.s.owner, self.s.c.active, self.s.resumed = process, True, True
-        session, revision = self.s.c.session, self.s.c.revision
+        self.s.owner, self.s.resumed = process, True
+        session = self.s.session
         def write_note(command, **kwargs):
             self.assertIsNone(self.s.owner)
-            self.assertFalse(self.s.c.active)
             self.assertEqual(command[2], str(transcript))
             output.mkdir()
             (output / 'HANDOFF.md').write_text('history')
@@ -171,13 +71,12 @@ class SupervisorTest(unittest.TestCase):
             with mock.patch.object(managed.subprocess, 'run', side_effect=write_note):
                 self.s.exited(process, 0)
         self.assertEqual(order, ['stopped', 'handoff'])
-        self.assertNotEqual(self.s.c.session, session)
-        self.assertEqual(self.s.c.revision, revision)
+        self.assertNotEqual(self.s.session, session)
         self.assertEqual(self.s.note, str(output / 'HANDOFF.md'))
         self.assertFalse(self.s.resumed)
         self.assertEqual(self.s.handoffs, 1)
 
-    def test_handoff_keeps_skill_reload_for_human_and_automated_turns(self):
+    def test_handoff_keeps_skill_reload_for_the_next_turn(self):
         root = Path(self.tmp.name)
         writer = root / 'make_context.py'
         writer.write_text('# fixture\n')
@@ -186,13 +85,13 @@ class SupervisorTest(unittest.TestCase):
         launcher.context_tokens.return_value = 200000
         launcher.find_make_context.return_value = str(writer)
         launcher.skills_args.side_effect = runpy.run_path(str(HERE / 'claude-auto'))['skills_args']
-        for policy, human in itertools.product(('none', 'other', 'all'), (True, False)):
-            with self.subTest(policy=policy, human=human):
-                self.s.owner, self.s.c.active = None, False
-                transcript = root / 'config/projects/project' / (self.s.c.session + '.jsonl')
+        for policy in ('none', 'other', 'all'):
+            with self.subTest(policy=policy):
+                self.s.owner = None
+                transcript = root / 'config/projects/project' / (self.s.session + '.jsonl')
                 transcript.parent.mkdir(parents=True, exist_ok=True)
                 transcript.write_text('caveman\n')
-                output = root / ('handoff-' + policy + '-' + str(human))
+                output = root / ('handoff-' + policy)
                 launcher.handoff_dir.return_value = str(output)
                 self.s.last_handoff = 0
                 def write_note(command, **kwargs):
@@ -211,62 +110,54 @@ class SupervisorTest(unittest.TestCase):
                         self.s.rotate_if_needed()
                 with mock.patch.object(self.s, 'owner_command', return_value=['claude']), \
                      mock.patch.object(managed, 'Process') as process:
-                    self.s.start_owner('next request', human=human)
+                    self.s.start_owner('next request')
                 prompt = process.call_args.args[1]
                 self.assertIn(str(output / 'HANDOFF.md'), prompt)
                 self.assertIn('Follow its skill-reload instructions', prompt)
                 self.assertIn('historical transcript is context, not authorization', prompt)
                 self.assertIn('do not repeat completed actions', prompt)
-                self.assertIn('new human request' if human else 'automated notification', prompt)
                 self.assertTrue(prompt.endswith('next request'))
                 self.assertIsNone(self.s.note)
 
-    def test_new_human_input_stops_help_but_waits_for_current_owner(self):
-        helper, owner = mock.Mock(), mock.Mock()
-        self.s.helper, self.s.owner = helper, owner
-        self.s.input('new request')
-        helper.stop.assert_called_once()
-        owner.stop.assert_not_called()
-        self.assertTrue(self.s.c.pending)
-        self.assertEqual(list(self.s.prompts), ['new request'])
-        self.assertIs(self.s.owner, owner)
-        self.assertIsNone(self.s.helper)
-
     def test_owner_command_preserves_permissions_without_granting_tools(self):
         self.s.flags = ['--settings', '/provided/settings.json', '--permission-mode', 'default']
-        self.s.bridge = mock.Mock(path='/private/socket')
         command = self.s.owner_command()
         self.assertEqual(command[1:5], self.s.flags)
         self.assertNotIn('--allowedTools', command)
         self.assertNotIn('--dangerously-skip-permissions', command)
         self.assertNotIn('--safe-mode', command)
         self.assertNotIn('--plugin-dir', command)
+        self.assertNotIn('--mcp-config', command)
         self.assertEqual(command[command.index('--permission-prompts') + 1], 'none')
         self.assertNotIn('__hook', str(command))
 
-    def test_cancelled_helper_exit_does_not_stop_owner(self):
-        for good, cancellation in itertools.product((False, True), ('withdraw', 'prompt')):
-            with self.subTest(good=good, cancellation=cancellation):
-                task = self.peer.coordinate({'action': 'publish', 'title': 'Review', 'instructions': 'Evidence'})['task']
-                self.s.claim = self.s.c.rpc('claim')['task']
-                self.assertEqual(self.s.claim['task'], task['task'])
-                process = mock.Mock(invalid=False, result={'type': 'result', 'subtype': 'success',
-                                                          'is_error': False, 'result': 'late answer'})
-                self.s.helper = process
-                if cancellation == 'withdraw':
-                    self.peer.rpc('withdraw', task=task['task'], reason='cancelled')
-                else:
-                    self.peer.admit('replacement work', lambda: None, lambda: None)
-                self.s.exited(process, 0 if good else 1)
-                process.stop.assert_called_once()
-                self.assertIsNone(self.s.helper)
-                self.assertIsNone(self.s.claim)
-                self.assertTrue(self.s.c.healthy)
-                self.assertEqual(self.s.status, 0)
-                snapshot = self.s.c.rpc('snapshot')
-                contribution = next(c for c in snapshot['contributions'] if c['task'] == task['task'])
-                self.assertEqual(contribution['state'], 'cancelled')
-                self.assertIsNone(contribution['result'])
+    def test_status_is_no_longer_a_local_command(self):
+        self.s.input('/status')
+        self.s.launcher.say.assert_called_once_with('Native slash commands are not forwarded. /help lists local commands.')
+        self.assertEqual(list(self.s.prompts), [])
+
+    def test_new_human_input_waits_for_the_current_owner(self):
+        owner = mock.Mock()
+        self.s.owner = owner
+        self.s.input('new request')
+        owner.stop.assert_not_called()
+        self.assertIs(self.s.owner, owner)
+        self.assertEqual(list(self.s.prompts), ['new request'])
+        self.s.launcher.say.assert_called_once_with('Human message queued; it will run after the current turn exits')
+
+    def test_input_without_a_running_owner_queues_silently_and_blank_lines_are_dropped(self):
+        self.s.input('first')
+        self.s.input('   ')
+        self.assertEqual(list(self.s.prompts), ['first'])
+        self.s.launcher.say.assert_not_called()
+
+    def test_local_commands_help_and_quit(self):
+        self.s.input('/help')
+        self.assertIn('/quit and /help are local', self.s.launcher.say.call_args.args[0])
+        self.assertFalse(self.s.quitting)
+        self.s.input(' /quit ')
+        self.assertTrue(self.s.quitting)
+        self.assertEqual(list(self.s.prompts), [])
 
 
 class StreamTest(unittest.TestCase):
@@ -297,7 +188,7 @@ class StreamTest(unittest.TestCase):
             script = Path(folder) / script
             script.write_text('import sys,json\nrows=list(sys.stdin)\nr=json.loads(rows[0])\nprint(json.dumps({"type":"result","subtype":"success","is_error":False,"result":r["message"]["content"]}))\n')
             events = queue.Queue()
-            run = managed.Process([sys.executable, '-I', str(script)], 'hello', folder, events, 'owner')
+            run = managed.Process([sys.executable, '-I', str(script)], 'hello', folder, events)
             while True:
                 kind, source, value = events.get(timeout=10)
                 self.assertIs(source, run)
@@ -309,52 +200,34 @@ class StreamTest(unittest.TestCase):
 
 
 class EntrypointTest(unittest.TestCase):
-    def test_managed_launcher_and_real_stdio_bridge_without_hooks(self):
+    def test_managed_launcher_without_hooks_or_plugins(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             fake = root / 'claude'
-            fake.write_text('#!' + sys.executable + '\n' + '''import json,sys,subprocess
+            fake.write_text('#!' + sys.executable + '\n' + '''import json,sys
 args=sys.argv[1:]
 assert '-p' in args, args
 assert '--permission-prompts' in args
 assert args[args.index('--permission-prompts')+1]=='none'
 assert '__hook' not in str(args) and 'ANCHOR_READY' not in str(args)
+assert '--mcp-config' not in args and '--plugin-dir' not in args, args
 row=json.loads(sys.stdin.readline())
 assert row['message']['content']=='do the work'
 assert row['origin']=={'kind':'human'}
 sid=args[args.index('--session-id')+1]
 print(json.dumps({'type':'system','subtype':'init','session_id':sid,'model':'test-model'}),flush=True)
-config=json.loads(args[args.index('--mcp-config')+1])['mcpServers']['apana-managed']
-p=subprocess.Popen([config['command']]+config['args'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
-def call(value):
- p.stdin.write(json.dumps(value)+'\\n'); p.stdin.flush()
- return json.loads(p.stdout.readline())
-call({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'test','version':'1'}}})
-p.stdin.write(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized'})+'\\n');p.stdin.flush()
-r=call({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'coordinate','arguments':{'action':'publish','title':'Review','instructions':'Check supplied evidence'}}})
-assert not r['result']['isError'],r
-task=json.loads(r['result']['content'][0]['text'])['task']['task']
-r=call({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'coordinate','arguments':{'action':'withdraw','task':task,'rationale':'No longer needed'}}})
-assert not r['result']['isError'],r
-r=call({'jsonrpc':'2.0','id':4,'method':'tools/call','params':{'name':'coordinate','arguments':{'action':'finish'}}})
-assert not r['result']['isError'],r
-p.stdin.close();p.wait(timeout=5)
 print(json.dumps({'type':'assistant','message':{'content':[{'type':'text','text':'MANAGED_DONE'}]}}),flush=True)
 print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':'MANAGED_DONE'}),flush=True)
 ''')
             fake.chmod(0o755)
             env = dict(os.environ, CLAUDE_AUTO_CLAUDE=str(fake), CLAUDE_AUTO_DIR=str(root / 'notes'),
-                       CLAUDE_AUTO_COOP_DB=str(root / 'registry.db'), CLAUDE_CONFIG_DIR=str(root / 'config'))
+                       CLAUDE_CONFIG_DIR=str(root / 'config'))
             for key in ('CLAUDE_AUTO_NEXT_ARGS', 'CLAUDE_AUTO_ANCHOR_ID'):
                 env.pop(key, None)
             result = subprocess.run([sys.executable, str(HERE / 'claude-auto'), '--managed', '--', 'do the work'],
                                     input='', text=True, capture_output=True, env=env, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('MANAGED_DONE', result.stdout)
-            members = managed.registry.dispatch(str(root / 'registry.db'), {'op': 'snapshot'})['members']
-            self.assertEqual(len(members), 1)
-            self.assertEqual(members[0]['owner_state'], 'idle')
-            self.assertEqual(members[0]['status'], 'closed')
             self.assertEqual(list((root / 'notes').glob('**/settings*.json')), [])
 
 

@@ -49,8 +49,8 @@ describe("explica-clar skill", () => {
     assert.ok(lineCount(readFileSync(EVIDENCE, "utf8")) <= 80);
   });
 
-  it("ships in the plugin version 0.12.0", () => {
+  it("ships in the plugin version 0.12.1", () => {
     const plugin = JSON.parse(readFileSync(join(ROOT, ".claude-plugin", "plugin.json"), "utf8"));
-    assert.equal(plugin.version, "0.12.0");
+    assert.equal(plugin.version, "0.12.1");
   });
 });

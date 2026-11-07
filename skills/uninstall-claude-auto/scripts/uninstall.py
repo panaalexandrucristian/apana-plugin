@@ -5,7 +5,8 @@
 
   1. removes the block the install-claude-auto skill added to the rc file (and the one blank line before it), nothing
      else in the rc; the <rc>.claude-auto.bak copy goes too when the rc is back to exactly what it saved;
-  2. removes the wrapper, its tests and known cooperation runtime files, then their folders only when empty;
+  2. removes the wrapper, its tests and the cooperation runtime files that older versions installed, then their folders
+     only when empty;
   3. keeps the handoff notes in ~/.claude/handoffs/auto/ unless --purge-notes is given.
 
 Running it twice is fine. ~/.claude/settings.json is only read, never edited. Exit codes: 0 done, 1 done but something
@@ -132,6 +133,12 @@ def remove_cooperation(target, dry):
         if os.path.islink(folder) or not os.path.isdir(folder):
             continue
         left = set(os.listdir(folder))
+        cache = os.path.join(folder, "__pycache__")   # older launchers ran without -B, so the scripts left bytecode here
+        if "__pycache__" in left and os.path.isdir(cache) and not os.path.islink(cache):
+            if not dry:
+                shutil.rmtree(cache)
+            left.discard("__pycache__")
+            say("ok", "%s: %sremoved" % (cache, "would be " if dry else ""))
         for name in names:
             path = os.path.join(folder, name)
             if os.path.islink(path) or os.path.isfile(path):
