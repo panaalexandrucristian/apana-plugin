@@ -289,6 +289,17 @@ class Install(Setup):
         self.assertIn("make_context.py", out)
         self.assertTrue(os.path.isfile(os.path.join(self.target, "claude-auto")))
 
+    def test_the_handoff_writer_it_names_is_the_newest_copy_by_version_number(self):
+        # the wrapper picks by version number (0.12.1 over 0.9.1); a sort of the paths as text would name 0.9.1
+        cache = os.path.join(self.home, ".claude/plugins/cache")
+        shutil.rmtree(cache)
+        for version in ("0.9.1", "0.12.1", "0.10.0"):
+            d = os.path.join(cache, "x/apana", version, "skills/compact-handoff/scripts")
+            os.makedirs(d)
+            open(os.path.join(d, "make_context.py"), "w").close()
+        out = self.ok(self.install())
+        self.assertIn("handoff writer found: %s" % os.path.join(cache, "x/apana/0.12.1/skills/compact-handoff/scripts/make_context.py"), out)
+
     def test_the_assets_compile(self):
         compile(open(os.path.join(ASSETS, "claude-auto")).read(), "claude-auto", "exec")
 

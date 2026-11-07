@@ -181,9 +181,12 @@ def check_environment(home, script):
             attention("claude-auto --version failed (exit %d): %s" % (r.returncode, (r.stderr or r.stdout).strip()[:200]))
     else:
         attention("`claude` is not on PATH; claude-auto needs it to start a session")
-    mc = glob.glob(os.path.join(home, ".claude/plugins/cache/*/apana/*/skills/compact-handoff/scripts/make_context.py"))
+    cache = os.path.join(home, ".claude/plugins/cache")
+    mc = glob.glob(os.path.join(cache, "*/apana/*/skills/compact-handoff/scripts/make_context.py"))
     if mc:
-        say("ok", "handoff writer found: %s" % sorted(mc)[-1])
+        # the same order as find_make_context in claude-auto: by version number, so the line names the copy that the wrapper uses
+        mc.sort(key=lambda f: [int(x) if x.isdigit() else 0 for x in os.path.relpath(f, cache).split("/")[2].split(".")])
+        say("ok", "handoff writer found: %s" % mc[-1])
     else:
         attention("the apana plugin's compact-handoff skill (make_context.py) was not found; without it the hook "
                   "cannot write the note and no handoff happens. Install the apana plugin or set CLAUDE_AUTO_MAKE_CONTEXT.")
