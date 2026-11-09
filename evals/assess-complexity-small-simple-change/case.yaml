@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: assess-complexity-small-simple-change
+expected_outcome: |
+  Low complexity, simple domain, without unnecessary recon or gates.

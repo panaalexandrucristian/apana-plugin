@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: assess-complexity-large-modularization-refactor
+expected_outcome: |
+  High complexity, with the core complicated and the extension without a design complicated or not determined until recon (not complex only for lack of a design), recommending recon before code.
