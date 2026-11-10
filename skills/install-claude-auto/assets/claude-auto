@@ -133,7 +133,9 @@ def say(msg):
 # ---------------------------------------------------------------- hook
 
 def last_usage(lines):
-    """Tokens sent with the last main-thread request; records without usage (synthetic) are skipped."""
+    """Tokens sent with the last main-thread request; records without usage (synthetic) are skipped. A request that
+    called the advisor sends the context once per `message` iteration and its top-level fields add the sends up: the
+    context is the last send."""
     for line in reversed(lines):
         if '"usage"' not in line:
             continue
@@ -142,7 +144,9 @@ def last_usage(lines):
             if r.get("type") != "assistant" or r.get("isSidechain"):
                 continue
             u = (r.get("message") or {}).get("usage") or {}
-            n = sum(int(u.get(k) or 0) for k in FIELDS)
+            its = u.get("iterations")
+            sends = [i for i in its if isinstance(i, dict) and i.get("type") == "message"] if isinstance(its, list) else []
+            n = sum(int((sends[-1] if sends else u).get(k) or 0) for k in FIELDS)
         except (ValueError, TypeError, AttributeError):
             continue
         if n:

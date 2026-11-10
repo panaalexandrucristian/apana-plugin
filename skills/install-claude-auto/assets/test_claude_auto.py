@@ -37,6 +37,22 @@ def transcript(path, tokens, extra=()):
     return path
 
 
+def it(kind, inp, read, write):
+    return {"type": kind, "input_tokens": inp, "cache_read_input_tokens": read, "cache_creation_input_tokens": write}
+
+
+def usage321(**kw):
+    return {"type": "assistant", "message": {"usage": dict(
+        {"input_tokens": 1, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 300}, **kw)}}
+
+
+# The usage of a real request that called the advisor (session ed05491f, 2026-11-09): the top-level fields are the sum
+# of the two message iterations, 196,799; the context at the end of the request is the last one, 2 + 97,749 + 1,297.
+ADVISOR_RECORD = {"type": "assistant", "message": {"usage": {
+    "input_tokens": 4, "cache_read_input_tokens": 193735, "cache_creation_input_tokens": 3060, "iterations": [
+        it("message", 2, 95986, 1763), it("advisor_message", 96249, 0, 0), it("message", 2, 97749, 1297)]}}}
+
+
 MAKE_CONTEXT = {   # stub make_context.py by behaviour
     "ok": 'os.makedirs(out, exist_ok=True); open(os.path.join(out, "HANDOFF.md"), "w").write("# note")',
     "exit1": 'sys.stderr.write("boom"); sys.exit(1)',
@@ -212,6 +228,13 @@ class ContextTokens(unittest.TestCase):
             ("U+2028 inside the usage record", [dict(a(10), note="x y")], 10),
             ("empty", [], 0),
             ("message is not a dict", [a(10), {"type": "assistant", "message": "text"}], 10),
+            # A request that called the advisor sends the context twice; the top-level fields add both sends up.
+            ("advisor request: the last message iteration", [ADVISOR_RECORD], 99048),
+            ("one message iteration", [usage321(iterations=[it("message", 1, 20, 300)])], 321),
+            ("empty iterations: the top-level fields", [usage321(iterations=[])], 321),
+            ("no message iteration: the top-level fields", [usage321(iterations=[it("advisor_message", 5, 0, 0)])], 321),
+            ("iterations not a list: the top-level fields", [usage321(iterations="x")], 321),
+            ("an entry that is not a dict is skipped", [usage321(iterations=[it("message", 1, 2, 3), 7])], 6),
         ]
         for name, recs, want in cases:
             with self.subTest(name):
@@ -852,6 +875,26 @@ class HookProcess(unittest.TestCase):
             with self.subTest(tokens=tokens):
                 t = transcript(os.path.join(self.tmp, "t%d.jsonl" % tokens), tokens)
                 r = self.hook(json.dumps({"hook_event_name": "Stop", "session_id": "d%d" % tokens, "transcript_path": t, "cwd": "/w"}))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout != "", handoff, r.stdout)
+                for f in ("signal.json", "last-handoff"):
+                    if os.path.exists(os.path.join(self.tmp, "run", f)):
+                        os.remove(os.path.join(self.tmp, "run", f))
+
+    def test_an_advisor_request_counts_its_last_context_not_the_sum(self):
+        self.env.pop("CLAUDE_AUTO_TOKENS")       # the defaults: PreToolUse hands off from 185,000, Stop from 200,000
+        late = {"type": "assistant", "message": {"usage": {
+            "input_tokens": 4, "cache_read_input_tokens": 385000, "cache_creation_input_tokens": 4000, "iterations": [
+                it("message", 2, 190000, 1000), it("advisor_message", 191000, 0, 0), it("message", 2, 195000, 3000)]}}}
+        for i, (name, record, event, handoff) in enumerate((
+                ("real record, 196,799 summed, 99,048 sent", ADVISOR_RECORD, "PreToolUse", False),
+                ("real record at Stop", ADVISOR_RECORD, "Stop", False),
+                ("last context 198,002 at PreToolUse", late, "PreToolUse", True),
+                ("last context 198,002 at Stop", late, "Stop", False))):
+            with self.subTest(name):
+                t = transcript(os.path.join(self.tmp, "adv%d.jsonl" % i), None, [record])
+                r = self.hook(json.dumps({"hook_event_name": event, "session_id": "adv%d" % i, "transcript_path": t,
+                                          "cwd": "/w", "tool_name": "Bash", "tool_input": {"command": "true"}}))
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(r.stdout != "", handoff, r.stdout)
                 for f in ("signal.json", "last-handoff"):
