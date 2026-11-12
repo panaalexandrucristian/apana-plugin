@@ -36,7 +36,11 @@ runpy.run_path(sys.argv[0],run_name="__main__")
 
 
 def claude_archive(script, root, flags):
-    """Clock-frozen output; normalize only the temporary fixture root, not content."""
+    """Clock-frozen archive bytes; normalize only the temporary fixture root.
+
+    CLI size statistics depend on the source path's length in --cut mode, so
+    stdout is covered by the CLI tests rather than this portable archive hash.
+    """
     sid = '11111111-1111-4111-8111-111111111111'
     base = {'sessionId': sid, 'isSidechain': False, 'cwd': '/example', 'userType': 'external', 'version': '2.1.0'}
     source = []
@@ -56,7 +60,7 @@ def claude_archive(script, root, flags):
                             env=dict(os.environ, HOME=str(root / 'home'), XDG_DATA_HOME=str(root / 'xdg')), timeout=90)
     if result.returncode: raise AssertionError(result.stderr)
     files = {str(p.relative_to(out)): p.read_bytes().replace(str(root).encode(), b'<ROOT>').decode() for p in sorted(out.rglob('*')) if p.is_file()}
-    canonical = json.dumps({'files': files, 'stdout': result.stdout.replace(str(root), '<ROOT>')}, ensure_ascii=False, sort_keys=True)
+    canonical = json.dumps(files, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -82,7 +86,8 @@ def rows():
 
 class Fidelity(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='handoff-fidelity-test-')
+        # /tmp/handoff-* is reserved for archive paths by the generator's leak check.
+        self.tmp = tempfile.TemporaryDirectory(prefix='opencode-fidelity-test-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.db = self.root / 'source.sqlite'
@@ -289,10 +294,10 @@ sys.argv=sys.argv[3:];runpy.run_path(sys.argv[0],run_name="__main__")
     def test_claude_code_output_matches_pre_change_baseline(self):
         # Captured with the unmodified scripts at 2d78aab, not the implementation under test.
         expected = {
-            (): '72e98bebdf1e5e9e71c218b3897a4082b5f3dede229395108cfdce833410eb34',
-            ('--no-skills',): '6e44317c7c52c6355db394d946049ea099048cf4b8b2b3b5d7dd3478ceb15def',
-            ('--skills', 'example'): 'fdff59d9e1100056f3b413d5529f2ddf1d469c32478eab9571106e972095d727',
-            ('--cut',): '61e664ad82a64b2f3033dbdbf6eb6ad9676b6eb88609214c133f556c5396a43e',
+            (): 'd16b9fec292f8c8687b70684ffc0448d229d5a6904587279ca2ced5738e7dde1',
+            ('--no-skills',): 'b95fb61d88cd6b50a5d80b1f8d742aa1fa03b58bd9a3d0c8a5a77481daf04b04',
+            ('--skills', 'example'): 'd16b9fec292f8c8687b70684ffc0448d229d5a6904587279ca2ced5738e7dde1',
+            ('--cut',): '8d1beb12f55cc5e6762dc69a578ce46f25132e929e737246d3b5f4cce6c39ff9',
         }
         for flags, digest in expected.items():
             with self.subTest(flags=flags):
