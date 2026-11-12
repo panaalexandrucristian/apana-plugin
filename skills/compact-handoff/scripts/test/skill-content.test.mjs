@@ -62,11 +62,11 @@ describe("the active goal", () => {
 
 describe("the skills to load again", () => {
   it("is explained in SKILL.md: the option that switches it off, the printed line and its size, how a name is found, what is left out and who loads them", () => {
-    for (const part of ["`--no-skills`", "`skills to reload:` line", "`sourceToolUseID`", "`<command-name>`", "never compact-handoff itself", "\"Skill-uri de încărcat din nou\"", "without `args`", "an OpenCode session lists none"]) assert.ok(body.includes(part), part);
+    for (const part of ["`--no-skills`", "`skills to reload:` line", "`sourceToolUseID`", "`<command-name>`", "never compact-handoff itself", "\"Skill-uri de încărcat din nou\"", "without `args`", "applies to OpenCode too"]) assert.ok(body.includes(part), part);
   });
 
   it("lets the user choose at every handoff: the listing command, the question with sizes, the two options and the whole-name matching", () => {
-    for (const part of ["--list-skills", "Ask at every handoff; an earlier answer does not carry over", "(all, some or none)", "`--skills name1,name2`", "`--no-skills` for none, nothing for all", "the bare `x` and the plugin `p:x` are two skills", "before any folder is made", "`--skills` is refused"]) assert.ok(body.includes(part), part);
+    for (const part of ["--list-skills", "Ask at every handoff; an earlier answer does not carry over", "(all, some or none)", "`--skills name1,name2`", "`--no-skills` for none, nothing for all", "the bare `x` and the plugin `p:x` are two skills", "before any folder is made", "`--current` and `--opencode DB --session ID`"]) assert.ok(body.includes(part), part);
   });
 });
 
@@ -89,7 +89,7 @@ describe("the OpenCode section", () => {
   it("exists, names the option that skips a broken database and says to report the error to the user first", () => {
     assert.ok(section.length > 400, "an OpenCode section exists");
     for (const part of ["--no-opencode", "first report that error to the user", "Only after that", "Base directory for this skill:", "`${CLAUDE_SKILL_DIR}`", "--marker", "--current", "exactly ONE session",
-      'opencode --prompt "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."', "reasoning", "not scanned for secrets"]) assert.ok(section.includes(part), part);
+      "offset=1, limit=<N>", "read_handoff.py", "attachments/", "reasoning", "not scanned for secrets"]) assert.ok(section.includes(part), part);
   });
 
   it("adds no command line and no install path, and leaves the Claude Code steps as they were", () => {
@@ -112,8 +112,8 @@ describe("the named OpenCode session section", () => {
     for (const part of ["do not use the marker", "--list-opencode", "--match", "Leave out `--match` for \"the last one\"", "the last line names the database", "last line of the list",
       "Take the line the user's words point to; \"the last one\" or \"where work was done last\" is the first line that fits, because the list is newest first.",
       "A title ending in `(fork #n)` is a fork: skip forks unless the user asks for one.", "Only if the user's words still fit more than one line, show those lines (id, date, title) and ask which one.",
-      "--opencode ~/.local/share/opencode/opencode.db --session <ID>", "(or the database named on the last line of the list, if it differs)", "in Romanian", 'opencode --prompt "..."',
-      'claude "Citește <path>/HANDOFF.md și urmează instrucțiunile din el."', "may still be running", "snapshot"]) assert.ok(section.includes(part), part);
+      "--opencode ~/.local/share/opencode/opencode.db --session <ID>", "(or the database named on the last line of the list, if it differs)", "in Romanian", "opencode --prompt '...'",
+      "same generated prompt and first-read limit", "--list-skills", "may still be running", "snapshot"]) assert.ok(section.includes(part), part);
     assert.ok(section.indexOf("--list-opencode") < section.indexOf("--session <ID>") && section.indexOf("Take the line") < section.indexOf("--session <ID>"), "list, choose, then make");
   });
 
@@ -123,8 +123,8 @@ describe("the named OpenCode session section", () => {
 });
 
 describe("the package", () => {
-  it("has the four programs and no path of one machine inside", () => {
-    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py", "opencode_source.py"]) {
+  it("has the programs including the portable reader and no path of one machine inside", () => {
+    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py", "opencode_source.py", "read_handoff.py"]) {
       const p = join(SCRIPTS, f);
       assert.ok(existsSync(p), `${f} exists`);
       assert.equal(/\/Users\/[a-z0-9._-]+\//i.test(readFileSync(p, "utf8")), false, `${f} names no /Users/<name>/ path`);
@@ -134,9 +134,9 @@ describe("the package", () => {
 
   it("keeps its tests next to it and uses no module outside the standard library of Python", () => {
     assert.ok(readdirSync(join(SCRIPTS, "test")).length >= 3);
-    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py", "opencode_source.py"]) {
+    for (const f of ["make_context.py", "compact_context.py", "prepare_all.py", "opencode_source.py", "read_handoff.py"]) {
       const imports = [...readFileSync(join(SCRIPTS, f), "utf8").matchAll(/^(?:import|from) ([a-z_][a-z0-9_]*)/gm)].map((m) => m[1]);
-      for (const m of imports) assert.ok(["datetime", "glob", "json", "os", "re", "shutil", "subprocess", "sys", "tempfile", "time", "io", "contextlib", "hashlib", "itertools", "random", "compact_context", "omissions", "discover", "prepare", "sqlite3", "uuid", "collections", "importlib", "opencode_source"].includes(m), `${f} imports ${m}`);
+      for (const m of imports) assert.ok(["datetime", "glob", "json", "os", "re", "shutil", "subprocess", "sys", "tempfile", "time", "io", "contextlib", "hashlib", "itertools", "random", "compact_context", "omissions", "discover", "prepare", "sqlite3", "uuid", "collections", "importlib", "opencode_source", "read_handoff", "argparse", "base64", "binascii"].includes(m), `${f} imports ${m}`);
     }
   });
 });

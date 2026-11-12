@@ -14,11 +14,14 @@ Every record is  [uuid role] text  with a uuid5 of the OpenCode message id and a
 Everything but the file records passes through handoff-verify's sanitize.sanitize, exactly as its prepare.py does for the Claude records.
 
   opencode_source.py --selftest"""
+import base64
+import binascii
 import collections
 import datetime
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -212,6 +215,7 @@ class Rendered:
     def __init__(self):
         self.recs = []; self.readonly = set(); self.forced = {}; self.first_calls = []; self.original = 0
         self.n_compaction_recent = 0; self.n_files = 0; self.dropped_reasoning = 0; self.dropped_encrypted = 0; self.sanitized = 0; self.skipped = collections.Counter()
+        self.attachments = {}; self.skills = {}
 
     @property
     def text(self): return "".join(r.text for r in self.recs)
@@ -257,15 +261,132 @@ def result_suffix(name, meta):
     return "(truncated)" if trunc else ""
 
 
+def record_id(sid, mid, token):
+    return str(uuid.uuid5(NS, "%s/%s/%s" % (sid, mid, token)))
+
+
+def attached_items(message, key):
+    items = message.get(key)
+    if items is None: return []
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise OpenCodeError("unsupported user.%s: expected a list of objects" % key)
+    return items
+
+
+def skill_id(value):
+    # Same invocable name family as the existing Claude selection, not display names.
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,59}(?::[A-Za-z0-9][A-Za-z0-9_.-]{0,59})?", value) else None
+
+
+def attachment(sid, mid, index, item):
+    data = item.get("data")
+    if not isinstance(data, str) or not isinstance(item.get("mime"), str) or "uri" in item:
+        raise OpenCodeError("unsupported attachment in %s: expected inline Base64 data and MIME (media references are unsupported)" % mid)
+    try: payload = base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise OpenCodeError("invalid Base64 attachment in %s" % mid) from error
+    ext = {"application/pdf": "pdf", "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}.get(item["mime"], "bin")
+    path = "attachments/%s.%s" % (record_id(sid, mid, "attachment/%d" % index), ext)
+    metadata = {k: v for k, v in item.items() if k != "data"}
+    body = "[opencode attachment]\n" + json.dumps({"message": mid, "index": index, "path": path, "metadata": metadata}, ensure_ascii=False, sort_keys=True)
+    return path, payload, body
+
+
+def attached_skill(mid, index, item):
+    text = item.get("text", "")
+    if not isinstance(text, str): raise OpenCodeError("unsupported skill text in %s" % mid)
+    metadata = {k: v for k, v in item.items() if k != "text"}
+    body = "[opencode skill attachment]\n" + json.dumps({"message": mid, "index": index, "metadata": metadata}, ensure_ascii=False, sort_keys=True) + "\n" + text
+    return skill_id(item.get("id")) if text else None, text, body
+
+
+def loaded_tool_skill(part):
+    if part.get("name") != "skill": return None
+    state = part.get("state")
+    if not isinstance(state, dict) or state.get("status") != "completed" or isinstance(state.get("error"), dict): return None
+    inp = state.get("input") or {}
+    name = skill_id(inp.get("id", inp.get("name"))) if isinstance(inp, dict) else None
+    texts, has_text = [], False
+    for block in state.get("content") or []:
+        if not isinstance(block, dict): continue
+        if block.get("type") == "text":
+            if isinstance(block.get("text"), str) and block["text"]:
+                texts.append(block["text"]); has_text = True
+        elif block.get("type") != "file": texts.append(json.dumps(block, ensure_ascii=False))
+    return (name, "\n".join(texts)) if has_text else None
+
+
+def tool_skill_body(mid, index, part, loaded):
+    name, text = loaded
+    body = "[tool_result] [opencode skill result]\n" + json.dumps({"message": mid, "part": index, "id": name}, ensure_ascii=False, sort_keys=True) + "\n" + text
+    suffix = result_suffix("skill", (part.get("state") or {}).get("metadata"))
+    return body + ("\n" + suffix if suffix else "")
+
+
+def source_inventory(conn, sid):
+    """Expected payloads from source rows, independently of render()/Rendered.
+
+The caller keeps this read and render in the same SQLite read transaction. The
+inventory retains original binary bytes and expected sanitized skill records;
+dropping an item in the renderer cannot erase the corresponding expectation.
+"""
+    for table in ("session_part", "blob_ref"):
+        if table in tables(conn) and conn.execute("select 1 from %s where session_id=? limit 1" % table, (sid,)).fetchone():
+            raise OpenCodeError("unsupported %s storage in session %s" % (table, sid))
+    inventory = {"files": {}, "records": {}, "skills": {}}
+    def expect(mid, token, body):
+        uid = record_id(sid, mid, token)
+        inventory["records"][uid] = sanitize("[%s user] %s\n" % (uid, body))
+    for mid, typ, data in conn.execute("select id, type, data from session_message where session_id=? order by seq, rowid", (sid,)):
+        if typ == "skill": raise OpenCodeError("unsupported separate skill message in session %s" % sid)
+        try: message = json.loads(data)
+        except (ValueError, TypeError): continue  # existing unreadable-row notice remains
+        if not isinstance(message, dict): continue
+        if typ == "user":
+            for index, item in enumerate(attached_items(message, "files")):
+                path, payload, body = attachment(sid, mid, index, item)
+                inventory["files"][path] = payload
+                expect(mid, "attachment/%d" % index, body)
+            for index, item in enumerate(attached_items(message, "skills")):
+                name, text, body = attached_skill(mid, index, item)
+                expect(mid, "skill/%d" % index, body)
+                if name: inventory["skills"].setdefault(name, len(text))
+        elif typ == "assistant":
+            for index, part in enumerate(message.get("content") or []):
+                if not isinstance(part, dict) or part.get("type") != "tool": continue
+                for block in (part.get("state") or {}).get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "file" and str(block.get("uri", "")).startswith("media:"):
+                        raise OpenCodeError("unsupported media reference in message %s" % mid)
+                loaded = loaded_tool_skill(part)
+                if loaded:
+                    expect(mid, "skill-tool/%d" % index, tool_skill_body(mid, index, part, loaded))
+                    if loaded[0]: inventory["skills"].setdefault(loaded[0], len(loaded[1]))
+    return inventory
+
+
+def check_inventory(inventory, blobs, folder):
+    """Verify source-derived expectations against files actually read back from disk."""
+    bad = []
+    records = collections.Counter(blobs.values())
+    for uid, expected in inventory["records"].items():
+        if records[expected] != 1: bad.append("source record %s missing or corrupted" % uid)
+    for path, expected in inventory["files"].items():
+        try:
+            with open(os.path.join(folder, path), "rb") as f: actual = f.read()
+        except OSError: actual = None
+        if actual != expected: bad.append("source attachment %s missing or corrupted" % path)
+    return bad
+
+
 def render(conn, sid):
     """-> Rendered for the session `sid`: the records in seq order, the uuids of the read-only calls, the forced records {uuid: marker label}, the first tool calls (for the parent handoff), the original size."""
     R = Rendered()
     R.original = conn.execute("select coalesce(sum(length(data)), 0) from session_message where session_id = ?", (sid,)).fetchone()[0]
     count = collections.Counter()
 
-    def add(mid, role, body, needs=(), sanitized=True, uri=None):
+    def add(mid, role, body, needs=(), sanitized=True, uri=None, identity=None):
         n = count[mid]; count[mid] += 1
-        uid = str(uuid.uuid5(NS, "%s/%s/%d" % (sid, mid, n)))
+        uid = record_id(sid, mid, n if identity is None else identity)
         raw = "[%s %s] %s\n" % (uid, role, body)
         text = sanitize(raw) if sanitized else raw
         changed = text != raw
@@ -281,6 +402,16 @@ def render(conn, sid):
         if typ == "user":
             t = j.get("text") if isinstance(j.get("text"), str) else ""
             add(mid, "user", t, [t])
+            for index, item in enumerate(attached_items(j, "files")):
+                path, payload, body = attachment(sid, mid, index, item)
+                R.attachments[path] = payload
+                uid = add(mid, "user", body, identity="attachment/%d" % index)
+                R.forced[uid] = "[attachment: %s]" % path
+            for index, item in enumerate(attached_items(j, "skills")):
+                name, text, body = attached_skill(mid, index, item)
+                uid = add(mid, "user", body, identity="skill/%d" % index)
+                R.forced[uid] = "[skill attachment: %s]" % (name or "unavailable id")
+                if name: R.skills.setdefault(name, len(text))
         elif typ in ("system", "synthetic"):
             t = j.get("text") if isinstance(j.get("text"), str) else ""
             add(mid, "user", "[opencode %s] %s" % (typ, t))
@@ -289,7 +420,7 @@ def render(conn, sid):
             if isinstance(j.get("recent"), str) and j["recent"]:
                 uid = add(mid, "user", "[opencode compaction recent] %s" % j["recent"]); R.forced[uid] = "[opencode compaction recent]"; R.n_compaction_recent += 1
         elif typ == "assistant":
-            for part in j.get("content") or []:
+            for index, part in enumerate(j.get("content") or []):
                 pt = part.get("type") if isinstance(part, dict) else None
                 if pt == "text":
                     t = part.get("text") if isinstance(part.get("text"), str) else ""
@@ -299,7 +430,7 @@ def render(conn, sid):
                     st = part.get("state")
                     R.dropped_encrypted += len((st or {}).get("reasoningEncryptedContent") or "") if isinstance(st, dict) else 0
                 elif pt == "tool":
-                    render_tool(R, add, mid, part)
+                    render_tool(R, add, mid, part, index)
                 else:
                     add(mid, "user", "[opencode assistant content %s omitted]" % (pt,)); R.skipped["content:%s" % (pt,)] += 1
             if isinstance(j.get("error"), dict):   # the message itself failed (for example an interrupted step)
@@ -309,7 +440,7 @@ def render(conn, sid):
     return R
 
 
-def render_tool(R, add, mid, part):
+def render_tool(R, add, mid, part, index=0):
     name = part.get("name") if isinstance(part.get("name"), str) else "unknown"
     state = part.get("state") if isinstance(part.get("state"), dict) else {}
     inp = state.get("input")
@@ -335,7 +466,12 @@ def render_tool(R, add, mid, part):
     elif out: res = "[tool_result] " + out
     elif not files or suffix: res = "[tool_result] (no output; status completed)"
     else: res = None
-    if res is not None: add(mid, "user", res + ("\n" + suffix if suffix else ""))
+    loaded = loaded_tool_skill(part)
+    if loaded:
+        uid = add(mid, "user", tool_skill_body(mid, index, part, loaded), identity="skill-tool/%d" % index)
+        R.forced[uid] = "[skill result: %s]" % (loaded[0] or "unavailable id")
+        if loaded[0]: R.skills.setdefault(loaded[0], len(loaded[1]))
+    elif res is not None: add(mid, "user", res + ("\n" + suffix if suffix else ""))
     for blk in files:
         uri = blk["uri"] if isinstance(blk.get("uri"), str) else ""
         mime = leaf_text(blk.get("mime", "")); fname = leaf_text(blk.get("name", ""))

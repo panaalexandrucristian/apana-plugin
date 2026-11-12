@@ -441,7 +441,7 @@ describe("make_context.py on an invented transcript", () => {
     const stray = py([file, out("stray"), "--list-skills"]);
     assert.notEqual(stray.status, 0); assert.ok(stray.stderr.includes("takes only the session"), stray.stderr); assert.equal(existsSync(out("stray")), false);
     const oc = py(["--opencode", join(root, "none.sqlite"), "--list-skills"]);
-    assert.notEqual(oc.status, 0); assert.ok(oc.stderr.includes("work only with a Claude Code session"), oc.stderr);
+    assert.notEqual(oc.status, 0); assert.ok(oc.stderr.includes("OpenCode database not found"), oc.stderr);
   });
 
   it("keeps a message that the user typed while the model was working (an `attachment` queued_command, origin human, mode prompt, a text) as a [user] record at its place; the other 15 combinations of those four conditions, a blank text and a missing origin leave it out", () => {
@@ -508,7 +508,7 @@ describe("make_context.py on an invented OpenCode session", () => {
     assert.equal(r.status, 0, r.stderr + r.stdout);
     assert.match(r.stdout, /roundtrip IDENTICAL/);
     assert.match(r.stdout, /sanitized records: \d+ of \d+/);
-    assert.match(r.stdout, /start the new session with:\n {2}opencode --prompt "Citește .*HANDOFF\.md și urmează instrucțiunile din el\."/);
+    assert.match(r.stdout, /start the new session with:\n {2}opencode --prompt 'Citește .*HANDOFF\.md mai întâi cu unealta read\/Read, offset=1, limit=\d+; apoi urmează instrucțiunile din el\.'/);
     text = readFileSync(join(folder, "HANDOFF.md"), "utf8");
     blobs = readdirSync(join(folder, "blobs")).map((f) => readFileSync(join(folder, "blobs", f), "utf8"));
     for (const part of ["Fă un plan pentru fișierul „raport” – cu diacritice: ăâîșț, 日本語 și emoji 🙂.", "I will look at the files first.", "Final answer text.", "[opencode compaction summary] COMPACTION SUMMARY", "[tool_result ERROR] tool.execution: patch verification failed: no lines", "(exit 1, truncated)"]) assert.ok(text.includes(part), part);
@@ -523,7 +523,7 @@ describe("make_context.py on an invented OpenCode session", () => {
     const head = intro(text);
     for (const part of ["Sesiunea sursă: sesiune OpenCode `ses_0123456789abcdefAAAAAA`", "`Read` în Claude Code, `read` în OpenCode", "poate fi refuzată sau trunchiată", "Raționamentul modelului (text și conținut criptat) nu este inclus", "textele `recent` ale compactărilor", "imaginile sunt în `blobs/Rnnnn.txt`, ca date base64, nu text, și nu sunt verificate pentru secrete", "maximum 8 rânduri", "Nu repeta nimic din ele"]) assert.ok(head.includes(part), part);
     assert.equal(head.includes("unealta Read") || /\/(?:private\/)?tmp\/handoff-|\/Users\//.test(head), false, "no tool of Claude Code only, no absolute path");
-    const lines = text.split("\n").length;
+    const lines = text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length;
     const plan = /`offset:limit`: ([0-9:, ]+)\./.exec(head)[1].split(", ").map((c) => c.split(":").map(Number));
     let next = 1;
     for (const [offset, limit] of plan) { assert.equal(offset, next); next += limit; }
@@ -552,7 +552,7 @@ describe("make_context.py on an invented OpenCode session", () => {
     ocDb(join(xdgOne, "opencode", "opencode.db"), Object.fromEntries([withMarker("ses_feedfeedfeedAAAAAAAA"), ["ses_quietquietquiet01", [["user", { text: "nothing" }, 3]]]]));
     const found = py(["--current", marker, join(root, "oc", "cur1")], env(xdgOne));
     assert.equal(found.status, 0, found.stderr + found.stdout);
-    assert.match(found.stdout, /current session: ses_feedfeedfeedAAAAAAAA/); assert.match(found.stdout, /roundtrip IDENTICAL/); assert.match(found.stdout, /opencode --prompt "Citește/);
+    assert.match(found.stdout, /current session: ses_feedfeedfeedAAAAAAAA/); assert.match(found.stdout, /roundtrip IDENTICAL/); assert.match(found.stdout, /opencode --prompt 'Citește/);
     const none = py(["--current", "handoff-marker-0-000000000000", join(root, "oc", "cur2")], env(xdgOne));
     assert.notEqual(none.status, 0); assert.match(none.stderr, /0 transcripts contain the marker/);
     const xdgTwo = join(root, "xdg-two");

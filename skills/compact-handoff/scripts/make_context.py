@@ -23,7 +23,7 @@ One command from a session transcript to a start context for a NEW session.
   --no-goal  do not carry a /goal that is still active in the session (by default it is: see below).
   --no-skills  do not ask the new session to load again the skills this session loaded (by default it does: see below).
   --skills NAME,NAME…  ask the new session to load again only these of the skills this session loaded (whole names exactly as --list-skills prints them, separated by commas; a name that was not loaded stops the command before anything is written).
-  --list-skills  print one line `skill: NAME | N characters` for each skill the session loaded, then `skills loaded: …` with the total (`skills loaded: none` without any); nothing is written. An OpenCode session lists none.
+  --list-skills  print one line `skill: NAME | N characters` for each skill the session loaded, then `skills loaded: …` with the total (`skills loaded: none` without any); nothing is written. Also works with --opencode DB --session ID.
   --keep   put the result in a DURABLE place instead of /tmp: ~/.claude/handoffs/ (nothing deletes it by itself). An OUT outside /tmp counts as durable too.
 ACTIVE GOAL: a /goal that is neither achieved nor cleared at the end of a Claude Code transcript (goal_status records, see goal_of) gets a section "Goal activ" in the introduction (condition, state, last unmet reason, what the new
 session does with it), an `active goal:` line, and the LAST line printed is then `claude '/goal <condition> (…read HANDOFF.md…)'`, which starts the new session with the same goal set (the line before it is the plain command). An OpenCode session has no goal.
@@ -45,6 +45,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import compact_context as cc
 import opencode_source as oc
+import read_handoff as rh
 DURABLE = os.path.expanduser("~/.claude/handoffs")
 INTRO = """# Handoff: continuarea unei sesiuni
 
@@ -93,15 +94,18 @@ TEMP_NOTE = {   # (kept, cut) -> text; no absolute path of the handoff itself
 OC_SUBS = (   # the OpenCode introduction is the Claude one with exactly these substitutions (a test reverses them), plus OC_EVENTS on the line of WHAT_BLOBS
     ("Sesiunea sursă: {sid}, generat {ts}.", "Sesiunea sursă: sesiune OpenCode `{sid}`, generat {ts}."),
     ("O citire prea mare este refuzată de unealta Read, deci citește-l exact în {n} bucăți, cu `offset:limit`: {plan}. Nu cere mai mult într-un singur Read și nu căuta",
-     "O citire prea mare poate fi refuzată sau trunchiată de unealta de citire a fișierelor (`Read` în Claude Code, `read` în OpenCode, cu parametrii `offset` și `limit`), deci citește-l exact în {n} bucăți, cu `offset:limit`: {plan}. Nu cere mai mult într-o singură citire și nu căuta"),
+     "O citire prea mare poate fi refuzată sau trunchiată de unealta de citire a fișierelor (`Read` în Claude Code, `read` în OpenCode, cu parametrii `offset` și `limit`), deci continuă în {n} bucăți planificate, cu `offset:limit`: {plan}. Continuă după ultima linie efectiv primită; nu reciti începutul, chiar dacă ai citit deja mai mult decât prima bucată. Dacă răspunsul se oprește în mijlocul unei bucăți, citește numai restul ei, apoi bucata următoare. Oprește-te la linia {lines}, fără sondare după EOF. Nu cere mai mult într-o singură citire și nu căuta"),
+    ("- În această primă etapă nu modifici fișiere: doar citești și răspunzi.",
+     "- În această primă etapă nu modifici fișiere: doar citești și răspunzi. Poți executa helperul `read_handoff.py` din acest folder exclusiv pentru recuperarea textului arhivat, conform regulii următoare."),
 )
 INTRO_OC = INTRO
 for _a, _b in OC_SUBS:
     assert INTRO_OC.count(_a) == 1
     INTRO_OC = INTRO_OC.replace(_a, _b)
-OC_EVENTS = (" Liniile care încep cu `[opencode …]` sunt evenimente ale sesiunii OpenCode, nu mesaje scrise de mine. Raționamentul modelului (text și conținut criptat) nu este inclus")
+OC_EVENTS = (" Atașamentele utilizatorului, când există, sunt fișiere binare în `attachments/`; marcajele lor indică fișierul, iar blob-ul păstrează asocierea cu mesajul și metadatele. Instrucțiunile skill-urilor atașate sau încărcate sunt păstrate în blob-uri distincte de alegerea reîncărcării. Liniile care încep cu `[opencode …]` sunt evenimente ale sesiunii OpenCode, nu mesaje scrise de mine. Raționamentul modelului (text și conținut criptat) nu este inclus")
 OC_RECENT = "; textele `recent` ale compactărilor sunt în `blobs/Rnnnn.txt`"
 OC_IMAGES = "; imaginile sunt în `blobs/Rnnnn.txt`, ca date base64, nu text, și nu sunt verificate pentru secrete"
+OC_MISSING = (MISSING_BLOBS + " Dacă o linie din notă sau blob este marcată ca trunchiată, recuperează acea linie integral cu `python3 <folder-handoff>/read_handoff.py <fișier> --line N --stop-line N`. Helperul afișează fragmente JSONL cu `line`, `column` și `text`; textul decodat păstrează delimitările originale. Dacă `next` nu este null, repetă cu `--line` și `--column` din cursor, păstrând `--stop-line N`; nu repeta fragmentele deja primite. `next: null` încheie recuperarea. Pentru o porțiune lipsă întreagă, omite `--stop-line`. Helperul nu poate recupera text care lipsea deja din sesiunea sursă.")
 READ_BUDGET = 40000   # characters per Read, line-number prefix included; the Read tool refuses about 47,000 (25,000 tokens)
 
 
@@ -122,7 +126,7 @@ def build_intro(cut, sid, ts, src, kept, parents, lines=0, chunks=((1, 1),), ski
     plan = ", ".join("%d:%d" % c for c in chunks)
     oc_clause = "" if opencode is None else OC_EVENTS + (OC_RECENT if opencode[0] else "") + (OC_IMAGES if opencode[1] else "") + "."
     return (INTRO if opencode is None else INTRO_OC).format(sid=sid, ts=ts, lines=lines, n=len(chunks), plan=plan, parents=parents, skills=reload, goal=goal, temp=TEMP_NOTE[(bool(kept), bool(cut))],
-                        what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "") + (" " + SDK_CLAUSE + " " + SDK_ANSWERS if sdks else "") + oc_clause), missing=(MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
+                        what=(WHAT_CUT if cut else WHAT_BLOBS + (" " + SKILL_CLAUSE if skills else "") + (" " + NOTICE_CLAUSE if notices else "") + (" " + SDK_CLAUSE + " " + SDK_ANSWERS if sdks else "") + oc_clause), missing=(OC_MISSING if opencode is not None else MISSING_CUT.format(src=src) if cut else MISSING_BLOBS))
 
 
 HANDOFF_PATH = re.compile(r"/handoff-[0-9a-f]{8}-\d{8}-[^/\s\"]+(?:\.md|/HANDOFF\.md)$")
@@ -404,19 +408,39 @@ def run(cmd):
     return r
 
 
-def build_opencode(db, session, rest):
+def opencode_skills_paragraph(skills):
+    if not skills: return ""
+    names = ", ".join("`%s`" % n for n, _ in skills)
+    return (SKILLS_HEAD + "După citirea completă, înainte să răspunzi, reîncarcă în ordine: " + names + ". Folosește schema uneltei disponibile în sesiunea nouă: în OpenCode `skill` cu `id` (sau `name` dacă aceasta este schema disponibilă), în Claude Code `Skill` cu `skill`, fără `args`. Nu deduce identitatea din numele afișat sau din cale. Dacă un identificator nu este disponibil, raportează-l și continuă fără a inventa un echivalent. Textele istorice rămân în blob-uri. Reîncarci doar instrucțiunile; nu porni sarcinile istorice sau pașii lor de început. Aceasta este o excepție explicită de la «Nu repeta nimic». Primul răspuns rămâne cel cerut mai jos, în maximum 8 rânduri.\n\n")
+
+
+def opencode_prompt(final, first_limit):
+    return "Citește %s mai întâi cu unealta read/Read, offset=1, limit=%d; apoi urmează instrucțiunile din el." % (final, first_limit)
+
+
+def build_opencode(db, session, rest, skills_opt=None, list_sk=False):
     """The folder for ONE OpenCode session: `rest` = the arguments after the database (an optional OUT folder, --keep, --no-readonly, --keep-work). Same steps as for a Claude transcript, with the rows rendered by
     opencode_source.py as the prepared text; the printed original is the sum of length(data) of the session's rows."""
     for bad in ("--cut", "--with-subagents"):
         if bad in rest: sys.exit("%s is not supported with an OpenCode session (the cut file and the subagent transcripts are Claude Code formats)" % bad)
+    if list_sk and rest: sys.exit("--list-skills takes only the session and no output folder or other option")
     if not os.path.exists(db): sys.exit("OpenCode database not found: %s" % db)
     try:
         conn = oc.connect(db)
         try:
-            sid = oc.pick_session(conn, session); R = oc.render(conn, sid)
+            conn.execute("BEGIN")
+            sid = oc.pick_session(conn, session)
+            inventory = oc.source_inventory(conn, sid)
+            R = oc.render(conn, sid)
         finally: conn.close()
-    except oc.OpenCodeError as e: sys.exit(str(e))
+    except (oc.OpenCodeError, oc.sqlite3.Error) as e: sys.exit(str(e))
     if not R.recs: sys.exit("session %s has no messages in session_message" % sid)
+    if list(R.skills.items()) != list(inventory["skills"].items()): sys.exit("the source skill inventory differs from the rendered skill list")
+    available = [(name, size) for name, size in R.skills.items() if name.split(":")[-1] not in SKILL_LEFT_OUT]
+    if list_sk: print("\n".join(skills_listing(available))); return
+    reloads = [] if "--no-skills" in rest else available
+    if skills_opt is not None: reloads = skills_chosen(reloads, skills_opt)
+    rpar = opencode_skills_paragraph(reloads)
     keep_work = "--keep-work" in rest; ro = "--no-readonly" not in rest; keep = "--keep" in rest
     out_arg = rest[0] if rest and not rest[0].startswith("--") else None
     short = sid[4:] if sid.startswith("ses_") else sid; now = datetime.datetime.now(); prefix = "handoff-%s-%s-" % (short[:8], now.strftime("%Y%m%d"))
@@ -428,6 +452,7 @@ def build_opencode(db, session, rest):
     os.makedirs(folder, exist_ok=True); final = os.path.join(folder, "HANDOFF.md")
     copies = copy_parents(oc.find_parents(R.first_calls, HANDOFF_PATH), os.path.join(folder, "parents"))
     for fp, cp, ok in copies: print("parent handoff:", fp, "->", cp if ok else "MISSING (not copied)")
+    if reloads: print("skills to reload: %s | %d characters of skill text (--no-skills leaves them out)" % (", ".join(n for n, _ in reloads), sum(c for _, c in reloads)))
     work = tempfile.mkdtemp(prefix="make_context_")
     try:
         os.makedirs(os.path.join(work, "out", "transcript"))
@@ -440,30 +465,44 @@ def build_opencode(db, session, rest):
             with contextlib.redirect_stdout(buf):
                 ok = cc.cmd_check(os.path.join(work, "out"), dest, cc.DEFAULT_LIMITS, cc.DEFAULT_PREVIEW, ro, intro, "HANDOFF.md", True, frozenset(), frozenset(), ro_uuids, forced, R.original)
             return buf.getvalue().strip(), ok
-        draft = build_intro(False, sid, ts, db, kept, paragraph, opencode=flags)
+        draft = build_intro(False, sid, ts, db, kept, paragraph, opencode=flags, reload=rpar)
         chunks, lines = ((1, 1),), 0
         for attempt in range(3):   # as for a Claude transcript: the plan changes only numbers inside one line
             scratch = os.path.join(work, "draft%d" % attempt); line, ok = compact(draft, scratch)
-            text_lines = open(os.path.join(scratch, "HANDOFF.md"), encoding="utf-8").read().split("\n")
-            new_chunks = tuple(reading_plan(text_lines)); new_lines = len(text_lines)
+            text_lines = rh.text_lines(open(os.path.join(scratch, "HANDOFF.md"), encoding="utf-8", newline="").read())
+            new_chunks = tuple(rh.reading_plan(text_lines)); new_lines = len(text_lines)
             if (new_chunks, new_lines) == (chunks, lines): break
-            chunks, lines = new_chunks, new_lines; draft = build_intro(False, sid, ts, db, kept, paragraph, lines, chunks, opencode=flags)
+            chunks, lines = new_chunks, new_lines; draft = build_intro(False, sid, ts, db, kept, paragraph, lines, chunks, opencode=flags, reload=rpar)
         line, ok = compact(draft, folder)
         print(line)
         if not ok: sys.exit("the check did not pass")
-        got = open(final, encoding="utf-8").read().split("\n")
-        assert len(got) == lines and tuple(reading_plan(got)) == chunks, "the reading plan does not match the final file"
+        got = rh.text_lines(open(final, encoding="utf-8", newline="").read())
+        assert len(got) == lines and tuple(rh.reading_plan(got)) == chunks, "the reading plan does not match the final file"
+        payloads = dict(R.attachments)
+        with open(os.path.join(HERE, "read_handoff.py"), "rb") as f: payloads["read_handoff.py"] = f.read()
+        for relative, payload in payloads.items():
+            path = os.path.join(folder, relative); os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.exists(path):
+                with open(path, "rb") as f: previous = f.read()
+                if previous != payload: sys.exit("refusing to replace a different handoff payload: %s" % path)
+            else:
+                with open(path, "xb") as f: f.write(payload)
         c2, b2, p2 = cc.read_out(folder)
         n_id = cc.read_idlen(folder); problems = oc.selfcheck(R, cc.short_ids(cc.expand_text(c2, b2, p2), n_id) if n_id else cc.expand_text(c2, b2, p2), set(b2.values()), (lambda t: cc.short_ids(t, n_id)) if n_id else None)
         if problems: sys.exit("the converter self-check failed: " + "; ".join(problems))
+        problems = oc.check_inventory(inventory, b2, folder)
+        if problems: sys.exit("the source inventory check failed: " + "; ".join(problems))
+        with open(os.path.join(folder, "read_handoff.py"), "rb") as f:
+            if f.read() != payloads["read_handoff.py"]: sys.exit("the portable reader copy differs")
+        print("source inventory verified: %d attachments, %d skill identities, %d source records" % (len(inventory["files"]), len(inventory["skills"]), len(inventory["records"])))
         print("sanitized records: %d of %d (their strings are not compared one by one; every file block's uri is identical in its blob)" % (R.sanitized, len(R.recs)))
         final_text = open(final, encoding="utf-8").read(); intro_text = final_text[:final_text.index("\n---\n")]
         leaks = [m for m in re.findall(r"/(?:private/)?tmp/handoff-[^\s`'\")]+", intro_text)]
         assert not leaks, "an absolute path of a handoff is left in the introduction: %s" % leaks[:2]
-        print("reading plan: %d chunks of at most %d characters (%d lines)" % (len(chunks), READ_BUDGET, lines))
+        print("reading plan: %d chunks of at most %d UTF-8 bytes of visible text (%d lines); recover clamped lines with read_handoff.py" % (len(chunks), rh.READ_BUDGET, lines))
         print("location: %s" % ("durable (~/.claude/handoffs or the folder you gave)" if kept else "temporary (/tmp)"))
         print("ready:", final)
-        print('start the new session with:\n  opencode --prompt "Citește %s și urmează instrucțiunile din el."' % final)
+        print("start the new session with:\n  opencode --prompt " + shlex.quote(opencode_prompt(final, chunks[0][1])))
     finally:
         if keep_work: print("work files kept in", work)
         else: shutil.rmtree(work, ignore_errors=True)
@@ -500,9 +539,8 @@ def main():
     if limit is not None or match is not None: sys.exit("--limit and --match work only with --list-opencode")
     if session is not None and a[:1] != ["--opencode"]: sys.exit("--session works only with --opencode DB")
     if a[:1] == ["--opencode"]:
-        if skills_opt is not None or list_sk: sys.exit("--skills and --list-skills work only with a Claude Code session; an OpenCode session lists none")
         if len(a) < 2 or a[1].startswith("--"): print(__doc__); sys.exit(2)
-        return build_opencode(os.path.expanduser(a[1]), session, a[2:])
+        return build_opencode(os.path.expanduser(a[1]), session, a[2:], skills_opt, list_sk)
     if len(a) >= 2 and a[0] == "--current":
         db = oc_db or oc.default_db()
         try: hits, sessions = find_current_all(a[1], db=db, use_opencode=not no_oc)
@@ -512,9 +550,7 @@ def main():
             sys.exit("--current: %d sessions contain the marker %r (%d Claude Code transcripts, %d OpenCode sessions; need exactly 1); give the session id instead" % (len(hits) + len(sessions), a[1], len(hits), len(sessions)))
         if sessions:
             print("current session:", sessions[0])
-            if list_sk: print("\n".join(skills_listing([]))); return
-            if skills_opt is not None: sys.exit("--skills works only with a Claude Code session; an OpenCode session lists none")
-            return build_opencode(db, sessions[0], a[2:])
+            return build_opencode(db, sessions[0], a[2:], skills_opt, list_sk)
         print("current session:", os.path.basename(hits[0])[:-6]); a = [hits[0]] + a[2:]
     if not a or a[0].startswith("--"): print(__doc__); sys.exit(2)
     sess = a[0]; keep_work = "--keep-work" in a; cut = "--cut" in a
@@ -625,10 +661,10 @@ runpy.run_path(sys.argv[0], run_name="__main__")
         md = open(os.path.join(out, "HANDOFF.md"), encoding="utf-8").read()
         blobs = [open(os.path.join(out, "blobs", f), encoding="utf-8").read() for f in sorted(os.listdir(os.path.join(out, "blobs")))] if os.path.isdir(os.path.join(out, "blobs")) else []
         return md, blobs
-    # ---- the introduction: the OpenCode one is the Claude one with exactly three substitutions
+    # ---- OpenCode-only reading rules; the Claude introduction remains byte-for-byte
     back = INTRO_OC
     for a_, b_ in OC_SUBS: assert back.count(b_) == 1; back = back.replace(b_, a_)
-    assert back == INTRO and len(OC_SUBS) == 2; n += 2   # the third substitution (the clause after WHAT_BLOBS) is checked below
+    assert back == INTRO and len(OC_SUBS) == 3; n += 2
     args = ("ses_0123456789abcdefAAAAAA", "2026-01-01 10:00", "/x/db.sqlite", False, "", 1996, ((1, 300), (301, 280)))
     plain = build_intro(False, *args)
     assert plain == INTRO.format(sid=args[0], ts=args[1], lines=1996, n=2, plan="1:300, 301:280", parents="", skills="", goal="", temp=TEMP_NOTE[(False, False)], what=WHAT_BLOBS, missing=MISSING_BLOBS); n += 1   # the Claude introduction is as it was
@@ -636,13 +672,13 @@ runpy.run_path(sys.argv[0], run_name="__main__")
         intro = build_intro(False, *args, opencode=(comp, imgs)); n += 1
         assert "Sesiunea sursă: sesiune OpenCode `ses_0123456789abcdefAAAAAA`, generat 2026-01-01 10:00." in intro and "`Read` în Claude Code, `read` în OpenCode, cu parametrii `offset` și `limit`" in intro
         assert "unealta Read" not in intro and "singur Read" not in intro and "poate fi refuzată sau trunchiată" in intro and "într-o singură citire" in intro
-        for needle in ("1996 de linii", "în 2 bucăți", "`offset:limit`: 1:300, 301:280. ", "8 rânduri", "istoric", "Reguli", "Ce faci după ce l-ai citit", "Mesajele mele și ale asistentului sunt întregi", "[opencode …]", "Raționamentul modelului (text și conținut criptat) nu este inclus"):
+        for needle in ("1996 de linii", "în 2 bucăți", "`offset:limit`: 1:300, 301:280. ", "nu reciti începutul", "read_handoff.py", "8 rânduri", "istoric", "Reguli", "Ce faci după ce l-ai citit", "Mesajele mele și ale asistentului sunt întregi", "[opencode …]", "Raționamentul modelului (text și conținut criptat) nu este inclus"):
             assert needle in intro, (comp, imgs, needle)
         assert ("textele `recent` ale compactărilor sunt în `blobs/Rnnnn.txt`" in intro) == comp and ("imaginile sunt în `blobs/Rnnnn.txt`, ca date base64, nu text, și nu sunt verificate pentru secrete" in intro) == imgs
         assert intro.count("\n") == plain.count("\n") and "/tmp/handoff-" not in intro and "/Users/" not in intro
         line = next(l for l in intro.split("\n") if l.startswith(WHAT_BLOBS)); assert line.endswith(".") and line.count("Raționamentul") == 1
-        undo = intro.replace(OC_EVENTS + (OC_RECENT if comp else "") + (OC_IMAGES if imgs else "") + ".", "")
-        for a_, b_ in OC_SUBS: undo = undo.replace(b_.format(sid=args[0], ts=args[1], n=2, plan="1:300, 301:280"), a_.format(sid=args[0], ts=args[1], n=2, plan="1:300, 301:280"))
+        undo = intro.replace(OC_EVENTS + (OC_RECENT if comp else "") + (OC_IMAGES if imgs else "") + ".", "").replace(OC_MISSING, MISSING_BLOBS)
+        for a_, b_ in OC_SUBS: undo = undo.replace(b_.format(sid=args[0], ts=args[1], n=2, plan="1:300, 301:280", lines=1996), a_.format(sid=args[0], ts=args[1], n=2, plan="1:300, 301:280", lines=1996))
         assert undo == plain, (comp, imgs)   # undoing the three changes gives the Claude introduction for the same arguments
     # ---- a session with every message type and content kind, converted by the command line of measure_oc.py
     rows = oc.synthetic_rows(); sid = "ses_0123456789abcdefAAAAAA"; uri = next(b for t_, dd, _ in rows if t_ == "assistant" for part in dd.get("content", []) if part.get("type") == "tool" for b in part["state"].get("content", []) if b.get("type") == "file")["uri"]
@@ -663,7 +699,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
     assert "API_TOKEN=abcd1234efgh5678" not in allt and "s3cretValue99xyz" not in allt and "TOKENabcdefgh12345" not in allt and "[REDACTED:" in allt and "ok API_TOKEN=[REDACTED" in allt; n += 1   # the secrets in text outputs and inputs are redacted
     head = md[:md.index("\n---\n")]
     assert "sesiune OpenCode `ses_0123456789abcdefAAAAAA`" in head and "textele `recent`" in head and "imaginile sunt în `blobs/Rnnnn.txt`" in head and "Raționamentul modelului" in head; n += 1
-    assert r.stdout.rstrip().endswith('start the new session with:\n  opencode --prompt "Citește %s și urmează instrucțiunile din el."' % os.path.join(out, "HANDOFF.md")); n += 1
+    assert r.stdout.rstrip().endswith('start the new session with:\n  opencode --prompt ' + shlex.quote(opencode_prompt(os.path.join(out, "HANDOFF.md"), rh.reading_plan(rh.text_lines(md))[0][1]))); n += 1
     ro_n = int(re.search(r"(\d+) by the read-only rule", r.stdout).group(1)); assert ro_n == 4, ro_n; n += 1   # shell ls, read, grep and the image read (a read tool); the git commit and the patches stay inline
     assert "[tool_use shell] command: git commit -m 'x'" in md and "[tool_use patch] patchText: *** Begin Patch" in md; n += 1
     # A second run is deterministic with the same generation time (same uuids, same bytes).

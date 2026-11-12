@@ -25,4 +25,9 @@ describe("self tests of the Python programs", () => {
     const r = run("test/test_make_context_clock.py", []);
     assert.equal(r.status, 0, r.stderr);
   });
+
+  it("OpenCode preserves source attachments and skills and supports bounded recovery", () => {
+    const r = run("test/test_opencode_fidelity.py", []);
+    assert.equal(r.status, 0, r.stderr);
+  });
 });
