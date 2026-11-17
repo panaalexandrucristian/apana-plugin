@@ -42,6 +42,8 @@ export const stateDir = (env = process.env) => resolve(env.APANA_SCOPE_STATE_DIR
 const sessionId = (id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 export const statePath = (id, env) => { if (!sessionId(id)) throw new Error("invalid session id"); return resolve(stateDir(env), `${id}.json`); };
 export const proposalPath = (id, env) => { if (!sessionId(id)) throw new Error("invalid session id"); return resolve(stateDir(env), `${id}.proposal.json`); };
+// The stored scope of a session, read only: null when there is none, {corrupt: true} when it cannot be read safely.
+export const scopeStatus = (id, env = process.env) => load(id, env);
 const deny = (reason) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Apana scope: ${reason}` } });
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } });
 function writeAtomic(path, data) { checkedPath(path); mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`; writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 }); renameSync(tmp, path); }

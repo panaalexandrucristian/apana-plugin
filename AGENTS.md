@@ -1,6 +1,6 @@
 # Working in this repository
 
-The `apana` plugin for Claude Code (and OpenCode, for `logic-test-debug`): skills and hooks that do not need the jev plugin. Split out of `jev-mcp-private` (the `jev` plugin) at `1a047da` on 2026-10-19. One developer, several sessions working at the same time.
+The `apana` plugin for Claude Code and for OpenCode 2.3.0 (the skills and modes they share; what manages Claude Code itself stays Claude-only): skills and hooks that do not need the jev plugin. Split out of `jev-mcp-private` (the `jev` plugin) at `1a047da` on 2026-10-19. One developer, several sessions working at the same time.
 
 Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measurement log, mostly history). Run `grep -n '^## ' PRIVATE.md` and read the one section you need.
 
@@ -9,7 +9,7 @@ Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measuremen
 - `commands/<name>.md`: explicitly invoked plugin commands. `skills/<name>/SKILL.md` and its `scripts/`: the plugin's skills. `hooks/hooks.json`, `.claude-plugin/`: the rest of the plugin.
 - `scripts/apana-hook.mjs`: the command entry that `hooks/hooks.json` calls; it dispatches to the guidance and scope hooks. The manifest also loads `hooks/compact-session.ts`, the native module for explicit same-session compaction; its classic Stop request lives in the skill's frontmatter.
 - `private/<feature>/`: code and tests of the hook-side features. `private/find-usages/` is the development copy of the programs that `skills/class-graph/scripts/` bundles; a test checks that the two are identical, so change `private/find-usages/` and copy the files over.
-- `opencode-plugin.js` and `private/logic-test-debug/opencode.mjs`: the OpenCode side of `logic-test-debug`.
+- `opencode-plugin.js` (the OpenCode entry), `private/logic-test-debug/opencode.mjs` (the independent adapter of `logic-test-debug`) and `private/opencode/` (the rest of the OpenCode side: `catalog.mjs` lists which skills run there and adapts their text, `modes.mjs` scope, Jev and class-graph, `compaction.mjs` and `compact.py` compact-session, `plugin.mjs` the all-or-nothing setup). A new directory under `skills/` must be put in `OPENCODE_SKILLS` or `CLAUDE_ONLY_SKILLS` of `catalog.mjs` (a test fails until it is). `private/opencode/test/runtime.test.mjs` runs on a real OpenCode only with `APANA_OPENCODE_RUNTIME=1` (`npm run test:opencode-runtime`); without it those tests are skipped, which proves nothing about OpenCode.
 - `skills/compact-handoff/scripts/handoff_verify/`: a byte-for-byte copy of 15 modules of the `handoff-verify` skill of `jev-mcp-private`. Do not edit it here; `VENDORED.md` there says how to refresh it.
 - A session runs the plugin from `~/.claude/plugins/cache/apana-private/apana/<version>/`, not from a checkout. A change reaches a session only after a release and `claude plugin update apana@apana-private`.
 - Only `skills/jev-decision-loop/` calls Jev, over its direct API (TypeSafe or OpenRouter) with the user's own key, so that it works without the jev plugin. Anything that needs the jev plugin or its MCP tools belongs in `jev-mcp-private`.

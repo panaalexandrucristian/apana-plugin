@@ -300,6 +300,15 @@ def attached_skill(mid, index, item):
     return skill_id(item.get("id")) if text else None, text, body
 
 
+def native_skill(mid, message):
+    """A message of type `skill` (the skill text OpenCode appends when a skill is activated through its API): id, text, rendered body."""
+    text = message.get("text", "")
+    if not isinstance(text, str): raise OpenCodeError("unsupported skill text in %s" % mid)
+    metadata = {k: v for k, v in message.items() if k != "text"}
+    body = "[opencode skill message]\n" + json.dumps({"message": mid, "metadata": metadata}, ensure_ascii=False, sort_keys=True) + "\n" + text
+    return skill_id(message.get("skill")) if text else None, text, body
+
+
 def loaded_tool_skill(part):
     if part.get("name") != "skill": return None
     state = part.get("state")
@@ -338,11 +347,14 @@ dropping an item in the renderer cannot erase the corresponding expectation.
         uid = record_id(sid, mid, token)
         inventory["records"][uid] = sanitize("[%s user] %s\n" % (uid, body))
     for mid, typ, data in conn.execute("select id, type, data from session_message where session_id=? order by seq, rowid", (sid,)):
-        if typ == "skill": raise OpenCodeError("unsupported separate skill message in session %s" % sid)
         try: message = json.loads(data)
         except (ValueError, TypeError): continue  # existing unreadable-row notice remains
         if not isinstance(message, dict): continue
-        if typ == "user":
+        if typ == "skill":
+            name, text, body = native_skill(mid, message)
+            expect(mid, "skill-message", body)
+            if name: inventory["skills"].setdefault(name, len(text))
+        elif typ == "user":
             for index, item in enumerate(attached_items(message, "files")):
                 path, payload, body = attachment(sid, mid, index, item)
                 inventory["files"][path] = payload
@@ -412,6 +424,11 @@ def render(conn, sid):
                 uid = add(mid, "user", body, identity="skill/%d" % index)
                 R.forced[uid] = "[skill attachment: %s]" % (name or "unavailable id")
                 if name: R.skills.setdefault(name, len(text))
+        elif typ == "skill":
+            name, text, body = native_skill(mid, j)
+            uid = add(mid, "user", body, identity="skill-message")
+            R.forced[uid] = "[skill message: %s]" % (name or "unavailable id")
+            if name: R.skills.setdefault(name, len(text))
         elif typ in ("system", "synthetic"):
             t = j.get("text") if isinstance(j.get("text"), str) else ""
             add(mid, "user", "[opencode %s] %s" % (typ, t))

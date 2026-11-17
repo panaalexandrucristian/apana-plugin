@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { loopOff, loopReset } from "../gate-hook.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "..", "gate-hook.mjs");
@@ -114,5 +115,26 @@ describe("wiring", () => {
     const front = readFileSync(SKILL, "utf8").split("\n---\n")[0];
     for (const event of ["PreToolUse", "PostToolUse", "Stop"]) assert.match(front, new RegExp(`\\n  ${event}:`));
     for (const event of ["pre", "post", "stop"]) assert.match(front, new RegExp(`skills/jev-decision-loop/scripts/gate-hook\\.mjs" ${event}'`));
+  });
+});
+
+describe("loopOff and loopReset (used by the OpenCode adapter)", () => {
+  it("loopOff is true after jev.mjs --off and false after --check", () => {
+    assert.equal(loopOff("s1", env), false);
+    run("pre", { tool_name: "Bash", tool_input: { command: `node ${JEV} --off` } });
+    assert.equal(loopOff("s1", env), true);
+    assert.equal(loopOff("s2", env), false, "another session is not off");
+    run("pre", { tool_name: "Bash", tool_input: { command: `node ${JEV} --check` } });
+    assert.equal(loopOff("s1", env), false);
+  });
+  it("loopReset starts the loop afresh: no off marker, no allowance, no reply", () => {
+    ask(READ_A, GO_A);
+    run("pre", { tool_name: "Bash", tool_input: { command: `node ${JEV} --off` } });
+    loopReset("s1", env);
+    assert.equal(loopOff("s1", env), false);
+    assert.ok(denied(read()), "the allowance of the earlier decision is gone");
+    ask(READ_A.replace("b: Grep x in /r", "b: Ask the user: which screen?"), "VERDICT: GO b -- Ask the user: which screen?");
+    loopReset("s1", env);
+    assert.equal(run("stop", { stop_hook_active: false })?.decision, "block", "the reply of the earlier decision is gone");
   });
 });

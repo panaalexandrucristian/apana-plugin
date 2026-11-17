@@ -70,6 +70,17 @@ function prune(dir) {
   }
 }
 
+/** True after `jev.mjs --off` and until the next `--check`: the gate lets every call through. */
+export function loopOff(sessionId, env = process.env) {
+  return existsSync(paths(sessionId, env).off);
+}
+
+/** Starts a session's loop afresh (what `--check` does for the gate): no stale off marker, allowance or reply. */
+export function loopReset(sessionId, env = process.env) {
+  const p = paths(sessionId, env);
+  drop(p.off); drop(p.token); drop(p.reply);
+}
+
 /** One hook event; returns the JSON to print, or null to let it through. */
 export function handle(event, input, env = process.env) {
   if (input.agent_id) return null;

@@ -156,11 +156,11 @@ def archive(path, data):
         os.fsync(stream.fileno())
 
 
-def compact(raw):
+def compact(raw, records_factory=synthetic_records):
     snapshot = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
     # Reject non-JSON NaN/Infinity, including overflowed numeric literals.
     json.dumps(snapshot, allow_nan=False)
-    records = synthetic_records(snapshot)
+    records = records_factory(snapshot)
     home = DURABLE.resolve()
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     destination = Path(tempfile.mkdtemp(prefix="compact-session-", dir=home))

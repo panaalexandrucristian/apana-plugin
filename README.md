@@ -1,6 +1,6 @@
 # apana
 
-A Claude Code plugin with commands, skills and hooks that do not need the jev plugin (only `jev-decision-loop` calls Jev, over its direct API with the user's own key). Split out of `jev-mcp-private` (the `jev` plugin) on 2026-10-19.
+A Claude Code plugin (with an OpenCode 2.3.0 side, see [OpenCode](#opencode)) with commands, skills and hooks that do not need the jev plugin (only `jev-decision-loop` calls Jev, over its direct API with the user's own key). Split out of `jev-mcp-private` (the `jev` plugin) on 2026-10-19.
 
 Install:
 
@@ -35,7 +35,19 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:claude-copilot` | Install or verify a separate GitHub Copilot subscription launcher with fresh account models and a fail-closed model guard. |
 | `apana:uninstall-claude-copilot` | Preview and remove only its owned launcher/alias, retaining credentials, state, native plugin and dependencies. |
 
-OpenCode: clone this repository, add its absolute path to the `plugins` array of `opencode.json` or `opencode.jsonc`, restart OpenCode. Only `logic-test-debug` is set up there.
+OpenCode: see [OpenCode](#opencode) below. The skills that manage Claude Code itself (the launchers and their uninstallers, `install-claude-auto`, `improve-skill`, `update-sessions`) are Claude Code only.
+
+## OpenCode
+
+Verified on OpenCode **2.3.0** (the V2 plugin API; V1 is not supported). Either clone this repository and list the folder (a folder, not `opencode-plugin.js`) in `plugins` of `opencode.json` or `opencode.jsonc`, or use OpenCode's own Git install with your own Git credentials (`opencode plugin add github:panaalexandrucristian/apana-plugin`; the tests of this repository load the folder and an extracted `npm pack`, not a Git install). Restart OpenCode (or update the package) after a change: the text of the skills and commands is read when the plugin is set up, not watched.
+
+**What runs there.** `android-ui-step`, `assess-complexity`, `class-graph`, `code-rag`, `code-rag-setup`, `compact-handoff`, `compact-session`, `explica-clar`, `jev-decision-loop`, `logic-test-debug`, `pr-convention-check`, `review-diff`, `review-plan`, `scope`, `variant-check`, and the command `explica-optiuni`, each as `/apana:<name> <arguments>` (the arguments reach the skill untouched as the text after the command name). `compact-session` is explicit-only and is not offered to the model. The text of each skill gets a short note that maps Claude's tool names to OpenCode's; `allowed-tools` and `hooks` in a skill's frontmatter are not applied, and OpenCode's own permissions decide what runs (nothing here grants or lifts one).
+
+**The modes.** They are switched on by the user's command, from the admitted message, not from the text of a prompt that may never be admitted: `/apana:scope <task>` (then `/apana:scope approve <nonce>`), `/apana:jev-decision-loop` (or `@jev-decision-loop`; a skill load by the model also starts it) and the bare `/apana:class-graph`. Scope allows reads and the proposal, then exactly the approved files and test commands; every other tool, Code Mode (`execute`), MCP tools and subagents included, is refused; a shell command must run in the project directory in the foreground. Jev needs one `GO` per tool call, refuses Code Mode, checks the end of a turn once, and `jev.mjs --off` ends it. **Scope and Jev cannot be on in the same session** (the second is refused and nothing changes; scope has no off switch, use another session). A fork does not inherit a mode, and a session moved to another directory is refused by its scope until a new task. Their state is kept under `$XDG_STATE_HOME/opencode/apana/`, apart from Claude Code's. These are tool gates, not an operating-system sandbox; tools that the model provider runs itself are outside them.
+
+**Compaction.** `/apana:compact-session` asks OpenCode for a compaction and supplies the same verified, deterministic transcript that Claude Code gets, in the same session, with no model summary and no recent tail beside it. If the replacement would not be smaller, or anything fails, the context is unchanged and no summarizer runs. OpenCode 2.3.0 has no result for a verified no-op, so it records such a run as a failed compaction; the report the model receives with the next prompt says which of success, no-op and failure it was, and a success is reported only when OpenCode recorded the replacement. Archives go to `~/.claude/handoffs/` as for Claude Code; do not delete them. Media and encrypted provider checkpoints are not supported and make the compaction fail closed.
+
+**Configuration** is by environment only (`APANA_LOGIC_TEST_DEBUG`, `APANA_CLASS_GRAPH_NUDGE`, `APANA_SCOPE_STATE_DIR`, `APANA_CLASS_GRAPH_STATE_DIR`, `JEV_GATE_DIR`); plugin `userConfig` is a Claude Code feature. If the larger integration cannot be set up, what it had registered is undone, one warning is printed and `logic-test-debug` keeps working on its own. `logic-test-debug` keeps its in-memory state per session, so a reload in the middle of a turn can drop its directive for that turn.
 
 ### Same-session compaction
 
@@ -105,7 +117,7 @@ This is an explicitly invoked Markdown command at `commands/explica-optiuni.md`,
 
 The same hook manifest also loads `hooks/compact-session.ts`, the native bridge used only after explicit activation of `compact-session`. Its Stop command is scoped to the skill, not registered globally.
 
-`opencode-plugin.js` sets `logic-test-debug` up on OpenCode.
+`opencode-plugin.js` is the OpenCode entry: it sets `logic-test-debug` up on its own and then the rest of the OpenCode integration (see [OpenCode](#opencode)); Claude Code does not read it.
 
 ## Configuration
 
@@ -124,5 +136,6 @@ The existing environment variables remain compatible and take precedence when ex
     npm run test:claude-openai # offline bridge suite; proxy lifecycle skips if CLIProxyAPI is absent
     npm run test:claude-copilot # offline Copilot fixtures; no native download/login/inference
     claude plugin test .      # native compact-session hook tests on a supporting build
+    npm run test:opencode-runtime # the plugin on a real OpenCode 2.3.0 (private server, stand-in provider, no credentials); skipped by npm test
 
 Node 22 and Python 3 are needed; `class-graph` and `find-usages` also need ripgrep (`rg`). `AGENTS.md` says how to work in this repository.

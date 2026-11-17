@@ -145,6 +145,42 @@ class Fidelity(unittest.TestCase):
         self.assertEqual(sum(uri in text for text in blobs.values()), 1)
         self.assertIn(uri, expanded)
 
+    def test_native_skill_messages_are_kept_whole_listed_and_checked(self):
+        # What OpenCode appends when a skill is activated through its API (type `skill`): data {skill, name, text}.
+        native = 'Native activation text.\nAPI_TOKEN=abcdef1234567890\nKeep this one.'
+        source = rows()
+        source.append(('skill', {'skill': 'native-skill', 'name': 'Native Skill', 'text': native}, 1))
+        source.append(('skill', {'skill': 'empty-skill', 'name': 'Empty', 'text': ''}, 0))
+        self.database(source)
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('source inventory verified:', result.stdout)
+        expanded, blobs = self.archive()
+        self.assertIn('[opencode skill message]', expanded)
+        self.assertIn('Keep this one.', expanded)
+        self.assertNotIn('abcdef1234567890', expanded, 'a secret in the skill text is sanitized like any other text')
+        self.assertTrue(any('Keep this one.' in b and '[opencode skill message]' in b for b in blobs.values()), 'forced into a blob, whole')
+        listed = self.cli('--list-skills', out=None)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        names = [line.split(' | ')[0] for line in listed.stdout.splitlines() if line.startswith('skill: ')]
+        self.assertEqual(names, ['skill: attached', 'skill: tool-skill', 'skill: native-skill'])
+        chosen = self.cli('--skills', 'native-skill', out='chosen')
+        self.assertEqual(chosen.returncode, 0, chosen.stderr)
+        head = (self.root / 'chosen' / 'HANDOFF.md').read_text().split('\n---\n')[0]
+        self.assertIn('`native-skill`', head)
+        self.assertNotIn('`tool-skill`', head)
+        with closing(oc.connect(str(self.db))) as c:
+            expected = oc.source_inventory(c, SID)
+        folder = str(self.root / 'output')
+        self.assertEqual(oc.check_inventory(expected, blobs, folder), [])
+        for name, text in blobs.items():
+            if '[opencode skill message]' in text:
+                missing = dict(blobs); del missing[name]
+                self.assertTrue(oc.check_inventory(expected, missing, folder), 'a lost skill message is detected')
+                if 'Keep this one.' in text:   # the other message (empty text) has nothing to change
+                    corrupt = dict(blobs); corrupt[name] = text.replace('Keep this one.', 'Changed.')
+                    self.assertTrue(oc.check_inventory(expected, corrupt, folder), 'a changed skill message is detected')
+
     def test_both_entry_points_list_and_choose_successful_skill_ids(self):
         source = rows()
         source[0][1]['text'] += ' handoff-marker-fidelity'
@@ -180,7 +216,7 @@ class Fidelity(unittest.TestCase):
                     if case == 'media-user': source[0][1]['files'][0]['uri'] = 'media:' + 'a' * 64
                 if case == 'media-tool':
                     source[1][1]['content'][0]['state']['content'] = [{'type': 'file', 'uri': 'media:' + 'b' * 64}]
-                if case == 'skill-message': source.append(('skill', {'skill': 'x', 'name': 'x', 'text': 'Not supported.'}, 0))
+                if case == 'skill-message': source.append(('skill', {'skill': 'x', 'name': 'x', 'text': ['not', 'a', 'string']}, 0))
                 if self.db.exists(): self.db.unlink()
                 self.database(source)
                 with closing(sqlite3.connect(self.db)) as c, c:
