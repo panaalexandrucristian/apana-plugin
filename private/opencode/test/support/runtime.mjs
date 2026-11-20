@@ -70,8 +70,8 @@ export async function startRuntime({ dir, plugin, script = [], mode = script.len
   }
   const base = `http://127.0.0.1:${listen}`;
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "content-type": "application/json", "x-opencode-directory": sub("ws") };
-  const api = async (method, path, body) => {
-    const res = await fetch(`${base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const api = async (method, path, body, directory) => {
+    const res = await fetch(`${base}${path}`, { method, headers: directory ? { ...headers, "x-opencode-directory": directory } : headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await res.text();
     let json = null;
     try {

@@ -103,6 +103,33 @@ describe("opencode-auto on a real OpenCode 2.3.x", { skip: reason, timeout: 6000
     assert.equal((await allSessions(rt)).filter((s) => s.metadata?.apana?.auto).length, 2, "the old session and one new one");
   });
 
+  it("hands a session off once when the server has two locations for one folder: the folder named directly and through a link", async () => {
+    const rt = await start({ usage: { prompt: 70_000, completion: 10 } });
+    const link = join(tempDir("apana-auto-link-"), "ws");
+    symlinkSync(rt.ws, link);
+    await rt.api("GET", "/api/command", undefined, link); // a request from that spelling makes the server load the plugin a second time
+    await until("the plugin was not loaded for the second location", async () => (rt.log().match(/loading plugin" id=\S*plugins\/apana-auto /g) ?? []).length, (n) => n >= 2, 30000);
+    await wait(700);
+    const id = await rt.session("twice", { metadata: { apana: { auto: MARK } } });
+    await rt.prompt(id, "do the task");
+    await until("the old session never got `next`", () => getSession(rt, id), (s) => typeof s?.metadata?.apana?.next === "string");
+    await wait(3000);
+    assert.equal(notes(rt).length, 1, "one note folder");
+    assert.equal((autoLog(rt).match(/handoff \(step\)/g) ?? []).length, 1, autoLog(rt));
+    assert.equal((await allSessions(rt)).filter((s) => s.metadata?.apana?.auto).length, 2, "the old session and one new one");
+  });
+
+  it("keeps the threshold under OpenCode's compaction ceiling, from the window the server reports for the model: with the default threshold of 200000 it hands off at 80000 and not at 60000", async () => {
+    const rt = await start({ usage: { prompt: 60_000, completion: 10 } });
+    const id = await rt.session("window", { metadata: { apana: { auto: { cooldown: 0, max: 1 } } } });
+    const quiet = await quietTurn(rt, id);
+    assert.equal(quiet.session.metadata?.apana?.next, undefined, "60000 is under the limit of 69000 that the stand-in's window of 100000 gives");
+    rt.setUsage({ prompt: 80_000, completion: 10 });
+    await rt.prompt(id, "go on");
+    await until("the old session never got `next`", () => getSession(rt, id), (s) => typeof s?.metadata?.apana?.next === "string");
+    assert.match(autoLog(rt), /handoff \(step\)/);
+  });
+
   it("refuses a tool call, and hands off, once the context is over the tool limit but under the step limit: the first call runs (no usage yet), the second does not run", async () => {
     // Usage 50000 is over the tool limit (60000 - 15000 = 45000) and under the step limit (60000): only the call-before path can act.
     const marker = (name) => join(tempDir("apana-auto-marker-"), name);
@@ -129,7 +156,7 @@ describe("opencode-auto on a real OpenCode 2.3.x", { skip: reason, timeout: 6000
   }
 
   it("does nothing for a session that is not marked, however large its context (also one that has other apana metadata)", async () => {
-    const rt = await start({ usage: { prompt: 150_000, completion: 10 } });
+    const rt = await start({ usage: { prompt: 250_000, completion: 10 } });
     const id = await rt.session("plain", { metadata: { keep: 1, apana: { other: true } } });
     const seen = await quietTurn(rt, id);
     assert.equal(seen.session.metadata?.apana?.next, undefined);

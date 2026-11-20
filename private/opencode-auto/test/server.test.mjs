@@ -197,6 +197,31 @@ describe("the handoff at the end of a step", () => {
     await s.step(69_000);
     assert.equal(s.fake.calls.create.length, 1);
   });
+  // A session that runs the default model has no `model` of its own (measured on 2.3.2); the model of its steps is announced by `session.step.started`.
+  const started = (s, sessionID) => {
+    s.fake.emit({ type: "session.step.started", location: { directory: s.directory }, data: { sessionID, model: MODEL } });
+    return flush();
+  };
+  const unmodelled = () => marked({ tokens: 200_000 }, { model: undefined });
+  it("takes the window from the model of the session's last step when the session has no model of its own", async (t) => {
+    const s = setup(t, { models: SMALL, root: unmodelled() });
+    await started(s, "ses_root");
+    await s.step(68_999);
+    assert.equal(s.fake.calls.create.length, 0);
+    await s.step(69_000);
+    assert.equal(s.fake.calls.create.length, 1);
+  });
+  it("keeps the settings of the mark when the session has no model and no step has announced one", async (t) => {
+    const s = setup(t, { models: SMALL, root: unmodelled() });
+    await s.step(150_000);
+    assert.equal(s.fake.calls.create.length, 0);
+  });
+  it("does not give a session the model that another session's step announced", async (t) => {
+    const s = setup(t, { models: SMALL, root: unmodelled() });
+    await started(s, "ses_other");
+    await s.step(150_000);
+    assert.equal(s.fake.calls.create.length, 0);
+  });
   it("uses the configured threshold and the other settings of the mark", async (t) => {
     const s = setup(t, { root: marked({ tokens: 120_000, margin: 10_000 }) });
     await s.step(119_999);
@@ -449,6 +474,72 @@ describe("the skills of the new session", () => {
     await broken.step(200_000);
     assert.equal(broken.built()[0].at(-1), "--no-skills");
     assert.equal(broken.fake.calls.create.length, 1, "a failed listing does not cost the handoff");
+  });
+});
+
+describe("two instances of one directory", () => {
+  /** Two instances over two contexts that name the same directory, the same marked session and one state folder. */
+  function twoInstances(t, handler) {
+    const directory = tempDir("apana-ws-");
+    const dir = tempDir("apana-auto-");
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(join(dir, "state", "enabled"), "");
+    const make = () => {
+      const fake = fakeCtx({ directory, models: BIG, sessions: { ses_root: { ...marked({ tokens: 200_000, cooldown: 0 }), location: { directory } } } });
+      const answer = (args) => ({ code: 0, stdout: args.includes("--list-skills") ? LISTED() : BUILT, stderr: "" });
+      const auto = createAuto(fake.ctx, { stateDir: join(dir, "state"), dataDir: join(dir, "data"), db: "/db/opencode.db", script: "/s/make_context.py", now: () => 1_000_000, log: () => {}, waitMs: 40, run: async (args) => (handler ? handler(args, answer) : answer(args)) });
+      const controller = new AbortController();
+      auto.start(controller.signal);
+      t.after(() => controller.abort());
+      return { fake, auto };
+    };
+    const [a, b] = [make(), make()];
+    const step = async (...targets) => {
+      for (const target of targets) target.fake.emit({ type: "session.step.ended", location: { directory }, data: { sessionID: "ses_root", tokens: { input: 200_000, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } } });
+      await flush();
+    };
+    return { a, b, step, created: () => a.fake.calls.create.length + b.fake.calls.create.length };
+  }
+
+  it("hand a session off once, not once for each instance", async (t) => {
+    const p = twoInstances(t);
+    await p.step(p.a, p.b);
+    assert.equal(p.created(), 1);
+  });
+  it("refuse the tool calls of a session that the other instance is handing off", async (t) => {
+    const p = twoInstances(t);
+    await p.step(p.a);
+    await assert.rejects(p.b.auto.beforeTool({ sessionID: "ses_root", tool: "read", input: {} }), /handed off/);
+  });
+  it("give back what a disposed instance was still handing off, so the other can do it", async (t) => {
+    let calls = 0;
+    const p = twoInstances(t, (args, answer) => (++calls === 1 ? new Promise(() => {}) : answer(args)));
+    await p.step(p.a);
+    assert.equal(p.created(), 0, "the first instance is stuck in its handoff");
+    p.a.auto.dispose();
+    await p.step(p.b);
+    assert.equal(p.b.fake.calls.create.length, 1);
+  });
+  it("keep what a disposed instance had finished: the session is not handed off a second time", async (t) => {
+    const p = twoInstances(t);
+    await p.step(p.a);
+    assert.equal(p.created(), 1);
+    p.a.auto.dispose();
+    await p.step(p.b);
+    assert.equal(p.created(), 1);
+  });
+  it("share a failure: the instance that did not try does not try within the wait that follows it", async (t) => {
+    const tried = [];
+    const p = twoInstances(t, (args, answer) => {
+      if (args.includes("--list-skills")) return answer(args);
+      tried.push(args);
+      return { code: 1, stdout: "", stderr: "boom" };
+    });
+    await p.step(p.a);
+    assert.equal(tried.length, 1);
+    await p.step(p.b);
+    assert.equal(tried.length, 1, "the second instance leaves the session alone until the wait is over");
+    assert.equal(p.created(), 0);
   });
 });
 

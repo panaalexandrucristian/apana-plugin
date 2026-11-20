@@ -20,7 +20,7 @@ const REQUIRED = [
 ];
 export const EVENT_TYPES = Object.freeze([
   "session.created", "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
-  "session.step.ended",
+  "session.step.started", "session.step.ended",
 ]);
 const ENDED = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"]);
 
@@ -154,6 +154,14 @@ function runScript(script, args, timeoutMs, { env = process.env, children = new 
   });
 }
 
+// What stops a second handoff of a session is shared by the instances of one real directory: a directory reached by two paths has two instances.
+const shares = (globalThis[Symbol.for("apana-auto.shares")] ??= new Map()); // on globalThis: the loader may give each instance its own copy of this module
+const shareOf = (key) => {
+  if (key === null) return { claims: new Set(), failedAt: new Map(), lastHandoff: null };
+  if (!shares.has(key)) shares.set(key, { claims: new Set(), failedAt: new Map(), lastHandoff: null });
+  return shares.get(key);
+};
+
 /**
  * @param ctx plugin context. @param options paths and clocks, all replaceable by a test: stateDir (the `enabled` file and auto.log), dataDir (the notes),
  * db, script, run(args, timeoutMs) -> {code, stdout, stderr}, now, log(message), waitMs (how long to wait for execution.interrupted).
@@ -182,13 +190,14 @@ export function createAuto(ctx, options = {}) {
   const here = ctx.location?.directory ? real(ctx.location.directory) : null;
 
   const last = new Map(); // session -> context at the end of its last step
+  const stepModel = new Map(); // session -> model of its last step: a session that runs the default model has no `model` of its own
   const children = new Map(); // subagent session -> { parent, running }
-  const claims = new Set(); // sessions whose handoff is running or done in this process (a written `next` covers a restart)
-  const failedAt = new Map();
+  const share = shareOf(here);
+  const { claims, failedAt } = share; // sessions whose handoff is running or done in this process (a written `next` covers a restart), and the failures
+  const inFlight = new Set(); // the claims of this instance whose handoff has not ended: given back when the instance is disposed
   const waiters = new Map(); // session -> resolvers waiting for the end of its execution
   const noted = new Set();
   const models = { at: 0, list: [] };
-  let lastHandoff = null;
 
   const enabled = () => existsSync(join(stateDir, "enabled"));
   const isOwn = (directory) => here === null || (typeof directory === "string" && real(directory) === here);
@@ -243,7 +252,7 @@ export function createAuto(ctx, options = {}) {
   /** Why a handoff must not start now (a reason), or the subagents that are running. Nothing here awaits: the claim that follows is atomic with it. */
   function admit(sessionID, total, settings, limits) {
     if (claims.has(sessionID)) return { why: "claimed" };
-    if (lastHandoff !== null && now() - lastHandoff < settings.cooldown * 1000) return { why: "cooldown", text: `${total} tokens but the last handoff is younger than ${settings.cooldown}s; skipped` };
+    if (share.lastHandoff !== null && now() - share.lastHandoff < settings.cooldown * 1000) return { why: "cooldown", text: `${total} tokens but the last handoff is younger than ${settings.cooldown}s; skipped` };
     const failed = failedAt.get(sessionID);
     if (failed !== undefined && now() - failed < RETRY_MS) return { why: "failed" };
     if (settings.max > 0 && settings.chain >= settings.max) return { why: "max", text: `${total} tokens but the limit of ${settings.max} handoffs is reached; skipped` };
@@ -260,6 +269,7 @@ export function createAuto(ctx, options = {}) {
       return false;
     }
     claims.add(sessionID);
+    inFlight.add(sessionID);
     void handoff(sessionID, info, settings, total, verdict.busy, via);
     return true;
   }
@@ -335,11 +345,13 @@ export function createAuto(ctx, options = {}) {
         // The new session exists and has its prompt: running another handoff would make a second one. Only the TUI's jump is lost.
         log(`${sessionID}: the new session ${made.id} is running but \`next\` was not written (${describe(error)})`);
       }
-      lastHandoff = now();
+      share.lastHandoff = now();
+      inFlight.delete(sessionID);
       log(`${sessionID}: ${total} tokens; handoff (${via}) to ${made.id}, note ${note.ready}${busy.length ? `, subagents left running: ${busy.join(", ")}` : ""}`);
     } catch (error) {
       if (made) await ctx.session.remove({ sessionID: made.id }).catch(() => {});
       claims.delete(sessionID);
+      inFlight.delete(sessionID);
       failedAt.set(sessionID, now());
       log(`${sessionID}: handoff failed (${describe(error)}); a retry waits ${RETRY_MS / 1000}s`);
     }
@@ -357,7 +369,7 @@ export function createAuto(ctx, options = {}) {
     if (!info || !isOwn(info.location?.directory)) return;
     const settings = marked(info);
     if (!settings) return;
-    const limits = limitsOf(settings, await windowFor(info.model));
+    const limits = limitsOf(settings, await windowFor(info.model ?? stepModel.get(data.sessionID)));
     if (total >= limits.step) trigger(data.sessionID, info, settings, total, limits, "step");
   }
 
@@ -372,6 +384,12 @@ export function createAuto(ctx, options = {}) {
         break;
       case "session.execution.started":
         if (children.has(data.sessionID)) children.get(data.sessionID).running = true;
+        break;
+      case "session.step.started":
+        if (typeof data.sessionID === "string" && data.model?.id) {
+          stepModel.set(data.sessionID, data.model);
+          cap(stepModel);
+        }
         break;
       case "session.step.ended":
         await onStepEnded(event);
@@ -399,7 +417,7 @@ export function createAuto(ctx, options = {}) {
     if (!info || !isOwn(info.location?.directory)) return;
     const settings = marked(info);
     if (!settings) return;
-    const limits = limitsOf(settings, await windowFor(info.model));
+    const limits = limitsOf(settings, await windowFor(info.model ?? stepModel.get(sessionID)));
     if (total < limits.tool) return;
     if (claims.has(sessionID) || trigger(sessionID, info, settings, total, limits, "tool")) throw new Error(REFUSAL);
   }
@@ -419,6 +437,7 @@ export function createAuto(ctx, options = {}) {
     consume,
     start: (signal) => consume(ctx.event.subscribe({ types: [...EVENT_TYPES], signal })),
     dispose: () => {
+      for (const id of inFlight) claims.delete(id); // another instance of the directory may take these over
       for (const child of processes) child.kill("SIGKILL");
       for (const set of waiters.values()) for (const resolve of set) resolve();
     },

@@ -235,7 +235,7 @@ def main():
         time.sleep(4)
         log_path = sub("state", "opencode", "apana", "auto", "auto.log")
         log = open(log_path).read() if os.path.isfile(log_path) else ""
-        check(len(re.findall(r"handoff \((step|tool)\)", log)) == 1, "exactly one handoff happened", log[-400:])
+        check(len(re.findall(r"handoff \((step|tool)\)", log)) == 1, "exactly one handoff happened", " | ".join(log.splitlines())[-1800:])
     finally:
         if terminal:
             terminal.kill()
