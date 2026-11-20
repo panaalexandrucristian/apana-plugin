@@ -24,6 +24,9 @@ jobs:
       # Offline Python suites of the claude-auto wrapper and of its installer and uninstaller (a fake `claude`, a temporary HOME).
       - name: claude-auto (offline Python suites)
         run: npm run test:claude-auto
+      # Offline: the opencode-auto plugin parts with a fake context, and its installer, uninstaller and launcher (a fake `opencode`, a temporary HOME).
+      - name: opencode-auto (offline suites)
+        run: npm run test:opencode-auto
       # Offline scope hook gates and legacy launcher removal; no OS sandbox is claimed.
       - name: scope hooks and legacy uninstall
         run: npm run test:claude-scope

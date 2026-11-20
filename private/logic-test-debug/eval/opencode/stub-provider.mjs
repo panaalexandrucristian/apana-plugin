@@ -3,11 +3,14 @@
 // No credentials, no network beyond 127.0.0.1, no cost. Started by run.mjs; can also be run alone: node stub-provider.mjs <log> [port] [mode].
 // mode "load-skill": the first reply to a request that offers the `skill` tool is a call of that tool with the id of the skill
 // under test; every later reply is plain text. mode "text": plain text only.
+// The usage it reports at the end of each reply is `usage` ({ prompt, completion, cached? }, 1 and 1 by default); setUsage changes it
+// for the replies that follow, so that a test can make the context look as large as it needs.
 import { appendFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
-export function startStub({ logFile, port = 0, mode = "text", skillId = "logic-test-debug", reply = "Scope: stub. Method: stub. Result: stub reply, nothing was run.", script = [] }) {
+export function startStub({ logFile, port = 0, mode = "text", skillId = "logic-test-debug", reply = "Scope: stub. Method: stub. Result: stub reply, nothing was run.", script = [], usage: initialUsage = {} }) {
   writeFileSync(logFile, "");
+  let usage = { prompt: 1, completion: 1, ...initialUsage };
   let n = 0;
   let calledSkill = false;
   let scriptIndex = 0;
@@ -47,12 +50,17 @@ export function startStub({ logFile, port = 0, mode = "text", skillId = "logic-t
         chunk({ role: "assistant", content: reply });
         chunk({}, "stop");
       }
-      res.write(`data: ${JSON.stringify({ id: `stub-${n}`, object: "chat.completion.chunk", created: 0, model: body?.model ?? "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\n`);
+      const reported = { prompt_tokens: usage.prompt, completion_tokens: usage.completion, total_tokens: usage.prompt + usage.completion };
+      if (usage.cached !== undefined) reported.prompt_tokens_details = { cached_tokens: usage.cached };
+      res.write(`data: ${JSON.stringify({ id: `stub-${n}`, object: "chat.completion.chunk", created: 0, model: body?.model ?? "m", choices: [], usage: reported })}\n\n`);
       res.write("data: [DONE]\n\n");
       res.end();
     });
   });
-  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, port: server.address().port, close: () => new Promise((r) => server.close(r)) })));
+  const setUsage = (next) => {
+    usage = { ...usage, ...next };
+  };
+  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, port: server.address().port, setUsage, close: () => new Promise((r) => server.close(r)) })));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

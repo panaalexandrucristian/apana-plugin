@@ -15,13 +15,22 @@ export const tempDir = (prefix = "apana-oc-") => {
   return dir;
 };
 
-export function fakeCtx({ directory = tempDir("apana-ws-"), directories = {}, skills = [], failAt = null, missing = [], storage = new Map() } = {}) {
+export function fakeCtx({ directory = tempDir("apana-ws-"), directories = {}, skills = [], failAt = null, missing = [], storage = new Map(), sessions: initialSessions = {}, models = [] } = {}) {
   const hooks = new Map();
   const disposed = [];
   const registry = new Map(skills.map((skill) => [skill.id, { ...skill }]));
   const commands = [];
-  const calls = { prompt: [], compact: [], synthetic: [] };
-  const state = { context: [], compactError: null, contextError: null };
+  const calls = { prompt: [], compact: [], synthetic: [], create: [], update: [], interrupt: [], remove: [] };
+  // `sessions` holds the sessions that get/create/update work on (a session that is not here is answered with a bare {id, location}).
+  // `interruptResult` is what interrupt() reports; `interruptEvent` false leaves out the execution.interrupted event that OpenCode sends.
+  const state = { context: [], compactError: null, contextError: null, createError: null, updateError: null, promptError: null, interruptResult: { interrupted: true }, interruptEvent: true };
+  const sessions = new Map(Object.entries(initialSessions).map(([id, session]) => [id, { id, ...structuredClone(session) }]));
+  const subscribers = new Set();
+  let created = 0;
+  /** Delivers an OpenCode event to every subscription that asked for its type. */
+  const emit = (event) => {
+    for (const subscriber of subscribers) if (!subscriber.types || subscriber.types.includes(event.type)) subscriber.push(event);
+  };
   const guard = (name) => {
     if (failAt === name) throw new Error(`injected failure at ${name}`);
   };
@@ -75,10 +84,41 @@ export function fakeCtx({ directory = tempDir("apana-ws-"), directories = {}, sk
       },
       get: async ({ sessionID }) => {
         guard("session.get");
+        if (sessions.has(sessionID)) return structuredClone(sessions.get(sessionID));
         return { id: sessionID, location: { directory: directories[sessionID] ?? directory } };
+      },
+      create: async (input = {}) => {
+        guard("session.create");
+        if (state.createError) throw state.createError;
+        calls.create.push(structuredClone(input));
+        created += 1;
+        const session = { id: `ses_new${created}`, location: { directory }, ...structuredClone(input) };
+        sessions.set(session.id, session);
+        return structuredClone(session);
+      },
+      // 2.3.0 replaces `metadata` as a whole (it does not merge): the fake does the same.
+      update: async (input) => {
+        guard("session.update");
+        if (state.updateError) throw state.updateError;
+        calls.update.push(structuredClone(input));
+        const session = sessions.get(input.sessionID);
+        if (session && input.metadata !== undefined) session.metadata = structuredClone(input.metadata);
+      },
+      interrupt: async (input) => {
+        guard("session.interrupt");
+        calls.interrupt.push(structuredClone(input));
+        const result = state.interruptResult;
+        if (result.interrupted && state.interruptEvent) queueMicrotask(() => emit({ type: "session.execution.interrupted", data: { sessionID: input.sessionID } }));
+        return result;
+      },
+      remove: async (input) => {
+        guard("session.remove");
+        calls.remove.push(input);
+        sessions.delete(input.sessionID);
       },
       prompt: async (input) => {
         guard("session.prompt");
+        if (state.promptError) throw state.promptError;
         calls.prompt.push(input);
         return { id: "msg_x" };
       },
@@ -105,6 +145,43 @@ export function fakeCtx({ directory = tempDir("apana-ws-"), directories = {}, sk
         return registration(`tool.hook:${name}`, () => hooks.set(key, hooks.get(key).filter((f) => f !== callback)));
       },
     },
+    location: { directory },
+    model: {
+      list: async () => {
+        guard("model.list");
+        return { data: structuredClone(models) };
+      },
+    },
+    event: {
+      subscribe: ({ types, signal } = {}) => {
+        guard("event.subscribe");
+        const queue = [];
+        let wake = null;
+        let closed = false;
+        const subscriber = {
+          types,
+          push: (event) => {
+            queue.push(event);
+            wake?.();
+          },
+        };
+        subscribers.add(subscriber);
+        signal?.addEventListener("abort", () => {
+          closed = true;
+          subscribers.delete(subscriber);
+          wake?.();
+        });
+        return {
+          async *[Symbol.asyncIterator]() {
+            while (true) {
+              if (queue.length) yield queue.shift();
+              else if (closed) return;
+              else await new Promise((resolve) => (wake = resolve));
+            }
+          },
+        };
+      },
+    },
   };
   for (const path of missing) {
     const [group, name] = path.split(".");
@@ -114,7 +191,7 @@ export function fakeCtx({ directory = tempDir("apana-ws-"), directories = {}, sk
     for (const callback of hooks.get(name) ?? []) await callback(event);
     return event;
   };
-  return { ctx, storage, registry, commands, disposed, order, calls, state, directory, hooks, fire };
+  return { ctx, storage, registry, commands, disposed, order, calls, state, directory, hooks, fire, sessions, emit, subscribers };
 }
 
 /** A user message as the context hook sees it. */

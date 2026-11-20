@@ -15,14 +15,19 @@ export function opencodeVersion() {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Starts the server. `plugin`: the folder listed under `plugins`. `script`: tool calls the stand-in provider makes, one per main request. */
-export async function startRuntime({ dir, plugin, script = [], mode = script.length ? "script" : "text", env = {}, port }) {
+/**
+ * Starts the server. `plugin`: the folder listed under `plugins` (none: the server lists no plugin, and `setup` may put one in plugins/ itself).
+ * `script`: tool calls the stand-in provider makes, one per main request. `usage`: the token usage it reports ({ prompt, completion, cached? }).
+ * `setup(sub)`: runs before the server starts, with the function that names a folder of this run.
+ */
+export async function startRuntime({ dir, plugin, script = [], mode = script.length ? "script" : "text", usage, env = {}, port, setup }) {
   rmSync(dir, { recursive: true, force: true });
   const sub = (name) => join(dir, name);
   for (const name of ["config/opencode", "data", "cache", "state", "tmp", "ws", "home"]) mkdirSync(sub(name), { recursive: true });
-  const stub = await startStub({ logFile: sub("requests.jsonl"), mode, script });
+  if (setup) await setup(sub);
+  const stub = await startStub({ logFile: sub("requests.jsonl"), mode, script, usage });
   const config = {
-    plugins: [plugin],
+    plugins: plugin ? [plugin] : [],
     provider: { stub: { npm: "@ai-sdk/openai-compatible", name: "Stub", options: { baseURL: `http://127.0.0.1:${stub.port}/v1`, apiKey: "stub" }, models: { m: { name: "m", tool_call: true, limit: { context: 100000, output: 4000 } } } } },
     model: "stub/m",
     small_model: "stub/m",
@@ -83,11 +88,13 @@ export async function startRuntime({ dir, plugin, script = [], mode = script.len
     api,
     log: () => log,
     close: stop,
+    /** Changes the usage the stand-in provider reports from the next reply on. */
+    setUsage: stub.setUsage,
     requests: () => readFileSync(sub("requests.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
     /** The requests that offered tools (the agent's own), not the title request. */
     mainRequests: () => runtime.requests().filter((r) => Array.isArray(r.body?.tools) && r.body.tools.length > 0),
-    async session(title = "t") {
-      const res = await api("POST", "/api/session", { title });
+    async session(title = "t", extra = {}) {
+      const res = await api("POST", "/api/session", { title, ...extra });
       if (res.status !== 200) throw new Error(`session: ${res.status} ${res.text}`);
       return res.json.data.id;
     },
