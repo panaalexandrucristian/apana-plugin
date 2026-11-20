@@ -10,7 +10,7 @@ are involved, so it costs nothing):
   2. starts the launcher of this repository (assets/opencode-auto) as a TUI connected to that server, on the session it opens;
   3. waits until the TUI has marked the session, makes the stand-in report a context over the threshold and sends a prompt;
   4. checks that the plugin made a handoff (`next` on the old session, a note, a new session), that the SAME TUI process then shows the new
-     session on screen with the toast, and that no second handoff happened.
+     session on screen with the toast, that the old session was archived and the new one was not, and that no second handoff happened.
 
 It starts processes and uses a terminal of 45x160, so it is not part of `npm test`; run it after a change to the TUI part or to the launcher.
 Exit codes: 0 every check passed, 1 a check failed, 2 it could not run (no opencode, not 2.3.x, no free port, the server did not start).
@@ -232,6 +232,9 @@ def main():
         check(bool(reply(screen)), "the TUI shows the reply of the new session", "reply #%s not on screen" % (told[0] if told else "?"))
         check("moved to the new session" in screen, "the toast says the window moved")
         check(terminal.alive(), "it is the same TUI process (pid %d still running)" % tui_pid)
+        archived = until(lambda: session(old).get("time", {}).get("archived"), bool, 30)
+        check(bool(archived), "the old session was archived, after the window moved", str(session(old).get("time")))
+        check(not session(next_id).get("time", {}).get("archived"), "the new session is not archived")
         time.sleep(4)
         log_path = sub("state", "opencode", "apana", "auto", "auto.log")
         log = open(log_path).read() if os.path.isfile(log_path) else ""

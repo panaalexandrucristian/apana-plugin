@@ -6,9 +6,10 @@ const AUTO = { APANA_OPENCODE_AUTO: "1" };
 
 /** A TUI plugin context made of plain objects. `get` answers the session itself (as 2.3.0 does) and `update` replaces metadata as a whole. */
 function fakeTui({ route = { type: "home" }, sessions = {}, failGet = false } = {}) {
-  const state = { route, failGet, failNavigate: false };
+  const state = { route, failGet, failNavigate: false, failArchive: false };
   const listeners = new Set();
-  const calls = { get: [], update: [], navigate: [], toast: [] };
+  // `archive` holds the updates that carry `archived` (with the route at that moment), `update` the ones that write metadata.
+  const calls = { get: [], update: [], archive: [], navigate: [], toast: [] };
   const store = new Map(Object.entries(sessions).map(([id, s]) => [id, { id, ...structuredClone(s) }]));
   const context = {
     data: {
@@ -36,7 +37,12 @@ function fakeTui({ route = { type: "home" }, sessions = {}, failGet = false } = 
           if (state.failGet) throw new Error("server down");
           return structuredClone(store.get(sessionID) ?? { id: sessionID });
         },
-        update: async ({ sessionID, metadata }) => {
+        update: async ({ sessionID, metadata, archived }) => {
+          if (archived !== undefined) {
+            calls.archive.push({ sessionID, archived, metadata, route: structuredClone(state.route) });
+            if (state.failArchive) throw new Error("injected");
+            return {};
+          }
           calls.update.push({ sessionID, metadata: structuredClone(metadata) });
           store.get(sessionID).metadata = structuredClone(metadata);
           return {};
@@ -94,7 +100,7 @@ describe("setup", () => {
     fake.metadataEvent("ses_a", { apana: { next: "ses_b" } });
     await flush();
     assert.equal(fake.listeners.size, 0);
-    assert.deepEqual(fake.calls, { get: [], update: [], navigate: [], toast: [] });
+    assert.deepEqual(fake.calls, { get: [], update: [], archive: [], navigate: [], toast: [] });
     auto.dispose();
   });
   it("subscribes once and takes the subscription back when it is disposed", async () => {
@@ -260,6 +266,71 @@ describe("following a handoff", () => {
     await auto.check();
     fake.state.failNavigate = true;
     assert.doesNotThrow(() => fake.metadataEvent("ses_a", { apana: { next: "ses_b" } }));
+    auto.dispose();
+  });
+});
+
+describe("archiving the session that was handed off", () => {
+  it("archives it once the window has moved to the new one, with `archived` alone (metadata is not touched)", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });
+    const auto = await start(fake);
+    await auto.check();
+    fake.metadataEvent("ses_a", { apana: { auto: {}, next: "ses_b" } });
+    await flush();
+    assert.deepEqual(fake.calls.archive, [{ sessionID: "ses_a", archived: true, metadata: undefined, route: open("ses_b") }], "the window was already on the new session when the old one was archived");
+    auto.dispose();
+  });
+  it("archives it too when the window is on another session", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {}, ses_b: {} } });
+    const auto = await start(fake);
+    await auto.check();
+    fake.state.route = open("ses_b");
+    fake.metadataEvent("ses_a", { apana: { next: "ses_c" } });
+    await flush();
+    assert.deepEqual(fake.calls.archive.map((a) => a.sessionID), ["ses_a"]);
+    auto.dispose();
+  });
+  it("leaves it alone when the window could not be moved off it: the user would lose the session on screen", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });
+    const auto = await start(fake);
+    await auto.check();
+    fake.state.failNavigate = true;
+    fake.metadataEvent("ses_a", { apana: { next: "ses_b" } });
+    await flush();
+    assert.deepEqual(fake.calls.archive, []);
+    auto.dispose();
+  });
+  it("archives once, however many events carry its `next`, and never a session that was not open in this window", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });
+    const auto = await start(fake);
+    await auto.check();
+    fake.metadataEvent("ses_other", { apana: { next: "ses_x" } });
+    fake.metadataEvent("ses_a", { apana: { next: "ses_b" } });
+    fake.metadataEvent("ses_a", { apana: { next: "ses_b" } });
+    await flush();
+    assert.deepEqual(fake.calls.archive.map((a) => a.sessionID), ["ses_a"]);
+    auto.dispose();
+  });
+  it("archives each session of the chain", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {}, ses_b: { metadata: { apana: { auto: { chain: 1 } } } } } });
+    const auto = await start(fake);
+    await auto.check();
+    fake.metadataEvent("ses_a", { apana: { next: "ses_b" } });
+    await auto.check();
+    fake.metadataEvent("ses_b", { apana: { auto: { chain: 1 }, next: "ses_c" } });
+    await flush();
+    assert.deepEqual(fake.calls.archive.map((a) => a.sessionID), ["ses_a", "ses_b"]);
+    auto.dispose();
+  });
+  it("does not fail, and the window has still moved, when the server refuses to archive", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });
+    const auto = await start(fake);
+    await auto.check();
+    fake.state.failArchive = true;
+    assert.doesNotThrow(() => fake.metadataEvent("ses_a", { apana: { next: "ses_b" } }));
+    await flush();
+    assert.equal(fake.calls.archive.length, 1, "it was tried");
+    assert.deepEqual(fake.calls.navigate, [{ type: "session", sessionID: "ses_b" }]);
     auto.dispose();
   });
 });

@@ -108,6 +108,20 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
     } catch {
       // The window stays where it is; the handoff itself has happened.
     }
+    // The old session is archived once the window is no longer on it. The plugin API of the server part ignores `archived` on `session.update`
+    // (measured on 2.3.2, n=1), the client of the TUI does not. A window that could not be moved keeps the session on screen.
+    const after = route();
+    if (after?.type === "session" && after.sessionID === sessionID) return;
+    void archive(sessionID);
+  }
+
+  /** Archives a session that was handed off. A refusal leaves it in the list: the handoff itself has happened. */
+  async function archive(sessionID) {
+    try {
+      await context.client.session.update({ sessionID, archived: true });
+    } catch {
+      // Left in the list of sessions.
+    }
   }
 
   const stop = context.data.on("session.metadata.updated", onMetadata);
