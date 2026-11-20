@@ -11,6 +11,8 @@ Skills and hooks that do not need the jev plugin, split out of `panaalexandrucri
 
 ### Plugin version
 
+`0.16.0` for `opencode-auto`, which hands an OpenCode session off to a new one, in the same window, before its context fills up, with the skills `install-opencode-auto` and `uninstall-opencode-auto` (see «opencode-auto»).
+
 `0.15.0` for the OpenCode 2.3.0 integration of the skills and modes that Claude Code shares, and for handoffs of OpenCode `skill` messages (see «OpenCode»).
 
 `0.14.0` for OpenCode handoffs that preserve user attachments and skill histories, verify them against the source, and support complete bounded reading (see «Compact handoff»).
