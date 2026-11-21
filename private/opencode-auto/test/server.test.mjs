@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fakeCtx, tempDir } from "../../opencode/test/support/fake-ctx.mjs";
-import { ceilingOf, contextOf, continuation, createAuto, DEFAULTS, limitsOf, parseHandoff, setupAuto, settingsOf, unquote, windowOf } from "../server.mjs";
+import { ceilingOf, contextOf, continuation, createAuto, DEFAULTS, limitsOf, parseHandoff, refusalAfter, setupAuto, settingsOf, unquote, windowOf } from "../server.mjs";
 
 const MODEL = { id: "m", providerID: "p", variant: "default" };
 const BIG = [{ id: "m", providerID: "p", limit: { context: 1_000_000, output: 4000 } }];
@@ -261,8 +261,38 @@ describe("the handoff before a tool call", () => {
     const results = await Promise.allSettled([s.tool(), s.tool(), s.tool()]);
     assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected", "rejected"]);
     await flush();
-    await assert.rejects(s.tool(), /nearly full/);
+    await assert.rejects(s.tool(), /handed off to a new session, ses_new1/);
     assert.equal(s.fake.calls.create.length, 1);
+  });
+  it("says only that a handoff is under way while the new session does not exist yet", async (t) => {
+    const s = setup(t, { handler: (args) => (args.includes("--list-skills") ? { code: 0, stdout: LISTED(), stderr: "" } : new Promise(() => {})) });
+    await s.step(200_000);
+    const refused = await s.tool().then(() => null, (error) => error.message);
+    assert.match(refused, /nearly full, so this session is being handed off/);
+    assert.doesNotMatch(refused, /ses_/);
+  });
+  it("names the new session once it exists, in every later refusal, with the commands that open it", async (t) => {
+    // A user who goes on in the old session (a window that did not follow) gets these refusals, and the old model read them as "no handoff" (2026-11-21).
+    const s = setup(t);
+    await s.step(200_000);
+    for (let i = 0; i < 2; i += 1) await assert.rejects(s.tool(), (error) => error.message === refusalAfter("ses_new1"));
+    const text = refusalAfter("ses_new1");
+    assert.match(text, /handed off to a new session, ses_new1, which continues the work/);
+    assert.ok(text.includes("`opencode-auto -s ses_new1`") && text.includes("`opencode -s ses_new1`"), text);
+    assert.match(text, /Do not retry this call/);
+  });
+  it("does not name a new session whose prompt could not be sent: it was removed, and the retry says only that a handoff is under way", async (t) => {
+    let hang = false;
+    const s = setup(t, { handler: (args) => (args.includes("--list-skills") ? { code: 0, stdout: LISTED(), stderr: "" } : hang ? new Promise(() => {}) : { code: 0, stdout: BUILT, stderr: "" }) });
+    s.fake.state.promptError = new Error("provider down");
+    await s.step(200_000);
+    assert.deepEqual(s.fake.calls.remove, [{ sessionID: "ses_new1" }]);
+    s.clock.t += 60_000;
+    hang = true;
+    await s.step(201_000); // the retry, whose note is still being written
+    const refused = await s.tool().then(() => null, (error) => error.message);
+    assert.match(refused, /nearly full, so this session is being handed off/);
+    assert.doesNotMatch(refused, /ses_new1/);
   });
   it("lets a call through again when the handoff failed", async (t) => {
     const s = setup(t, { handler: () => ({ code: 1, stdout: "", stderr: "boom" }) });
@@ -506,10 +536,10 @@ describe("two instances of one directory", () => {
     await p.step(p.a, p.b);
     assert.equal(p.created(), 1);
   });
-  it("refuse the tool calls of a session that the other instance is handing off", async (t) => {
+  it("refuse the tool calls of a session that the other instance handed off, and name the new session it made", async (t) => {
     const p = twoInstances(t);
     await p.step(p.a);
-    await assert.rejects(p.b.auto.beforeTool({ sessionID: "ses_root", tool: "read", input: {} }), /handed off/);
+    await assert.rejects(p.b.auto.beforeTool({ sessionID: "ses_root", tool: "read", input: {} }), (error) => error.message === refusalAfter("ses_new1"));
   });
   it("give back what a disposed instance was still handing off, so the other can do it", async (t) => {
     let calls = 0;
