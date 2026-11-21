@@ -1,7 +1,11 @@
 // opencode-auto, TUI part (OpenCode 2.3.0): marks the sessions of a TUI that `opencode-auto` started and follows them to the new session.
 // The launcher sets APANA_OPENCODE_AUTO for the TUI process only; the server never sees it (measured, also with a TUI connected to a separate
 // server), so the mark on the session (metadata apana.auto, which carries the settings) is the only way the server part learns which sessions are
-// automatic. Without the variable this part does nothing at all.
+// automatic. Without the variable it marks nothing and follows nothing, and it takes the mark off a session it opens: the mark outlives the
+// window that set it (the server copies it to the new session of a chain, and a marked session can be reopened in a plain `opencode`), and a
+// plain window cannot follow a handoff, so the server would hand the session off under it and refuse every tool call of the old session that
+// the window keeps showing (measured 2026-11-21 on 2.3.2, n=1 on the owner's machine and n=1 in live_check.py). Only sessions shown in a window
+// that `opencode-auto` started are handed off (owner decision).
 // Measured on 2.3.0: the TUI loads this plugin from the server's plugin folder; client.session.get returns the session itself; update replaces
 // `metadata` as a whole (so it is read, changed and written back); router.navigate moves the same TUI process to the new session.
 
@@ -36,16 +40,15 @@ const sessionOf = (got) => (got && typeof got === "object" && "id" in got ? got 
  */
 export async function setupAutoTui(context, env = process.env, options = {}) {
   for (const path of REQUIRED) if (!has(context, path)) throw new Error(`OpenCode does not offer ${path}`);
-  if (!isAuto(env)) return { check: async () => {}, dispose: () => {} };
-
+  const auto = isAuto(env);
   const mark = markOf(env);
   const now = options.now ?? Date.now;
   const retryMs = options.retryMs ?? RETRY_MS;
   const router = context.ui.router;
-  const marked = new Set(); // sessions that were looked at: marked, or not to be marked (a child, one already handed off, one that has the mark)
+  const marked = new Set(); // sessions that were looked at: marked or unmarked, or left as they were (a child, one already handed off, one that has the mark)
   const retryAt = new Map();
   const working = new Set(); // sessions being marked right now: a slow server must not get the same write twice
-  const seen = new Set(); // sessions opened in this TUI: only those are followed
+  const seen = new Set(); // sessions opened in this TUI: only those are followed (by an automatic window; a plain one follows nothing)
   const followed = new Set();
   const cap = (collection) => {
     while (collection.size > TRACKED) collection.delete(collection.keys().next().value);
@@ -58,17 +61,31 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
     }
   };
 
-  /** Puts the mark on a session. Reads first and writes the whole metadata back: an update replaces it. A session that has the mark keeps it (the chain). */
-  async function markSession(sessionID) {
-    const info = sessionOf(await context.client.session.get({ sessionID }));
-    if (!info) throw new Error("no session");
+  /**
+   * The metadata to write on a session this window opens, whole (an update replaces it), or null to leave it. An automatic window puts the mark on,
+   * and a session that has it keeps it (the chain). A plain window takes it off and keeps the rest; one that has `next` is left alone, the server no
+   * longer acts on it.
+   */
+  function changed(info) {
     const metadata = object(info.metadata);
     const apana = object(metadata.apana);
     const hasMark = Boolean(apana.auto) && typeof apana.auto === "object";
-    if (!info.parentID && apana.next === undefined && !hasMark) await context.client.session.update({ sessionID, metadata: { ...metadata, apana: { ...apana, auto: mark } } });
+    if (auto) return !info.parentID && apana.next === undefined && !hasMark ? { ...metadata, apana: { ...apana, auto: mark } } : null;
+    if (!hasMark || apana.next !== undefined) return null;
+    const { auto: _mark, ...rest } = apana;
+    const { apana: _apana, ...others } = metadata;
+    return Object.keys(rest).length ? { ...others, apana: rest } : others;
   }
 
-  /** One look at the route: a session that is open and not yet looked at gets marked. */
+  /** Marks or unmarks a session (see `changed`). Reads it first: an update replaces the metadata as a whole. */
+  async function markSession(sessionID) {
+    const info = sessionOf(await context.client.session.get({ sessionID }));
+    if (!info) throw new Error("no session");
+    const metadata = changed(info);
+    if (metadata) await context.client.session.update({ sessionID, metadata });
+  }
+
+  /** One look at the route: a session that is open and not yet looked at gets marked, or unmarked in a plain window. */
   async function check() {
     const current = route();
     if (current?.type !== "session" || typeof current.sessionID !== "string") return;
@@ -124,7 +141,7 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
     }
   }
 
-  const stop = context.data.on("session.metadata.updated", onMetadata);
+  const stop = auto ? context.data.on("session.metadata.updated", onMetadata) : () => {};
   const pollMs = options.pollMs ?? POLL_MS;
   const timer = pollMs > 0 ? setInterval(() => void check(), pollMs) : null;
   void check();

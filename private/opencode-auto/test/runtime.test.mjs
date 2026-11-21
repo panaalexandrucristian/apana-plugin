@@ -147,6 +147,30 @@ describe("opencode-auto on a real OpenCode 2.3.x", { skip: reason, timeout: 6000
     assert.ok(old.metadata.apana.next.startsWith("ses_"));
   });
 
+  it("refuses a tool call that a later prompt makes in the old session, after its handoff, with a text that names the new session and how to open it", async () => {
+    // As in a window that did not follow the handoff (2026-11-21): the user goes on in the old session, and its model reads the refusal.
+    const marker = (name) => join(tempDir("apana-auto-marker-"), name);
+    const [first, second, third] = [marker("first"), marker("second"), marker("third")];
+    const call = (path, description) => ({ name: "shell", args: { command: `touch ${path}`, description } });
+    const script = [call(first, "first"), call(second, "second")]; // the stand-in reads this array at each request, so a call added later is the next one
+    const rt = await start({ usage: { prompt: 50_000, completion: 10 }, script });
+    const id = await rt.session("later", { metadata: { apana: { auto: MARK } } });
+    await rt.prompt(id, "run two commands");
+    const next = (await until("the old session never got `next`", () => getSession(rt, id), (s) => typeof s?.metadata?.apana?.next === "string")).metadata.apana.next;
+    await until("the new session never finished its turn", () => getSession(rt, next), (s) => s?.time?.idle !== undefined); // it took no scripted call
+    script.push(call(third, "third"));
+    await rt.prompt(id, "go on");
+    const refusals = await until(
+      "the old session has no refused call that names the new session",
+      async () => (await rt.messages(id)).flatMap((m) => m.content ?? []).filter((p) => p.type === "tool" && p.state?.status === "error").map((p) => p.state.error?.message ?? ""),
+      (texts) => texts.some((text) => text.includes(next)),
+    );
+    const text = refusals.find((t) => t.includes(next));
+    assert.match(text, /handed off to a new session/);
+    assert.ok(text.includes(`opencode-auto -s ${next}`), text);
+    assert.ok(!existsSync(third), "the refused call did not run");
+  });
+
   /** Runs a turn and gives the plugin time it would need for a handoff (the ones above finish in about 3 s), then says what it did. */
   async function quietTurn(rt, id) {
     await rt.prompt(id, "do the task");

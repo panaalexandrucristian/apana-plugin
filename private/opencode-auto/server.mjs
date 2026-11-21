@@ -38,6 +38,10 @@ const RESERVE_MIN = 16_000;
 const KEPT_SKILLS = ["caveman"];
 
 const REFUSAL = "Apana auto: the context is nearly full, so this session is being handed off to a new one. Stop here and do not retry this call.";
+/** The refusal once the new session exists: the old one is still refused, also in a later turn, so its model must not tell the user that nothing happened. */
+export const refusalAfter = (next) =>
+  `Apana auto: this session was handed off to a new session, ${next}, which continues the work; tool calls in this session are refused. ` +
+  `Do not retry this call. Tell the user to continue in ${next}: \`opencode-auto -s ${next}\` (or \`opencode -s ${next}\`, without automatic handoffs).`;
 
 /** The size of the context at the end of a step, the way OpenCode counts it for its compaction; null when the event carries no usage. */
 export function contextOf(tokens) {
@@ -157,8 +161,8 @@ function runScript(script, args, timeoutMs, { env = process.env, children = new 
 // What stops a second handoff of a session is shared by the instances of one real directory: a directory reached by two paths has two instances.
 const shares = (globalThis[Symbol.for("apana-auto.shares")] ??= new Map()); // on globalThis: the loader may give each instance its own copy of this module
 const shareOf = (key) => {
-  if (key === null) return { claims: new Set(), failedAt: new Map(), lastHandoff: null };
-  if (!shares.has(key)) shares.set(key, { claims: new Set(), failedAt: new Map(), lastHandoff: null });
+  if (key === null) return { claims: new Set(), failedAt: new Map(), handedTo: new Map(), lastHandoff: null };
+  if (!shares.has(key)) shares.set(key, { claims: new Set(), failedAt: new Map(), handedTo: new Map(), lastHandoff: null });
   return shares.get(key);
 };
 
@@ -193,7 +197,7 @@ export function createAuto(ctx, options = {}) {
   const stepModel = new Map(); // session -> model of its last step: a session that runs the default model has no `model` of its own
   const children = new Map(); // subagent session -> { parent, running }
   const share = shareOf(here);
-  const { claims, failedAt } = share; // sessions whose handoff is running or done in this process (a written `next` covers a restart), and the failures
+  const { claims, failedAt, handedTo } = share; // sessions whose handoff is running or done in this process (a written `next` covers a restart), the failures, the new sessions
   const inFlight = new Set(); // the claims of this instance whose handoff has not ended: given back when the instance is disposed
   const waiters = new Map(); // session -> resolvers waiting for the end of its execution
   const noted = new Set();
@@ -338,6 +342,7 @@ export function createAuto(ctx, options = {}) {
         metadata: { ...fresh.metadata, apana: { ...apana, auto } },
       });
       await ctx.session.prompt({ sessionID: made.id, text: note.prompt + continuation(total, busy) });
+      handedTo.set(sessionID, made.id);
       try {
         const latest = (await getInfo(sessionID)) ?? fresh;
         await ctx.session.update({ sessionID, metadata: { ...latest.metadata, apana: { ...(latest.metadata?.apana ?? {}), next: made.id } } });
@@ -402,15 +407,19 @@ export function createAuto(ctx, options = {}) {
     }
   }
 
+  const refusal = (sessionID) => (handedTo.has(sessionID) ? refusalAfter(handedTo.get(sessionID)) : REFUSAL);
+
   /**
    * Before a tool call: refuses it (by throwing) once the handoff is due or under way. Measured on 2.3.2: the refused call does not run, but the handoff
    * interrupts the session at once, so its model gets no further request and never reads this text; a call the interrupt reaches first does not
    * run either, which is why only the unit tests (not the runtime test) show the throw itself matters. A parallel call of the same step is refused too.
+   * A user who goes on typing in the old session gets every later call refused, and its model reads that text (2026-11-21, n=2 sessions): after
+   * the handoff it names the new session, so that the model does not tell the user the handoff never happened.
    */
   async function beforeTool(event) {
     const sessionID = event?.sessionID;
     if (typeof sessionID !== "string" || !enabled()) return;
-    if (claims.has(sessionID)) throw new Error(REFUSAL); // a parallel call of the step that started the handoff, or one that came after it
+    if (claims.has(sessionID)) throw new Error(refusal(sessionID)); // a parallel call of the step that started the handoff, or one that came after it
     const total = last.get(sessionID);
     if (total === undefined) return;
     const info = await getInfo(sessionID);
@@ -419,7 +428,7 @@ export function createAuto(ctx, options = {}) {
     if (!settings) return;
     const limits = limitsOf(settings, await windowFor(info.model ?? stepModel.get(sessionID)));
     if (total < limits.tool) return;
-    if (claims.has(sessionID) || trigger(sessionID, info, settings, total, limits, "tool")) throw new Error(REFUSAL);
+    if (claims.has(sessionID) || trigger(sessionID, info, settings, total, limits, "tool")) throw new Error(refusal(sessionID));
   }
 
   async function consume(events) {

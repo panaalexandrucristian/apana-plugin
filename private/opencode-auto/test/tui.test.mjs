@@ -93,14 +93,14 @@ describe("setup", () => {
     }
     await assert.rejects(setupAutoTui({}, AUTO, { pollMs: 0 }), /does not offer/);
   });
-  it("does nothing without the variable: no subscription, no read, no write, no move", async () => {
+  it("follows nothing without the variable: no subscription, so no move, no toast, no archive when `next` appears", async () => {
     const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });
     const auto = await start(fake, {});
     await auto.check();
     fake.metadataEvent("ses_a", { apana: { next: "ses_b" } });
     await flush();
     assert.equal(fake.listeners.size, 0);
-    assert.deepEqual(fake.calls, { get: [], update: [], archive: [], navigate: [], toast: [] });
+    assert.deepEqual(fake.calls, { get: ["ses_a"], update: [], archive: [], navigate: [], toast: [] });
     auto.dispose();
   });
   it("subscribes once and takes the subscription back when it is disposed", async () => {
@@ -197,6 +197,87 @@ describe("marking the open session", () => {
     const auto = await setupAutoTui(fake.context, AUTO, { pollMs: 5 });
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.deepEqual(fake.calls.get, ["ses_a"]);
+    auto.dispose();
+    fake.state.route = open("ses_b");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.deepEqual(fake.calls.get, ["ses_a"], "nothing is read after dispose");
+  });
+});
+
+describe("a plain window (no variable) takes the mark off the session it opens", () => {
+  // The mark outlives the window that set it (the new session of a chain carries it, and a marked session can be reopened in a plain `opencode`),
+  // and a plain window cannot follow a handoff: measured 2026-11-21 (n=1), the server handed such a session off and refused its tool calls on screen.
+  const PLAIN = {};
+
+  it("removes the mark and keeps the rest of the metadata", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: { metadata: { keep: 1, apana: { other: true, auto: { tokens: 90000, chain: 3 } } } } } });
+    const auto = await start(fake, PLAIN);
+    await auto.check();
+    assert.deepEqual(fake.calls.update, [{ sessionID: "ses_a", metadata: { keep: 1, apana: { other: true } } }]);
+    auto.dispose();
+  });
+  it("drops `apana` when the mark was all it held, so the metadata is as it was before the session was marked", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: { metadata: { keep: 1, apana: { auto: {} } } }, ses_b: { metadata: { apana: { auto: { chain: 1 } } } } } });
+    const auto = await start(fake, PLAIN);
+    await auto.check();
+    fake.state.route = open("ses_b");
+    await auto.check();
+    assert.deepEqual(fake.calls.update, [{ sessionID: "ses_a", metadata: { keep: 1 } }, { sessionID: "ses_b", metadata: {} }]);
+    auto.dispose();
+  });
+  it("writes nothing to a session without the mark, to one already handed off, or to one whose `auto` is not a mark, and marks nothing", async () => {
+    const sessions = {
+      ses_plain: {},
+      ses_other: { metadata: { apana: { other: true } } },
+      ses_done: { metadata: { apana: { auto: { chain: 1 }, next: "ses_x" } } },
+      ses_odd: { metadata: { apana: { auto: true } } },
+    };
+    const fake = fakeTui({ sessions });
+    const auto = await start(fake, PLAIN);
+    for (const id of Object.keys(sessions)) {
+      fake.state.route = open(id);
+      await auto.check();
+    }
+    assert.deepEqual(fake.calls.get, Object.keys(sessions));
+    assert.deepEqual(fake.calls.update, []);
+    auto.dispose();
+  });
+  it("looks at a session once, also when looks overlap, and at the next one when the route changes", async () => {
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: { metadata: { apana: { auto: {} } } }, ses_b: { metadata: { apana: { auto: {} } } } } });
+    const auto = await start(fake, PLAIN);
+    await Promise.all([auto.check(), auto.check(), auto.check()]);
+    await auto.check();
+    assert.deepEqual(fake.calls.get, ["ses_a"]);
+    fake.state.route = open("ses_b");
+    await auto.check();
+    assert.deepEqual(fake.calls.update.map((u) => u.sessionID), ["ses_a", "ses_b"]);
+    auto.dispose();
+  });
+  it("leaves the home screen alone and tries again after a failure, no sooner than the retry delay", async () => {
+    let t = 1_000;
+    const fake = fakeTui({ route: { type: "home" }, sessions: { ses_a: { metadata: { apana: { auto: {} } } } }, failGet: true });
+    const auto = await start(fake, PLAIN, { now: () => t, retryMs: 5_000 });
+    await auto.check();
+    assert.deepEqual(fake.calls.get, []);
+    fake.state.route = open("ses_a");
+    await auto.check();
+    t += 4_999;
+    await auto.check();
+    assert.equal(fake.calls.get.length, 1, "no hammering");
+    fake.state.failGet = false;
+    t += 1;
+    await auto.check();
+    assert.deepEqual(fake.calls.update, [{ sessionID: "ses_a", metadata: {} }]);
+    auto.dispose();
+  });
+  it("polls the route on its own, so that a session picked after the start is seen too, and stops when it is disposed", async () => {
+    // A plain `opencode` often starts on the home screen and the session is picked from the list: only the poll sees that route.
+    const fake = fakeTui({ sessions: { ses_a: { metadata: { apana: { auto: {} } } }, ses_b: { metadata: { apana: { auto: {} } } } } });
+    const auto = await setupAutoTui(fake.context, PLAIN, { pollMs: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fake.state.route = open("ses_a");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.deepEqual(fake.calls.update, [{ sessionID: "ses_a", metadata: {} }]);
     auto.dispose();
     fake.state.route = open("ses_b");
     await new Promise((resolve) => setTimeout(resolve, 60));
