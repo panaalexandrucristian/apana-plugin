@@ -28,15 +28,34 @@ export function markOf(env) {
   return mark;
 }
 
+/** The line the sidebar shows for a session, or null when it is not an automatic one (a child, or one that was never marked). The server hands off only what `marked()` in server.mjs accepts, and this follows it. */
+export function sidebarLabel(info) {
+  if (!info || info.parentID) return null;
+  const apana = object(object(info.metadata).apana);
+  if (!apana.auto || typeof apana.auto !== "object") return null;
+  return apana.next !== undefined ? "Auto handoff: done" : "Auto handoff: on";
+}
+
 const sessionOf = (got) => (got && typeof got === "object" && "id" in got ? got : got?.data ?? null);
 
 /**
- * @param context the TUI plugin context. @param options pollMs (0: no polling, a test calls check()), now, retryMs.
+ * @param context the TUI plugin context. @param options pollMs (0: no polling, a test calls check()), now, retryMs, sidebar (registers the sidebar line, returns its cleanup).
  * Throws, with nothing registered, when OpenCode lacks a capability.
  */
 export async function setupAutoTui(context, env = process.env, options = {}) {
   for (const path of REQUIRED) if (!has(context, path)) throw new Error(`OpenCode does not offer ${path}`);
-  if (!isAuto(env)) return { check: async () => {}, dispose: () => {} };
+  // The line in the sidebar belongs to the mark on the session, not to the window: a marked session opened in a plain `opencode` shows it too.
+  // A sidebar that cannot be registered must not stop the marking.
+  let unslot = () => {};
+  if (typeof options.sidebar === "function" && has(context, "ui.slot")) {
+    try {
+      const off = options.sidebar(context, sidebarLabel);
+      if (typeof off === "function") unslot = off;
+    } catch {
+      // No line in the sidebar; the rest works.
+    }
+  }
+  if (!isAuto(env)) return { check: async () => {}, dispose: () => unslot() };
 
   const mark = markOf(env);
   const now = options.now ?? Date.now;
@@ -133,6 +152,7 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
     dispose: () => {
       if (timer) clearInterval(timer);
       stop();
+      unslot();
     },
   };
 }

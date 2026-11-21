@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isAuto, markOf, setupAutoTui } from "../tui.mjs";
+import { isAuto, markOf, setupAutoTui, sidebarLabel } from "../tui.mjs";
 
 const AUTO = { APANA_OPENCODE_AUTO: "1" };
 
@@ -331,6 +331,59 @@ describe("archiving the session that was handed off", () => {
     await flush();
     assert.equal(fake.calls.archive.length, 1, "it was tried");
     assert.deepEqual(fake.calls.navigate, [{ type: "session", sessionID: "ses_b" }]);
+    auto.dispose();
+  });
+});
+
+describe("the sidebar line", () => {
+  const withSlot = (fake) => {
+    fake.context.ui.slot = () => () => {};
+    return fake;
+  };
+  it("says on for a marked root session, done once it was handed off, and nothing for the rest", () => {
+    assert.equal(sidebarLabel({ id: "a", metadata: { apana: { auto: {} } } }), "Auto handoff: on");
+    assert.equal(sidebarLabel({ id: "a", metadata: { apana: { auto: { tokens: 1 } } } }), "Auto handoff: on");
+    assert.equal(sidebarLabel({ id: "a", metadata: { apana: { auto: {}, next: "b" } } }), "Auto handoff: done");
+    assert.equal(sidebarLabel({ id: "a", metadata: { apana: {} } }), null);
+    assert.equal(sidebarLabel({ id: "a", metadata: { apana: { auto: "yes" } } }), null);
+    assert.equal(sidebarLabel({ id: "a", metadata: { other: 1 } }), null);
+    assert.equal(sidebarLabel({ id: "a" }), null);
+    assert.equal(sidebarLabel(undefined), null);
+    assert.equal(sidebarLabel({ id: "c", parentID: "a", metadata: { apana: { auto: {} } } }), null, "a child is never handed off");
+  });
+  it("is registered with the label function, also in a window that was not started by opencode-auto, and taken back on dispose", async () => {
+    const fake = withSlot(fakeTui());
+    const calls = [];
+    let removed = 0;
+    const sidebar = (context, label) => {
+      calls.push({ context, label });
+      return () => (removed += 1);
+    };
+    const plain = await start(fake, {}, { sidebar });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].context, fake.context);
+    assert.equal(calls[0].label, sidebarLabel);
+    plain.dispose();
+    assert.equal(removed, 1);
+    const auto = await start(withSlot(fakeTui()), AUTO, { sidebar });
+    assert.equal(calls.length, 2);
+    auto.dispose();
+    assert.equal(removed, 2);
+  });
+  it("is not asked for when OpenCode has no slot, or when no sidebar was given", async () => {
+    let asked = 0;
+    const sidebar = () => (asked += 1);
+    (await start(fakeTui(), AUTO, { sidebar })).dispose();
+    assert.equal(asked, 0);
+    (await start(withSlot(fakeTui()), AUTO)).dispose();
+    assert.equal(asked, 0);
+  });
+  it("does not stop the marking when the sidebar cannot be registered", async () => {
+    const fake = withSlot(fakeTui({ route: open("s1"), sessions: { s1: {} } }));
+    const auto = await start(fake, AUTO, { sidebar: () => { throw new Error("injected"); } });
+    await auto.check();
+    assert.equal(fake.calls.update.length, 1);
+    assert.ok(fake.store.get("s1").metadata.apana.auto);
     auto.dispose();
   });
 });
