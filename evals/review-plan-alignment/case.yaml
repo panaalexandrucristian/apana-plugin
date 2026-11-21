@@ -1,0 +1,33 @@
+schema_version: '1.1'
+name: review-plan-alignment
+description: Catch an omitted config model and reshape the plan using the most recently introduced comparable implementation.
+runs: 1
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 40
+  timeout_seconds: 900
+  allowed_tools: [Read, Glob, Grep, Skill, Agent, AskUserQuestion, Edit, Bash]
+  prompt: |
+    Use the Skill tool to run the `review-plan` skill with the argument `PLAN.md`. The plan to review is the file PLAN.md in the current directory. Do not ask what plan to review. This evaluation cannot provide a follow-up answer. If the layer check needs an owner decision, put the question in the report and continue the checks and plan fixes that do not depend on that answer.
+graders:
+  - name: alignment-finding
+    type: llm
+    focus: last_message
+    criteria: |
+      PASS if the report says the original reader-config design was not aligned, explains the difference between manual string parsing and a model with the shared deserializer, and cites src/theme/config.mjs at a line with the introducing commit evidence. The theme implementation was added by 'Implement theme HTTP config' on 2020-03-01 into an existing file. Banner was introduced earlier, although a subsequent commit edited the BannerConfig implementation. FAIL if the report selects Banner as newer, dates Theme from the creation of its file, treats the original step as aligned or merely suboptimal, or fails to identify the applicable comparator.
+  - name: rewritten-plan
+    type: llm
+    focus:
+      source: file
+      path: PLAN.md
+    criteria: |
+      PASS if the implementation step requires adding a reader config model class and using deserializeConfig from src/shared/config.mjs, replaces manual string conversion and reparsing, and preserves the HTTP wire shape and required default and validation. Planned checks must not be described as having passed. FAIL if the typed path is only optional, the original design remains, or the plan changes the requirement.
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?review-plan"'
+  - name: implementation-history-used
+    type: tool_used
+    tool: Bash
+    input_match: '"command"\s*:\s*"git (?:--no-pager )?log\b[^\r\n]* -L'

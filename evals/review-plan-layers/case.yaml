@@ -1,0 +1,30 @@
+schema_version: '1.1'
+name: review-plan-layers
+description: Catch a plan that exposes a transport type to the view and bypasses both application mappers.
+runs: 1
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 40
+  timeout_seconds: 900
+  allowed_tools: [Read, Glob, Grep, Skill, Agent, AskUserQuestion, Edit, Bash]
+  prompt: |
+    Use the Skill tool to run the `review-plan` skill with the argument `PLAN.md`. The plan is in the current directory. Do not ask what plan to review.
+graders:
+  - name: layer-finding
+    type: llm
+    focus: last_message
+    criteria: |
+      AGENTS.md states no layer rule. The code sets three layers apart: src/transport (OfferDto, fetchOffer), src/service (Offer, toOffer, getOffer; it imports only the transport) and src/view (OfferViewModel, toOfferViewModel, showOffer; it imports only the service). The original plan's step 2 had showOffer call fetchOffer directly and build the view result from the raw OfferDto, skipping toOffer and toOfferViewModel.
+      PASS if the report identifies the original raw OfferDto path as not aligned, not merely a placement question; names the transport, service and view layers as the code shows them (any equivalent names); cites the existing imports or mappers with a file and line; describes the impact on both boundaries (transport to service through toOffer, service to view through toOfferViewModel); and says the plan was reshaped, not just that a change is suggested. FAIL if only one boundary is checked, the review says the DTO path is aligned or only suboptimal, offers the mappers as an optional improvement, keeps the step while waiting for a placement or departure approval, or says the application has no distinct layers.
+  - name: plan-reshaped
+    type: llm
+    focus:
+      source: file
+      path: PLAN.md
+    criteria: |
+      PASS if PLAN.md keeps the network JSON contract and OfferDto in Transport, maps the label onto the service Offer via toOffer, then onto OfferViewModel via toOfferViewModel, and retains showOffer's existing call through getOffer. It preserves the supplied-label and absent-label outcomes and does not claim tests ran. FAIL if the view still imports fetchOffer or reads campaign_label directly, either mapper is skipped, or the typed path is just optional.
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?review-plan"'
