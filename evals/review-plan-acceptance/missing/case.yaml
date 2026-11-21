@@ -7,9 +7,9 @@ context:
 execution:
   max_turns: 40
   timeout_seconds: 900
-  allowed_tools: [Read, Glob, Grep, Skill, Agent, AskUserQuestion, Edit]
+  allowed_tools: [Read, Glob, Grep, Skill, Agent, AskUserQuestion, Edit, Bash]
   prompt: |
-    Use the Skill tool to run the `review-plan` skill with the argument `PLAN.md`. The plan to review is the file PLAN.md in the current directory. Do not ask what plan to review.
+    Use the Skill tool to run the `review-plan` skill with the argument `PLAN.md`. The plan to review is the file PLAN.md in the current directory. Do not ask what plan to review. This evaluation cannot provide a follow-up answer. If the layer check needs an owner decision, put the question in the report and continue the checks and plan fixes that do not depend on that answer.
 graders:
   - name: criteria
     type: llm

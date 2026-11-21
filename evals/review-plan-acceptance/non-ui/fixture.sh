@@ -34,3 +34,6 @@ The README tells people to create `app.conf`, but the program reads `settings.co
 1. In `README.md`, replace `app.conf` with `settings.conf` in the Configuration section.
 2. Check the README.
 EOT
+git init -q
+git add -- .
+git -c user.name='Review Plan Fixture' -c user.email=fixture@example.test -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm 'Seed review fixture'

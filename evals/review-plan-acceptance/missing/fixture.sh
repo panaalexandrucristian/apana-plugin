@@ -38,3 +38,6 @@ The requirement: a sign-up with a required field left empty (`name` or `email`) 
 3. Add a test for the empty case in `test/signup.test.js`.
 4. Check that it works.
 EOT
+git init -q
+git add -- .
+git -c user.name='Review Plan Fixture' -c user.email=fixture@example.test -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm 'Seed review fixture'

@@ -37,3 +37,6 @@ The requirement: the report export is too slow for customers; make it faster.
 2. Keep `test/export.test.js` passing.
 3. Check that the export is faster.
 EOT
+git init -q
+git add -- .
+git -c user.name='Review Plan Fixture' -c user.email=fixture@example.test -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm 'Seed review fixture'

@@ -41,3 +41,6 @@ The requirement: a sign-up with a required field left empty (`name` or `email`) 
 - **Criterion — an incomplete sign-up is not sent / steps 1-3:** with `name` empty, or with `email` empty, and the other field filled, `submitSignup` returns `{ ok: false }` and the recording `send` receives no request; passes if both calls return `ok: false` and record 0 requests, fails otherwise. Check: two new tests in `test/signup.test.js` that pass a recording `send`; each must fail on the current `src/signup.js`. Evidence: the output of `node --test test/signup.test.js` before and after the change. Status: planned, not run.
 - **Criterion — a complete sign-up is still saved / step 1:** with `name` and `email` filled, `submitSignup` returns `{ ok: true }` and `send` receives one `save-signup` request; passes if the existing test "a complete signup is saved" still passes unchanged. Check: the same test file. Evidence: the same output. Status: planned, not run.
 EOT
+git init -q
+git add -- .
+git -c user.name='Review Plan Fixture' -c user.email=fixture@example.test -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm 'Seed review fixture'
