@@ -10,7 +10,7 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 /** Skills that run in OpenCode. A new directory under skills/ must be added here or to CLAUDE_ONLY_SKILLS (a test enforces it). */
 export const OPENCODE_SKILLS = Object.freeze([
   "android-ui-step", "assess-complexity", "class-graph", "code-rag", "code-rag-setup", "compact-handoff", "compact-session",
-  "explica-clar", "install-opencode-auto", "jev-decision-loop", "logic-test-debug", "pr-convention-check", "review-diff", "review-plan",
+  "explica-clar", "harness2", "install-opencode-auto", "jev-decision-loop", "logic-test-debug", "pr-convention-check", "review-diff", "review-plan",
   "scope", "uninstall-opencode-auto", "variant-check",
 ]);
 

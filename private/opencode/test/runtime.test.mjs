@@ -85,6 +85,19 @@ describe("on a real OpenCode 2.3.0", { skip: reason, timeout: 600000 }, () => {
     assert.ok(text.includes("OpenCode adapter. The tool names") && text.includes(`${join(ROOT, "skills", "variant-check")}/scripts/variants.mjs`), "the skill's adapted text came with the message");
   });
 
+  it("loads Harness² and runs its read-only check through the bundled helper", { timeout: 90000 }, async () => {
+    const helper = join(ROOT, "skills", "harness2", "scripts", "setup.py");
+    const rt = await start({ script: [{ name: "shell", args: { command: `python3 ${JSON.stringify(helper)} check` } }] });
+    const session = await rt.session();
+    assert.equal((await rt.command(session, "apana:harness2", "check")).status, 204);
+    await settle(rt, 2);
+    const [first, second] = rt.mainRequests();
+    assert.ok(textOfRole(first, "user").includes(`python3 "${helper}" check`));
+    const result = toolResults(second).join("\n");
+    assert.match(result, /Harness²: not installed|Harness² stopped .*requires native macOS arm64/);
+    assert.ok(!readdirSync(rt.home).includes(".local"), "the helper did not create its install root");
+  });
+
   it("scope: refuses an edit while it investigates, and allows exactly the approved file after the user's approval", { timeout: 180000 }, async () => {
     const script = [{ name: "edit", args: { path: "src/login.js", oldString: "OLD", newString: "NEW" } }];
     const rt = await start({ script });

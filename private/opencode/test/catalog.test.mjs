@@ -34,6 +34,10 @@ describe("the text of a skill in OpenCode", () => {
     for (const skill of skills) assert.ok(!skill.content.includes("${CLAUDE_"), skill.id);
     const variant = skills.find((s) => s.id === "variant-check");
     assert.ok(variant.content.includes(`node ${join(ROOT, "skills", "variant-check")}/scripts/variants.mjs`));
+    const harness = skills.find((s) => s.id === "harness2");
+    const dir = join(ROOT, "skills", "harness2");
+    assert.equal(harness.path, join(dir, "SKILL.md"));
+    assert.ok(harness.content.includes(`python3 "${join(dir, "scripts", "setup.py")}" check`));
   });
   it("says what the Claude tool names, $ARGUMENTS and the frontmatter mean here", async () => {
     const { skills } = await loadCatalog();
