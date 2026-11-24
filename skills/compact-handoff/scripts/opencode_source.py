@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""opencode_source.py: one OpenCode session (SQLite, tables session_v2 + session_message of OpenCode 2.0.x) as the Claude-shaped text that compact_context.py already processes.
+"""opencode_source.py: one OpenCode session (SQLite, tables session_v2, session_message and session_part) as the Claude-shaped text that compact_context.py already processes.
 Used by make_context.py (--opencode DB [--session ID], --current, which also searches the OpenCode database, and --list-opencode, which lists the sessions: list_sessions / session_line). Stdlib only; the database is opened read-only (file: URI, mode=ro, PRAGMA query_only) and never written.
 
 Every record is  [uuid role] text  with a uuid5 of the OpenCode message id and an index, so REC / kind_of / compact_text / the round trip work unchanged:
@@ -167,15 +167,24 @@ def list_sessions(conn, match=None, limit=LIST_LIMIT):
 
 
 def find_current(marker, db, max_age=1800, now=None):
-    """The ids of the sessions with a message row created in the last `max_age` seconds whose data holds `marker`. A missing file is skipped (-> []); a database without session_message gives []; an existing file that
+    """The ids of the sessions with a recent message or assistant part whose data holds `marker`. A missing file is skipped (-> []); a database without session_message gives []; an existing file that
     cannot be read raises OpenCodeError (the caller names --no-opencode). time_created is in milliseconds."""
     if not os.path.exists(db): return []
     conn = connect(db)
     try:
-        if "session_message" not in tables(conn): return []
+        conn.execute("BEGIN")
+        tb = tables(conn)
+        if "session_message" not in tb: return []
         cutoff = int(((time.time() if now is None else now) - max_age) * 1000)
         try:
-            return sorted(r[0] for r in conn.execute("select distinct session_id from session_message where time_created >= ? and instr(data, ?) > 0", (cutoff, marker)))
+            found = {r[0] for r in conn.execute("select distinct session_id from session_message where time_created >= ? and instr(data, ?) > 0", (cutoff, marker))}
+            if "session_part" in tb:
+                found.update(r[0] for r in conn.execute("""
+                    select distinct p.session_id from session_part p
+                    join session_message m on m.id = p.message_id and m.session_id = p.session_id
+                    where m.type = 'assistant' and p.time_updated >= ? and instr(p.data, ?) > 0
+                """, (cutoff, marker)))
+            return sorted(found)
         except sqlite3.Error as e:
             raise OpenCodeError("the OpenCode database %s cannot be searched (%s)" % (db, e))
     finally:
@@ -332,6 +341,45 @@ def tool_skill_body(mid, index, part, loaded):
     return body + ("\n" + suffix if suffix else "")
 
 
+def message_rows(conn, sid):
+    """Yield (message id, type, decoded message, source characters) in transcript order."""
+    parts = collections.defaultdict(list)
+    if "session_part" in tables(conn) and conn.execute(
+        "select 1 from session_part where session_id = ? limit 1", (sid,)
+    ).fetchone():
+        columns = {row[1] for row in conn.execute("pragma table_info(session_part)")}
+        if not {"message_id", "ordinal", "type", "data"} <= columns:
+            raise OpenCodeError("unsupported session_part schema in session %s" % sid)
+        for mid, ordinal, typ, data in conn.execute("""
+            select message_id, ordinal, type, data from session_part
+            where session_id = ? order by message_id, ordinal
+        """, (sid,)):
+            try: part = json.loads(data)
+            except (TypeError, ValueError): part = None
+            if (not isinstance(part, dict) or not isinstance(typ, str) or part.get("type") != typ
+                    or not isinstance(ordinal, int) or (parts[mid] and ordinal <= parts[mid][-1][0])):
+                raise OpenCodeError("invalid session_part in message %s at ordinal %s" % (mid, ordinal))
+            parts[mid].append((ordinal, part, len(data)))
+
+    for mid, typ, data in conn.execute("select id, type, data from session_message where session_id = ? order by seq, rowid", (sid,)):
+        try: message = json.loads(data)
+        except (TypeError, ValueError): message = None
+        size = len(data) if data is not None else 0
+        external = parts.pop(mid, [])
+        if external:
+            if typ != "assistant" or not isinstance(message, dict):
+                raise OpenCodeError("session_part has no readable assistant message %s" % mid)
+            inline = message.get("content")
+            if inline is not None and not isinstance(inline, list):
+                raise OpenCodeError("invalid inline assistant content in message %s" % mid)
+            # OpenCode's history reader puts stored parts before the inline tail.
+            message["content"] = [part for _, part, _ in external] + (inline or [])
+            size += sum(length for _, _, length in external)
+        yield mid, typ, message, size
+    if parts:
+        raise OpenCodeError("session_part has no matching message %s in session %s" % (next(iter(parts)), sid))
+
+
 def source_inventory(conn, sid):
     """Expected payloads from source rows, independently of render()/Rendered.
 
@@ -339,16 +387,13 @@ The caller keeps this read and render in the same SQLite read transaction. The
 inventory retains original binary bytes and expected sanitized skill records;
 dropping an item in the renderer cannot erase the corresponding expectation.
 """
-    for table in ("session_part", "blob_ref"):
-        if table in tables(conn) and conn.execute("select 1 from %s where session_id=? limit 1" % table, (sid,)).fetchone():
-            raise OpenCodeError("unsupported %s storage in session %s" % (table, sid))
+    if "blob_ref" in tables(conn) and conn.execute("select 1 from blob_ref where session_id=? limit 1", (sid,)).fetchone():
+        raise OpenCodeError("unsupported blob_ref storage in session %s" % sid)
     inventory = {"files": {}, "records": {}, "skills": {}}
     def expect(mid, token, body):
         uid = record_id(sid, mid, token)
         inventory["records"][uid] = sanitize("[%s user] %s\n" % (uid, body))
-    for mid, typ, data in conn.execute("select id, type, data from session_message where session_id=? order by seq, rowid", (sid,)):
-        try: message = json.loads(data)
-        except (ValueError, TypeError): continue  # existing unreadable-row notice remains
+    for mid, typ, message, _ in message_rows(conn, sid):
         if not isinstance(message, dict): continue
         if typ == "skill":
             name, text, body = native_skill(mid, message)
@@ -393,7 +438,6 @@ def check_inventory(inventory, blobs, folder):
 def render(conn, sid):
     """-> Rendered for the session `sid`: the records in seq order, the uuids of the read-only calls, the forced records {uuid: marker label}, the first tool calls (for the parent handoff), the original size."""
     R = Rendered()
-    R.original = conn.execute("select coalesce(sum(length(data)), 0) from session_message where session_id = ?", (sid,)).fetchone()[0]
     count = collections.Counter()
 
     def add(mid, role, body, needs=(), sanitized=True, uri=None, identity=None):
@@ -406,9 +450,8 @@ def render(conn, sid):
         R.recs.append(Rec(uid, role, text, [s for s in needs if s], changed, uri))
         return uid
 
-    for mid, typ, data in conn.execute("select id, type, data from session_message where session_id = ? order by seq, rowid", (sid,)):
-        try: j = json.loads(data)
-        except (TypeError, ValueError): j = None
+    for mid, typ, j, size in message_rows(conn, sid):
+        R.original += size
         if not isinstance(j, dict):
             add(mid, "user", "[opencode %s] (the data of this row is not a JSON object)" % typ); R.skipped["unreadable"] += 1; continue
         if typ == "user":

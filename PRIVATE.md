@@ -11,6 +11,8 @@ Skills and hooks that do not need the jev plugin, split out of `panaalexandrucri
 
 ### Plugin version
 
+`0.20.0` for OpenCode handoffs that read separately stored assistant parts from `session_part` (see «Compact handoff»).
+
 `0.19.0` for the shared Harness² skill for Apple Silicon, with a local demo and an experimental JobBench path that reuses the installed OpenCode for execution, improvement and rubric judging (see «Harness²»).
 
 `0.18.0` for `review-diff` running its review in a fresh reviewer subagent without the conversation that produced the code, with a baseline of the reviewed state that the main agent checks before it applies the reviewer's edits (see «Diff review»).
@@ -164,6 +166,10 @@ The private plugin also ships `android-ui-step` (`skills/android-ui-step/`, `apa
 **Limits.** The digest lists elements that are in the layout but not visible (an adjacent pager page, a covered card layer): it answered wrong on 2 of 13 screens, so the skill says to add `--shot` when the question is how something looks; no layout attribute separates the invisible elements (checked on 13 screens). The tests ran on a stand-in, not on a crowded real session, and not on other laptops; the saving against the same task without the skill was measured only with the note in the prompt.
 
 ## Compact handoff
+
+OpenCode handoffs now read `session_part` rows in ordinal order ahead of any inline tail for the same assistant message, matching OpenCode's history reader. Rendering and skill inventory use the same read-only snapshot, and marker lookup also searches recent parts. Malformed or orphaned part rows still stop the export.
+
+**Measured on 2026-11-24 (n=1 live session):** the handoff passed reconstruction verification. The source had 1,379,424 characters, `HANDOFF.md` had 193,931 characters, and the archive held 214 blobs.
 
 **Post-release CI fixture portability, version unchanged.** The first CI run for `plugin-v0.14.0` failed the new `--cut` golden check: Linux creates its fixture under `/tmp`, where the `handoff-fidelity-test-` prefix is interpreted as an archive path by the existing introduction leak guard. Renamed the fixture prefix to `opencode-fidelity-test-`. A second test-only assumption was exposed after that rename: CLI size statistics include the absolute source path in cut mode, so their size and percentage vary with the temporary root's length even when normalized archive contents are identical. Golden hashes now cover all normalized archive files; CLI behavior remains covered by the existing CLI tests. Expected hashes were recaptured from the untouched `2d78aab` scripts, whose runtime files were checked against Git before use. The published tag and runtime code are unchanged.
 

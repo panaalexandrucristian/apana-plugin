@@ -96,6 +96,48 @@ class Fidelity(unittest.TestCase):
     def database(self, source=None):
         oc.make_db(str(self.db), {SID: rows() if source is None else source})
 
+    @staticmethod
+    def parts_table(c):
+        c.execute("""create table session_part(
+            message_id TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+            type TEXT NOT NULL, call_id TEXT, time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL, data TEXT NOT NULL, primary key(message_id, ordinal))""")
+
+    def test_external_parts_match_inline_export_and_are_searched(self):
+        marker = 'handoff-marker-fidelity'
+        parts = [
+            {'type': 'text', 'text': 'External text with diacritics: ș.'},
+            {'type': 'reasoning', 'text': 'Private reasoning not in export.'},
+            tool_skill(text='External skill instructions.'),
+            {'type': 'tool', 'name': 'shell', 'state': {'status': 'completed',
+                'input': {'command': 'python3 make_context.py --marker'}, 'metadata': {'exit': 0},
+                'content': [{'type': 'text', 'text': marker},
+                            {'type': 'file', 'mime': 'image/png', 'uri': 'data:image/png;base64,aW1hZ2U='}]}},
+        ]
+        tail = [{'type': 'text', 'text': 'Inline tail.'}]
+        self.database([('assistant', {'content': parts + tail}, 2)])
+        inline = self.cli(out='inline')
+        self.assertEqual(inline.returncode, 0, inline.stderr)
+        with closing(sqlite3.connect(self.db)) as c, c:
+            self.parts_table(c)
+            mid, now = c.execute('select id, time_created from session_message').fetchone()
+            c.execute('update session_message set data=?', (json.dumps({'content': tail}),))
+            for i in reversed(range(len(parts))):
+                part = parts[i]
+                c.execute('insert into session_part values (?, ?, ?, ?, ?, ?, ?, ?)',
+                          (mid, SID, i, part['type'], None, now - 7200000, now, json.dumps(part, ensure_ascii=False)))
+            size = sum(c.execute('select sum(length(data)) from ' + table).fetchone()[0]
+                       for table in ('session_message', 'session_part'))
+        listed = self.cli('--list-skills', out=None, current=True)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn('skill: tool-skill', listed.stdout)
+        external = self.cli(current=True)
+        self.assertEqual(external.returncode, 0, external.stderr)
+        self.assertEqual(self.archive(), self.archive('inline'))
+        self.assertNotIn('Private reasoning', self.archive()[0])
+        with closing(oc.connect(str(self.db))) as c:
+            self.assertEqual(oc.render(c, SID).original, size)
+
     def cli(self, *flags, out='output', current=False):
         args = ['--current', 'handoff-marker-fidelity', '--opencode-db', str(self.db)] if current else ['--opencode', str(self.db), '--session', SID]
         if out is not None:
@@ -206,7 +248,8 @@ class Fidelity(unittest.TestCase):
                     self.assertFalse((self.root / 'invalid').exists())
 
     def test_invalid_and_unsupported_sources_fail_before_ready(self):
-        for case in ('invalid-base64', 'non-ascii', 'missing-data', 'media-user', 'media-tool', 'skill-message', 'parts', 'blob-ref'):
+        for case in ('invalid-base64', 'non-ascii', 'missing-data', 'media-user', 'media-tool', 'skill-message',
+                     'parts-schema', 'parts-orphan', 'parts-invalid', 'parts-media', 'blob-ref'):
             with self.subTest(case=case):
                 source = rows()
                 if case in ('invalid-base64', 'non-ascii'):
@@ -220,9 +263,20 @@ class Fidelity(unittest.TestCase):
                 if self.db.exists(): self.db.unlink()
                 self.database(source)
                 with closing(sqlite3.connect(self.db)) as c, c:
-                    if case == 'parts':
+                    if case == 'parts-schema':
                         c.execute('create table session_part(session_id TEXT, message_id TEXT, data TEXT)')
                         c.execute('insert into session_part values (?, ?, ?)', (SID, 'message', '{}'))
+                    elif case in ('parts-orphan', 'parts-invalid', 'parts-media'):
+                        self.parts_table(c)
+                        mid = c.execute("select id from session_message where type='assistant'").fetchone()[0]
+                        part = {'type': 'text', 'text': 'A misplaced part.'}
+                        if case == 'parts-orphan': mid = 'no-such-message'
+                        if case == 'parts-media':
+                            part = tool_skill()
+                            part['state']['content'] = [{'type': 'file', 'uri': 'media:' + 'c' * 64}]
+                        c.execute('insert into session_part values (?, ?, ?, ?, ?, ?, ?, ?)',
+                                  (mid, SID, 0, part['type'], None, 0, 0,
+                                   '{' if case == 'parts-invalid' else json.dumps(part)))
                     if case == 'blob-ref':
                         c.execute('create table blob_ref(session_id TEXT, hash TEXT)')
                         c.execute('insert into blob_ref values (?, ?)', (SID, 'hash'))
