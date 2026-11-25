@@ -22,9 +22,22 @@ describe("SKILL.md", () => {
     for (const line of commandLines) assert.equal(line.replace(/\$\{CLAUDE_SKILL_DIR\}/g, "").includes("$"), false, `no other variable in: ${line}`);
   });
 
+  it("teaches snapshot, verify and expect in the review checkout, in the form the program parses", () => {
+    const commandLines = body.split("\n").filter((line) => /^ {4}\S/.test(line));
+    for (const action of ["snapshot <target>", "verify sha256:<digest> <target>", "expect sha256:<digest> <edits file> <target>"]) {
+      assert.ok(commandLines.includes(`    node \${CLAUDE_SKILL_DIR}/scripts/diff-target.mjs -C <review checkout> ${action}`), action);
+    }
+    const usage = readFileSync(join(SCRIPTS, "diff-target.mjs"), "utf8");
+    for (const form of ["[-C <dir>] [snapshot] <target>", "[-C <dir>] verify sha256:<hex>|expected:<hex> <target>", "[-C <dir>] expect sha256:<hex> <edits.json> <target>"]) {
+      assert.ok(usage.includes(form), form);
+    }
+  });
+
   it("says what the exit codes and the printed fields mean", () => {
     assert.match(body, /Exit 3 means/);
-    for (const field of ["on current branch", "worktree", "special", "requirement"]) assert.ok(body.includes(`\`${field}`), field);
+    assert.match(body, /exit 4 a mismatch/);
+    assert.match(body, /5 when some are refused/);
+    for (const field of ["on current branch", "worktree", "special", "requirement", "local changes", "expected:"]) assert.ok(body.includes(`\`${field}`), field);
   });
 });
 
