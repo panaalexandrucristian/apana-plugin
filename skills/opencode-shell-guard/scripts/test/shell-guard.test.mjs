@@ -117,6 +117,20 @@ describe("the plugin", () => {
     }
     assert.match(warned[0], /^\[opencode-shell-guard\] .*grep is not refused/);
   });
+
+  it("registers the hook when loaded through the link with the link's path in import.meta.url, as OpenCode 2.4.2 loads it", () => {
+    const link = linkOf(temp());
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(PLUGIN, link);
+    // --preserve-symlinks keeps the link's path in import.meta.url, as OpenCode's loader did; plain node resolves it to the real path.
+    const probe = `const { default: plugin } = await import(${JSON.stringify(pathToFileURL(join(link, "server.js")).href)});
+      const names = []; console.warn = (message) => names.push("warn: " + message);
+      await plugin.setup({ permission: { hook: async (name) => (names.push(name), { dispose() {} }) } });
+      console.log(JSON.stringify(names));`;
+    const ran = spawnSync(process.execPath, ["--preserve-symlinks", "--input-type=module", "-e", probe], { encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.deepEqual(JSON.parse(ran.stdout), ["evaluate"]);
+  });
 });
 
 describe("the AGENTS.md note", () => {
@@ -481,7 +495,7 @@ describe("the skill package", () => {
   it("runs the script it ships with node, its plugin imports the shared rules, and no file carries a local user path", () => {
     assert.ok(text.includes('node "${CLAUDE_SKILL_DIR}/scripts/shell-guard.mjs" --check'));
     const server = readFileSync(join(PLUGIN, "server.js"), "utf8");
-    assert.ok(server.includes('import("../scripts/rules.mjs")') && existsSync(join(SKILL, "scripts", "rules.mjs")));
+    assert.ok(server.includes('new URL("../scripts/rules.mjs", here)') && existsSync(join(SKILL, "scripts", "rules.mjs")));
     assert.deepEqual(readdirSync(PLUGIN), ["server.js"], "OpenCode loads the plugin folder; nothing else belongs in it");
     for (const file of [join(SKILL, "SKILL.md"), SCRIPT, join(SKILL, "scripts", "rules.mjs"), join(PLUGIN, "server.js")]) {
       assert.doesNotMatch(readFileSync(file, "utf8"), /\/Users\//, file);
