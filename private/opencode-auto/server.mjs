@@ -6,7 +6,8 @@
 // as a whole on update; interrupt ends a running tool and the step at once but not the background subagents; the handoff must precede
 // OpenCode's own compaction, which starts at the next turn once the context reaches its ceiling.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -161,9 +162,11 @@ function runScript(script, args, timeoutMs, { env = process.env, children = new 
 // What stops a second handoff of a session is shared by the instances of one real directory: a directory reached by two paths has two instances.
 const shares = (globalThis[Symbol.for("apana-auto.shares")] ??= new Map()); // on globalThis: the loader may give each instance its own copy of this module
 const shareOf = (key) => {
-  if (key === null) return { claims: new Set(), failedAt: new Map(), handedTo: new Map(), lastHandoff: null };
-  if (!shares.has(key)) shares.set(key, { claims: new Set(), failedAt: new Map(), handedTo: new Map(), lastHandoff: null });
-  return shares.get(key);
+  if (key === null) return { claims: new Set(), failedAt: new Map(), handedTo: new Map(), cooldowns: new Map() };
+  if (!shares.has(key)) shares.set(key, shareOf(null));
+  const share = shares.get(key);
+  share.cooldowns ??= new Map();
+  return share;
 };
 
 /**
@@ -178,6 +181,7 @@ export function createAuto(ctx, options = {}) {
   const db = options.db ?? join(dataHome, "opencode", "opencode.db");
   const script = options.script ?? join(ROOT, "skills", "compact-handoff", "scripts", "make_context.py");
   const now = options.now ?? Date.now;
+  const pause = options.pause ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const waitMs = options.waitMs ?? INTERRUPT_WAIT_MS;
   const processes = new Set();
   const run = options.run ?? ((args, timeoutMs) => runScript(script, args, timeoutMs, { env, children: processes }));
@@ -199,6 +203,7 @@ export function createAuto(ctx, options = {}) {
   const share = shareOf(here);
   const { claims, failedAt, handedTo } = share; // sessions whose handoff is running or done in this process (a written `next` covers a restart), the failures, the new sessions
   const inFlight = new Set(); // the claims of this instance whose handoff has not ended: given back when the instance is disposed
+  let disposed = false;
   const waiters = new Map(); // session -> resolvers waiting for the end of its execution
   const noted = new Set();
   const models = { at: 0, list: [] };
@@ -256,7 +261,13 @@ export function createAuto(ctx, options = {}) {
   /** Why a handoff must not start now (a reason), or the subagents that are running. Nothing here awaits: the claim that follows is atomic with it. */
   function admit(sessionID, total, settings, limits) {
     if (claims.has(sessionID)) return { why: "claimed" };
-    if (share.lastHandoff !== null && now() - share.lastHandoff < settings.cooldown * 1000) return { why: "cooldown", text: `${total} tokens but the last handoff is younger than ${settings.cooldown}s; skipped` };
+    const cooldown = share.cooldowns.get(sessionID);
+    if (cooldown && now() < cooldown.until) return {
+      why: "cooldown",
+      text: cooldown.until === Infinity
+        ? `${total} tokens but the preceding handoff is still submitting the prompt; skipped`
+        : `${total} tokens but the last handoff is younger than ${cooldown.seconds}s; skipped`,
+    };
     const failed = failedAt.get(sessionID);
     if (failed !== undefined && now() - failed < RETRY_MS) return { why: "failed" };
     if (settings.max > 0 && settings.chain >= settings.max) return { why: "max", text: `${total} tokens but the limit of ${settings.max} handoffs is reached; skipped` };
@@ -267,6 +278,7 @@ export function createAuto(ctx, options = {}) {
 
   /** Starts a handoff when one is due and allowed -> whether it started. The claim is taken before anything is awaited. */
   function trigger(sessionID, info, settings, total, limits, via) {
+    if (disposed) return false;
     const verdict = admit(sessionID, total, settings, limits);
     if (verdict.why) {
       if (verdict.text) note(`${sessionID}:${verdict.why}`, `${sessionID} ${verdict.text}`);
@@ -322,16 +334,24 @@ export function createAuto(ctx, options = {}) {
   /** The handoff itself. Never rejects: a failure releases the claim (a retry waits RETRY_MS) and is only logged. */
   async function handoff(sessionID, info, settings, total, busy, via) {
     let made = null;
+    let submitted = false;
+    let accepted = false;
     try {
       await interrupt(sessionID);
-      const short = sessionID.replace(/[^A-Za-z0-9]/g, "").replace(/^ses/, "").slice(0, 8);
-      const stamp = new Date(now()).toISOString().replace(/[-:]/g, "").slice(0, 15);
-      const folder = join(settings.dir ?? join(dataDir, "handoffs", "auto"), `${short}-${stamp}`);
-      const result = await run(["--opencode", db, folder, "--session", sessionID, ...(await skillsArgs(settings.skills, sessionID))], SCRIPT_TIMEOUT_MS);
+      if (disposed) return;
+      const digest = createHash("sha256").update(sessionID).digest("hex");
+      const root = settings.dir ?? join(dataDir, "handoffs", "auto");
+      mkdirSync(root, { recursive: true });
+      const folder = mkdtempSync(join(root, `${digest}-`));
+      const skillOptions = await skillsArgs(settings.skills, sessionID);
+      if (disposed) return;
+      const result = await run(["--opencode", db, folder, "--session", sessionID, ...skillOptions], SCRIPT_TIMEOUT_MS);
+      if (disposed) return;
       const note = result.code === 0 ? parseHandoff(result.stdout) : null;
       if (!note) throw new Error(`make_context.py exit ${result.code}: ${(result.stderr || result.stdout).slice(-300).trim()}`);
       // Read again: the TUI or the user may have changed the metadata while the note was written, and an update replaces it as a whole.
       const fresh = (await getInfo(sessionID)) ?? info;
+      if (disposed) return;
       const apana = { ...(fresh.metadata?.apana ?? {}) };
       delete apana.next;
       const auto = { ...(apana.auto && typeof apana.auto === "object" ? apana.auto : {}), chain: settings.chain + 1 };
@@ -341,23 +361,48 @@ export function createAuto(ctx, options = {}) {
         ...(fresh.location ? { location: fresh.location } : {}),
         metadata: { ...fresh.metadata, apana: { ...apana, auto } },
       });
-      await ctx.session.prompt({ sessionID: made.id, text: note.prompt + continuation(total, busy) });
-      handedTo.set(sessionID, made.id);
-      try {
-        const latest = (await getInfo(sessionID)) ?? fresh;
-        await ctx.session.update({ sessionID, metadata: { ...latest.metadata, apana: { ...(latest.metadata?.apana ?? {}), next: made.id } } });
-      } catch (error) {
-        // The new session exists and has its prompt: running another handoff would make a second one. Only the TUI's jump is lost.
-        log(`${sessionID}: the new session ${made.id} is running but \`next\` was not written (${describe(error)})`);
+      if (disposed) {
+        await ctx.session.remove({ sessionID: made.id }).catch(() => {});
+        return;
       }
-      share.lastHandoff = now();
-      inFlight.delete(sessionID);
+      for (const [id, { until }] of share.cooldowns) if (until <= now()) share.cooldowns.delete(id);
+      if (settings.cooldown > 0) share.cooldowns.set(made.id, { until: Infinity, seconds: settings.cooldown });
+      submitted = true;
+      inFlight.delete(sessionID); // dispose must not release a claim once submission starts
+      await ctx.session.prompt({ sessionID: made.id, text: note.prompt + continuation(total, busy) });
+      accepted = true;
+      if (settings.cooldown > 0) share.cooldowns.set(made.id, { until: now() + settings.cooldown * 1000, seconds: settings.cooldown });
+      handedTo.set(sessionID, made.id);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const latest = await ctx.session.get({ sessionID });
+          if (!latest) throw new Error("no source session");
+          const previous = latest.metadata?.apana?.next;
+          if (previous === made.id) break;
+          if (previous !== undefined) {
+            log(`${sessionID}: the new session ${made.id} is running but \`next\` was not written (conflicting destination)`);
+            break;
+          }
+          await ctx.session.update({ sessionID, metadata: { ...latest.metadata, apana: { ...(latest.metadata?.apana ?? {}), next: made.id } } });
+          break;
+        } catch (error) {
+          if (attempt === 2) {
+            log(`${sessionID}: the new session ${made.id} is running but \`next\` was not written (${describe(error)})`);
+            break;
+          }
+          await pause(100 * (attempt + 1));
+        }
+      }
       log(`${sessionID}: ${total} tokens; handoff (${via}) to ${made.id}, note ${note.ready}${busy.length ? `, subagents left running: ${busy.join(", ")}` : ""}`);
     } catch (error) {
-      if (made) await ctx.session.remove({ sessionID: made.id }).catch(() => {});
+      if (accepted || (disposed && !submitted)) return;
+      if (made) {
+        share.cooldowns.delete(made.id);
+        await ctx.session.remove({ sessionID: made.id }).catch(() => {});
+      }
+      failedAt.set(sessionID, now());
       claims.delete(sessionID);
       inFlight.delete(sessionID);
-      failedAt.set(sessionID, now());
       log(`${sessionID}: handoff failed (${describe(error)}); a retry waits ${RETRY_MS / 1000}s`);
     }
   }
@@ -446,7 +491,10 @@ export function createAuto(ctx, options = {}) {
     consume,
     start: (signal) => consume(ctx.event.subscribe({ types: [...EVENT_TYPES], signal })),
     dispose: () => {
+      if (disposed) return;
+      disposed = true;
       for (const id of inFlight) claims.delete(id); // another instance of the directory may take these over
+      inFlight.clear();
       for (const child of processes) child.kill("SIGKILL");
       for (const set of waiters.values()) for (const resolve of set) resolve();
     },

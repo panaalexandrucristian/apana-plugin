@@ -8,6 +8,9 @@
 // that `opencode-auto` started are handed off (owner decision).
 // Measured on 2.3.0: the TUI loads this plugin from the server's plugin folder; client.session.get returns the session itself; update replaces
 // `metadata` as a whole (so it is read, changed and written back); router.navigate moves the same TUI process to the new session.
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const REQUIRED = ["data.on", "ui.router.current", "ui.router.navigate", "ui.toast.show", "client.session.get", "client.session.update"];
 const POLL_MS = 500;
@@ -43,7 +46,8 @@ export function sidebarLabel(info) {
 const sessionOf = (got) => (got && typeof got === "object" && "id" in got ? got : got?.data ?? null);
 
 /**
- * @param context the TUI plugin context. @param options pollMs (0: no polling, a test calls check()), now, retryMs, sidebar (registers the sidebar line, returns its cleanup).
+ * @param context the TUI plugin context. @param options pollMs (0: no polling, a test calls check()), now, retryMs, sidebar (registers the sidebar line, returns its cleanup),
+ * log(message) (default: a line in the server part's auto.log, so that a window that did not move can be told apart from a handoff that did not happen).
  * Throws, with nothing registered, when OpenCode lacks a capability.
  */
 export async function setupAutoTui(context, env = process.env, options = {}) {
@@ -63,12 +67,27 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
   const mark = markOf(env);
   const now = options.now ?? Date.now;
   const retryMs = options.retryMs ?? RETRY_MS;
+  const log =
+    options.log ??
+    ((message) => {
+      try {
+        const dir = join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "opencode", "apana", "auto");
+        mkdirSync(dir, { recursive: true });
+        appendFileSync(join(dir, "auto.log"), `${new Date(now()).toISOString()} tui ${process.pid}: ${message}\n`);
+      } catch {
+        // The log is a convenience; losing a line must not stop the window.
+      }
+    });
   const router = context.ui.router;
   const marked = new Set(); // sessions that were looked at: marked or unmarked, or left as they were (a child, one already handed off, one that has the mark)
   const retryAt = new Map();
   const working = new Set(); // sessions being marked right now: a slow server must not get the same write twice
   const seen = new Set(); // sessions opened in this TUI: only those are followed (by an automatic window; a plain one follows nothing)
   const followed = new Set();
+  const stuck = new Set(); // sessions whose failed move is already in the log: check() tries again at every read
+  const pending = new Map();
+  let opening;
+  let disposed = false;
   const cap = (collection) => {
     while (collection.size > TRACKED) collection.delete(collection.keys().next().value);
   };
@@ -97,24 +116,43 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
   }
 
   /** Marks or unmarks a session (see `changed`). Reads it first: an update replaces the metadata as a whole. */
-  async function markSession(sessionID) {
-    const info = sessionOf(await context.client.session.get({ sessionID }));
-    if (!info) throw new Error("no session");
+  async function markSession(sessionID, info) {
     const metadata = changed(info);
     if (metadata) await context.client.session.update({ sessionID, metadata });
   }
 
-  /** One look at the route: a session that is open and not yet looked at gets marked, or unmarked in a plain window. */
-  async function check() {
+  /**
+   * One look at the route: a session that is open and not yet looked at gets marked, or unmarked in a plain window. An automatic window reads the
+   * open session again every retryMs and moves to its `next`, so a handoff whose event it missed (it showed another session, or it started later) is followed too.
+   */
+  async function check(force = false) {
+    if (disposed) return;
     const current = route();
-    if (current?.type !== "session" || typeof current.sessionID !== "string") return;
+    if (current?.type !== "session" || typeof current.sessionID !== "string") {
+      opening = undefined;
+      return;
+    }
     const sessionID = current.sessionID;
+    if (opening?.id !== sessionID) opening = { id: sessionID, nextRead: 0 };
+    const active = opening;
     seen.add(sessionID);
     cap(seen);
-    if (marked.has(sessionID) || working.has(sessionID) || (retryAt.get(sessionID) ?? 0) > now()) return;
+    if (working.has(sessionID) || (retryAt.get(sessionID) ?? 0) > now()) return;
+    if (marked.has(sessionID) && (!auto || active.archived || (!force && now() < active.nextRead))) return;
     working.add(sessionID);
     try {
-      await markSession(sessionID);
+      const info = sessionOf(await context.client.session.get({ sessionID }));
+      if (!info) throw new Error("no session");
+      if (disposed || opening !== active || route()?.sessionID !== sessionID) return;
+      active.archived = Boolean(info.time?.archived);
+      active.nextRead = now() + retryMs;
+      const next = info.metadata?.apana?.next ?? pending.get(sessionID);
+      pending.delete(sessionID);
+      if (auto && typeof next === "string") {
+        if (!active.archived) follow(sessionID, next);
+      } else if (!marked.has(sessionID)) {
+        await markSession(sessionID, info);
+      }
       marked.add(sessionID);
       cap(marked);
       retryAt.delete(sessionID);
@@ -131,24 +169,47 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
     const sessionID = event?.data?.sessionID;
     const next = event?.data?.metadata?.apana?.next;
     if (typeof sessionID !== "string" || typeof next !== "string" || !seen.has(sessionID) || followed.has(sessionID)) return;
+    const current = route();
+    if (current?.type === "session" && current.sessionID === sessionID) {
+      if (opening?.id === sessionID && opening.archived === false) follow(sessionID, next);
+      else if (opening?.id !== sessionID || opening.archived === undefined) {
+        pending.set(sessionID, next);
+        cap(pending);
+        void check(true);
+      }
+      return;
+    }
+    if (!current) return;
+    rememberFollowed(sessionID);
+    context.ui.toast.show({ message: `apana auto: a session was handed off to ${next}`, variant: "info" });
+    void archive(sessionID);
+  }
+
+  function rememberFollowed(sessionID) {
     followed.add(sessionID);
     cap(followed);
-    const current = route();
+  }
+
+  function follow(sessionID, next) {
+    if (disposed || followed.has(sessionID) || route()?.sessionID !== sessionID || next === sessionID) return;
+    let failure = null;
     try {
-      if (current?.type === "session" && current.sessionID === sessionID) {
-        router.navigate({ type: "session", sessionID: next });
-        context.ui.toast.show({ message: "apana auto: moved to the new session", variant: "info" });
-      } else {
-        context.ui.toast.show({ message: `apana auto: a session was handed off to ${next}`, variant: "info" });
-      }
-    } catch {
-      // The window stays where it is; the handoff itself has happened.
+      router.navigate({ type: "session", sessionID: next });
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
     }
-    // The old session is archived once the window is no longer on it. The plugin API of the server part ignores `archived` on `session.update`
-    // (measured on 2.3.2, n=1), the client of the TUI does not. A window that could not be moved keeps the session on screen.
     const after = route();
-    if (after?.type === "session" && after.sessionID === sessionID) return;
+    if (failure !== null || after?.type !== "session" || after.sessionID !== next) {
+      if (!stuck.has(sessionID)) log(`could not move the window from ${sessionID} to ${next} (${failure ?? "the route did not change"})`);
+      stuck.add(sessionID);
+      cap(stuck);
+      return;
+    }
+    log(`moved the window from ${sessionID} to ${next}`);
+    rememberFollowed(sessionID);
+    opening = undefined;
     void archive(sessionID);
+    context.ui.toast.show({ message: "apana auto: moved to the new session", variant: "info" });
   }
 
   /** Archives a session that was handed off. A refusal leaves it in the list: the handoff itself has happened. */
@@ -161,14 +222,18 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
   }
 
   const stop = auto ? context.data.on("session.metadata.updated", onMetadata) : () => {};
+  const disconnect = auto ? context.data.on("server.connected", () => void check(true)) : () => {};
   const pollMs = options.pollMs ?? POLL_MS;
   const timer = pollMs > 0 ? setInterval(() => void check(), pollMs) : null;
+  if (auto) log("automatic window started");
   void check();
   return {
     check,
     dispose: () => {
+      disposed = true;
       if (timer) clearInterval(timer);
       stop();
+      disconnect();
       unslot();
     },
   };

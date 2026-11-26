@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fakeCtx, tempDir } from "../../opencode/test/support/fake-ctx.mjs";
 import { ceilingOf, contextOf, continuation, createAuto, DEFAULTS, limitsOf, parseHandoff, refusalAfter, setupAuto, settingsOf, unquote, windowOf } from "../server.mjs";
@@ -19,7 +19,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const marked = (auto = { tokens: 200_000 }, extra = {}) => ({ agent: "build", model: MODEL, metadata: { apana: { auto } }, ...extra });
 
 /** One auto instance over a fake context. `handler` answers make_context.py; `t` stops the event loop when the test ends. */
-function setup(t, { models = BIG, sessions = {}, enabled = true, handler, root = marked() } = {}) {
+function setup(t, { models = BIG, sessions = {}, enabled = true, handler, root = marked(), pause = async () => {} } = {}) {
   const dir = tempDir("apana-auto-");
   const directory = tempDir("apana-ws-");
   const located = (session) => ({ location: { directory }, ...session });
@@ -38,6 +38,7 @@ function setup(t, { models = BIG, sessions = {}, enabled = true, handler, root =
     db: "/db/opencode.db",
     script: "/s/make_context.py",
     now: () => clock.t,
+    pause,
     log: (message) => logs.push(message),
     waitMs: 40,
     run: async (args) => {
@@ -411,10 +412,44 @@ describe("how often, how many, and what a failure does", () => {
     const s = setup(t, { sessions: { ses_two: marked() } });
     await s.step(200_000);
     await s.step(200_000, "ses_two");
-    assert.equal(s.fake.calls.create.length, 1);
+    assert.equal(s.fake.calls.create.length, 2, "an independent root is not blocked");
+    await s.step(200_001, "ses_new1");
+    assert.equal(s.fake.calls.create.length, 2, "the actual successor is blocked");
     assert.match(s.logs.join("\n"), /younger than 60s; skipped/);
     s.clock.t += 60_000;
-    await s.step(200_001, "ses_two");
+    await s.step(200_001, "ses_new1");
+    assert.equal(s.fake.calls.create.length, 3, "the successor is admitted at expiry");
+  });
+  it("protects the successor until its prompt is accepted, then starts the cooldown", async (t) => {
+    const s = setup(t);
+    const prompt = s.fake.ctx.session.prompt;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    t.after(async () => { release(); await flush(); });
+    s.fake.ctx.session.prompt = async (input) => {
+      const accepted = await prompt(input);
+      if (input.sessionID === "ses_new1") await gate;
+      return accepted;
+    };
+    await s.step(200_000);
+    assert.deepEqual(s.fake.calls.prompt.map(({ sessionID }) => sessionID), ["ses_new1"]);
+    assert.equal(s.fake.calls.update.length, 0, "the source has not published next");
+    s.clock.t += 60_000;
+    await s.step(200_001, "ses_new1");
+    assert.equal(s.fake.calls.create.length, 1, "the successor is blocked while acceptance is pending");
+    s.fake.sessions.get("ses_new1").metadata.apana.auto.cooldown = 0;
+    await s.step(200_001, "ses_new1");
+    assert.equal(s.fake.calls.create.length, 1, "changing the mark does not cancel the pending protection");
+    assert.equal(await s.tool("ses_new1"), undefined, "the tool path must not start a handoff either");
+    assert.equal(s.fake.calls.create.length, 1);
+    release();
+    await flush();
+    assert.equal(s.fake.calls.update[0].metadata.apana.next, "ses_new1");
+    s.clock.t += 59_999;
+    await s.step(200_001, "ses_new1");
+    assert.equal(s.fake.calls.create.length, 1, "the deadline starts on acceptance, not on submission");
+    s.clock.t += 1;
+    await s.step(200_001, "ses_new1");
     assert.equal(s.fake.calls.create.length, 2);
   });
   it("stops at the limit of handoffs along a chain, and counts the chain", async (t) => {
@@ -464,6 +499,197 @@ describe("how often, how many, and what a failure does", () => {
     s.clock.t += 120_000;
     await s.step(210_000);
     assert.equal(s.fake.calls.create.length, 1);
+  });
+  it("retries only the link, skips writing after a failed read, and merges fresh metadata", async (t) => {
+    let failRead = false;
+    const writesAtPause = [];
+    const s = setup(t, { pause: async () => {
+      writesAtPause.push(s.fake.calls.update.length);
+      if (writesAtPause.length !== 1) return;
+      s.fake.state.updateError = undefined;
+      const info = await s.fake.ctx.session.get({ sessionID: "ses_root" });
+      await s.fake.ctx.session.update({ sessionID: "ses_root", metadata: { ...info.metadata, keep: true } });
+      failRead = true;
+    } });
+    const get = s.fake.ctx.session.get;
+    s.fake.ctx.session.get = async (input) => {
+      if (!failRead) return get(input);
+      failRead = false;
+      throw new Error("temporary read failure");
+    };
+    s.fake.state.updateError = new Error("temporary write failure");
+    await s.step(200_000);
+    const info = s.fake.sessions.get("ses_root");
+    assert.deepEqual(writesAtPause, [0, 1], "only the foreign writer wrote before the final retry");
+    assert.equal(s.fake.calls.update.length, 2);
+    assert.equal(info.metadata.apana.next, "ses_new1");
+    assert.equal(info.metadata.keep, true);
+    assert.equal(s.fake.calls.create.length, 1);
+    assert.equal(s.fake.calls.prompt.length, 1);
+    assert.equal(s.built().length, 1);
+  });
+  for (const next of ["ses_new1", "ses_other"]) {
+    const same = next === "ses_new1";
+    it(same ? "does not write again after a successful write whose reply was lost" : "does not overwrite a conflicting next found on retry", async (t) => {
+      let writes = 0;
+      let rereads = 0;
+      const s = setup(t, { pause: async () => {
+        if (same) return;
+        const source = s.fake.sessions.get("ses_root");
+        source.metadata = { ...source.metadata, keep: true, apana: { ...source.metadata.apana, next } };
+      } });
+      const get = s.fake.ctx.session.get;
+      s.fake.ctx.session.get = async (input) => {
+        if (writes) rereads += 1;
+        return get(input);
+      };
+      const update = s.fake.ctx.session.update;
+      s.fake.ctx.session.update = async (input) => {
+        writes += 1;
+        if (same || writes > 1) await update(input);
+        if (writes === 1) throw new Error(same ? "reply lost" : "temporary write failure");
+      };
+      await s.step(200_000);
+      assert.equal(rereads, 1);
+      assert.equal(writes, 1);
+      const metadata = s.fake.sessions.get("ses_root").metadata;
+      assert.equal(metadata.apana.next, next);
+      if (same) assert.doesNotMatch(s.logs.join("\n"), /`next` was not written/);
+      else {
+        assert.equal(metadata.keep, true);
+        assert.match(s.logs.join("\n"), /ses_new1 is running but `next` was not written \(conflicting destination\)/);
+      }
+    });
+  }
+  it("keeps the claim across dispose during retry and keeps the accepted successor when retry is exhausted", async (t) => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    t.after(() => release());
+    let pauses = 0;
+    const s = setup(t, { pause: async () => { pauses += 1; await gate; } });
+    let writes = 0;
+    s.fake.ctx.session.update = async () => { writes += 1; throw new Error("read only"); };
+    await s.step(200_000);
+    assert.equal(writes, 1);
+    assert.equal(pauses, 1);
+    assert.deepEqual(s.fake.calls.prompt.map(({ sessionID }) => sessionID), ["ses_new1"]);
+    s.auto.dispose();
+    s.fake.state.interruptResult = { interrupted: false };
+    const other = createAuto(s.fake.ctx, {
+      stateDir: join(s.dir, "state"), dataDir: join(s.dir, "data"),
+      run: async (args) => {
+        s.runs.push(args);
+        return { code: 0, stdout: args.includes("--list-skills") ? LISTED() : BUILT, stderr: "" };
+      },
+    });
+    t.after(() => other.dispose());
+    await other.consume([s.stepEnded("ses_root", 200_000)]);
+    await flush();
+    release();
+    await flush();
+    assert.equal(writes, 3);
+    assert.equal(pauses, 2);
+    assert.equal(s.built().length, 1);
+    assert.equal(s.fake.calls.create.length, 1);
+    assert.equal(s.fake.calls.prompt.length, 1);
+    assert.deepEqual(s.fake.calls.remove, []);
+    assert.ok(s.fake.sessions.has("ses_new1"));
+    assert.equal(s.fake.sessions.get("ses_root").metadata.apana.next, undefined);
+    assert.match(s.logs.join("\n"), /ses_new1 is running but `next` was not written \(read only\)/);
+  });
+  it("keeps the claim until a pending prompt fails, then allows retry after the delay", async (t) => {
+    const s = setup(t);
+    const prompt = s.fake.ctx.session.prompt;
+    let rejectFirst;
+    t.after(() => rejectFirst?.(new Error("test ended")));
+    s.fake.ctx.session.prompt = (input) => input.sessionID === "ses_new1"
+      ? new Promise((_, reject) => { rejectFirst = reject; })
+      : prompt(input);
+    await s.step(200_000);
+    assert.equal(typeof rejectFirst, "function", "the first prompt is pending");
+    s.auto.dispose();
+    s.fake.state.interruptResult = { interrupted: false };
+    const other = createAuto(s.fake.ctx, {
+      stateDir: join(s.dir, "state"), dataDir: join(s.dir, "data"), now: () => s.clock.t,
+      run: async (args) => ({ code: 0, stdout: args.includes("--list-skills") ? LISTED() : BUILT, stderr: "" }),
+    });
+    t.after(() => other.dispose());
+    await other.consume([s.stepEnded("ses_root", 200_000)]);
+    await flush();
+    assert.equal(s.fake.calls.create.length, 1);
+    rejectFirst(new Error("first prompt failed"));
+    await flush();
+    assert.deepEqual(s.fake.calls.remove, [{ sessionID: "ses_new1" }]);
+    await other.consume([s.stepEnded("ses_root", 200_000)]);
+    await flush();
+    assert.equal(s.fake.calls.create.length, 1);
+    s.clock.t += 60_000;
+    await other.consume([s.stepEnded("ses_root", 200_000)]);
+    await flush();
+    assert.equal(s.fake.sessions.get("ses_root").metadata.apana.next, "ses_new2");
+    assert.ok(s.fake.sessions.has("ses_new2"));
+    await assert.rejects(other.beforeTool({ sessionID: "ses_root", tool: "read", input: {} }),
+      (error) => error.message === refusalAfter("ses_new2"));
+  });
+  it("keeps the accepted continuation after disposal even if publishing next fails", async (t) => {
+    const s = setup(t);
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    t.after(release);
+    const prompt = s.fake.ctx.session.prompt;
+    let submissions = 0;
+    s.fake.ctx.session.prompt = async (input) => {
+      submissions++;
+      await gate;
+      return prompt(input);
+    };
+    s.fake.state.updateError = new Error("read only");
+    await s.step(200_000);
+    s.auto.dispose();
+    const other = createAuto(s.fake.ctx, { stateDir: join(s.dir, "state"), dataDir: join(s.dir, "data") });
+    t.after(() => other.dispose());
+    await other.consume([s.stepEnded("ses_root", 200_000)]);
+    await flush();
+    assert.equal(submissions, 1);
+    assert.equal(s.fake.calls.create.length, 1);
+    release();
+    await flush();
+    await other.consume([s.stepEnded("ses_root", 200_000)]);
+    await flush();
+    assert.equal(s.fake.calls.create.length, 1);
+    assert.deepEqual(s.fake.calls.remove, []);
+    assert.ok(s.fake.sessions.has("ses_new1"));
+    assert.equal(s.fake.sessions.get("ses_root").metadata.apana.next, undefined);
+  });
+  it("reserves separate note folders for same-prefix sources on a clean install", async (t) => {
+    const ids = ["ses_sameprefix_a", "ses_sameprefix_b"];
+    for (const configured of [false, true]) {
+      const s = setup(t, { sessions: Object.fromEntries(ids.map((id) => [id, marked({ tokens: 200_000 })])),
+        handler: (args) => {
+          if (args.includes("--list-skills")) return { code: 0, stdout: LISTED(), stderr: "" };
+          const sid = args[args.indexOf("--session") + 1];
+          const note = join(args[2], "HANDOFF.md");
+          writeFileSync(note, sid);
+          return { code: 0, stdout: BUILT.replaceAll("/out/HANDOFF.md", note), stderr: "" };
+        },
+      });
+      const root = configured ? join(s.dir, "custom", "notes") : join(s.dir, "data", "handoffs", "auto");
+      if (configured) {
+        for (const sessionID of ids) {
+          await s.fake.ctx.session.update({ sessionID, metadata: { apana: { auto: { tokens: 200_000, dir: root } } } });
+        }
+      }
+      assert.equal(existsSync(root), false);
+      for (const id of ids) await s.step(200_000, id);
+      const paths = s.built().map((args) => args[2]);
+      assert.equal(new Set(paths).size, ids.length);
+      for (const [index, folder] of paths.entries()) {
+        const note = join(folder, "HANDOFF.md");
+        assert.equal(dirname(folder), root);
+        assert.equal(readFileSync(note, "utf8"), ids[index]);
+        assert.ok(s.fake.calls.prompt[index].text.includes(note));
+      }
+    }
   });
   it("does not start when the session cannot be interrupted", async (t) => {
     const s = setup(t);

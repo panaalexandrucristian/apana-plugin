@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """live_check.py: opencode-auto in a real TUI, on a pseudo-terminal, against a private server and a stand-in model.
 
-    live_check.py [--keep] [--only auto|plain] [--opencode NAME_OR_PATH]
+    live_check.py [--keep] [--only auto|plain|parallel] [--opencode NAME_OR_PATH]
 
 What it does, in a throw-away folder for each of its two windows (own HOME and XDG folders: nothing of yours is read or written, and no
 credentials or network beyond 127.0.0.1 are involved, so it costs nothing):
@@ -18,8 +18,9 @@ credentials or network beyond 127.0.0.1 are involved, so it costs nothing):
 It starts processes and uses a terminal of 45x160, so it is not part of `npm test`; run it after a change to the TUI part or to the launcher.
 Exit codes: 0 every check passed, 1 a check failed, 2 it could not run (no opencode, not 2.3.x, no free port, the server did not start).
 """
-import argparse, base64, fcntl, json, os, pty, re, select, shutil, signal, socket, struct, subprocess, sys, tempfile, termios, threading, time
+import argparse, base64, fcntl, json, os, pty, re, select, shlex, shutil, signal, socket, struct, subprocess, sys, tempfile, termios, threading, time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -162,12 +163,16 @@ class Rig:
             json.dump(config, f)
         self.env = {"PATH": os.environ["PATH"], "HOME": self.sub("home"), "XDG_CONFIG_HOME": self.sub("config"), "XDG_DATA_HOME": self.sub("data"), "XDG_CACHE_HOME": self.sub("cache"),
                     "XDG_STATE_HOME": self.sub("state"), "TMPDIR": self.sub("tmp"), "OPENCODE_SERVER_PASSWORD": PASSWORD}
+        self.env["PATH"] = os.path.dirname(binary) + os.pathsep + self.env["PATH"]
+        if name == "parallel":
+            self.env["PATH"] = self.sub("tmp") + os.pathsep + self.env["PATH"]
         with socket.socket() as probe:   # a port the system says is free now, not one worked out from the pid
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         self.server = subprocess.Popen([binary, "serve", "--hostname", "127.0.0.1", "--port", str(port), "--print-logs"], cwd=self.sub("ws"), env=self.env,
                                        stdout=open(self.sub("server.log"), "wb"), stderr=subprocess.STDOUT, start_new_session=True)
         self.terminal = None
+        self.extra_terminals = []
         self.base = "http://127.0.0.1:%d" % port
         self.headers = {"authorization": "Basic " + base64.b64encode(("opencode:" + PASSWORD).encode()).decode(), "content-type": "application/json", "x-opencode-directory": self.sub("ws")}
 
@@ -217,6 +222,8 @@ class Rig:
             say("info", "end of the server log: " + " | ".join(line[-200:] for line in log.read().splitlines()[-4:]))
 
     def close(self, keep):
+        for terminal in self.extra_terminals:
+            terminal.kill()
         if self.terminal:
             self.terminal.kill()
         try:
@@ -292,32 +299,91 @@ def plain_window(rig):
 BINARY = None
 
 
+def parallel_windows(rig):
+    """Gate both note builds, after admission and before creating either successor."""
+    gate = rig.sub("tmp", "gate")
+    os.mkdir(gate)
+    shim = rig.sub("tmp", "python3")
+    with open(shim, "w") as f:
+        f.write("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(shim + ".py") + ' "$@"\n')
+    os.chmod(shim, 0o700)
+    with open(shim + ".py", "w") as f:
+        f.write(f"""import os, pathlib, sys, time
+args = sys.argv[1:]
+if '--session' in args and '--list-skills' not in args:
+    gate = pathlib.Path({gate!r})
+    sid = args[args.index('--session') + 1]
+    (gate / (sid + '.ready')).touch()
+    deadline = time.monotonic() + 25
+    while len(list(gate.glob('*.ready'))) < 2:
+        if time.monotonic() >= deadline:
+            sys.exit('parallel handoff did not reach the barrier')
+        time.sleep(0.05)
+os.execv(sys.executable, [sys.executable, *args])
+""")
+    sources = [rig.first_turn(), rig.first_turn()]
+    env = rig.tui_env(APANA_OPENCODE_AUTO_TOKENS=str(THRESHOLD), APANA_OPENCODE_AUTO_COOLDOWN="60",
+                      APANA_OPENCODE_AUTO_MAX="1", APANA_OPENCODE_AUTO_SKILLS="all")
+    for source in sources:
+        rig.extra_terminals.append(Terminal(["/bin/sh", LAUNCHER, "--server", rig.base, "--session", source, rig.sub("ws")], env, rig.sub("ws")))
+    def apana(sid):
+        return (rig.session(sid).get("metadata") or {}).get("apana", {})
+    if not check(bool(until(lambda: all(apana(s).get("auto") for s in sources), bool, 30)), "both parallel windows marked their source"):
+        return
+    rig.stand_in.usage = {"prompt": OVER, "completion": 10}
+    def prompt(sid):
+        rig.api("POST", "/api/session/%s/prompt" % sid, {"text": "parallel source " + sid})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(prompt, sources))
+    links = until(lambda: [apana(s).get("next") for s in sources], all, 45)
+    check(sorted(os.listdir(gate)) == sorted(s + ".ready" for s in sources), "both handoffs entered before either note build could finish")
+    if not check(all(links) and len(set(links)) == len(sources), "both sources link to distinct continuations", str(links)):
+        return
+    notes = rig.notes()
+    check(len(notes) == len(sources), "each handoff allocated a distinct note")
+    def requests(sid):
+        return [n for n, users, tools in list(rig.stand_in.requests)
+                if tools and "HANDOFF.md" in users and any(
+                    "parallel source " + sid in open(rig.sub("data", "opencode", "apana", "handoffs", "auto", folder, "HANDOFF.md")).read()
+                    and folder in users for folder in notes)]
+    for old, new, terminal in zip(sources, links, rig.extra_terminals):
+        told = until(lambda: requests(old), bool, 30)
+        reply = lambda screen: len(told) == 1 and bool(re.search(r"stub\s+reply\s+#%d\b" % told[0], screen))
+        screen = until(terminal.text, reply, 30)
+        other = [n for sid in sources if sid != old for n in requests(sid)]
+        check(reply(screen) and not any(re.search(r"stub\s+reply\s+#%d\b" % n, screen) for n in other)
+              and terminal.alive(), "original PTY shows only its own continuation")
+        check(bool(until(lambda: rig.session(old).get("time", {}).get("archived"), bool, 15))
+              and not rig.session(new).get("time", {}).get("archived"), "only the old session was archived")
+    check(rig.auto_log().count("; handoff (") == len(sources), "no duplicate handoff was logged")
+
+
 def main():
     global BINARY
     ap = argparse.ArgumentParser(description="Run opencode-auto in a real TUI against a private server and a stand-in model.")
     ap.add_argument("--opencode", default=os.environ.get("APANA_OPENCODE", "opencode"), help="the opencode binary (default: opencode on PATH)")
     ap.add_argument("--keep", action="store_true", help="keep the throw-away folders and print their paths")
-    ap.add_argument("--only", choices=("auto", "plain"), help="run one window only")
+    ap.add_argument("--only", choices=("auto", "plain", "parallel"), help="run one scenario only")
     args = ap.parse_args()
 
     BINARY = shutil.which(args.opencode)
     if not BINARY:
         say("fail", "`%s` is not on PATH" % args.opencode)
         return 2
+    BINARY = os.path.abspath(BINARY)
     found = re.search(r"(\d+)\.(\d+)\.(\d+)", subprocess.run([BINARY, "--version"], capture_output=True, text=True, timeout=60).stdout)
     if not found or (int(found.group(1)), int(found.group(2))) != (2, 3):
         say("fail", "written for OpenCode 2.3.x, found %s" % (found.group(0) if found else "no version"))
         return 2
 
-    for name, scenario in (("auto", auto_window), ("plain", plain_window)):
+    for name, scenario in (("auto", auto_window), ("plain", plain_window), ("parallel", parallel_windows)):
         if args.only and args.only != name:
             continue
-        say("info", "-- the %s window" % ("automatic" if name == "auto" else "plain"))
+        say("info", "-- %s scenario with OpenCode %s" % (name, found.group(0)))
         rig = Rig(BINARY, name)
         try:
             if not rig.up():
                 say("fail", "the server did not start (see %s)" % rig.sub("server.log"))
-                rig.close(keep=True)
                 return 2
             scenario(rig)
         finally:

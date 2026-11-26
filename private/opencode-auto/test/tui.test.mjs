@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { isAuto, markOf, setupAutoTui, sidebarLabel } from "../tui.mjs";
 
@@ -55,11 +58,44 @@ function fakeTui({ route = { type: "home" }, sessions = {}, failGet = false } = 
   return { context, state, calls, store, listeners, emit, metadataEvent };
 }
 
-const start = (fake, env = AUTO, options = {}) => setupAutoTui(fake.context, env, { pollMs: 0, ...options });
+// `log` is replaced everywhere: the default writes to the real auto.log under ~/.local/state.
+const start = (fake, env = AUTO, options = {}) => setupAutoTui(fake.context, env, { pollMs: 0, log: () => {}, ...options });
 const flush = async () => {
   for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
 };
 const open = (sessionID) => ({ type: "session", sessionID });
+
+it("recovers a persisted handoff without the metadata event, but does not follow an archived source", async () => {
+  for (const archived of [undefined, 123]) {
+    const fake = fakeTui({ route: open("ses_a"), sessions: {
+      ses_a: { time: { archived }, metadata: { apana: { auto: {}, next: "ses_b" } } },
+    } });
+    const plugin = await start(fake);
+    await flush();
+    assert.deepEqual(fake.state.route, open(archived ? "ses_a" : "ses_b"));
+    assert.equal(fake.calls.archive.length, archived ? 0 : 1);
+    plugin.dispose();
+  }
+});
+
+it("reconciles a missed event on reconnect and retries a failed route change", async () => {
+  const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });
+  const plugin = await start(fake);
+  await flush();
+  fake.store.get("ses_a").metadata.apana.next = "ses_b";
+  fake.state.failNavigate = true;
+  fake.emit("server.connected", {});
+  await flush();
+  assert.deepEqual(fake.state.route, open("ses_a"));
+  assert.equal(fake.calls.archive.length, 0);
+  fake.state.failNavigate = false;
+  fake.emit("server.connected", {});
+  await flush();
+  fake.metadataEvent("ses_a", { apana: { next: "ses_b" } });
+  assert.deepEqual(fake.calls.navigate, [open("ses_b")]);
+  assert.deepEqual(fake.calls.archive.map((call) => call.route), [open("ses_b")]);
+  plugin.dispose();
+});
 
 describe("the environment", () => {
   it("is automatic only when the launcher set the variable", () => {
@@ -103,10 +139,10 @@ describe("setup", () => {
     assert.deepEqual(fake.calls, { get: ["ses_a"], update: [], archive: [], navigate: [], toast: [] });
     auto.dispose();
   });
-  it("subscribes once and takes the subscription back when it is disposed", async () => {
+  it("subscribes to metadata and reconnects, and takes both subscriptions back on dispose", async () => {
     const fake = fakeTui();
     const auto = await start(fake);
-    assert.equal(fake.listeners.size, 1);
+    assert.deepEqual([...fake.listeners].map((l) => l.type), ["session.metadata.updated", "server.connected"]);
     auto.dispose();
     assert.equal(fake.listeners.size, 0);
   });
@@ -194,7 +230,7 @@ describe("marking the open session", () => {
   });
   it("polls the route on its own and stops when it is disposed", async () => {
     const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {}, ses_b: {} } });
-    const auto = await setupAutoTui(fake.context, AUTO, { pollMs: 5 });
+    const auto = await setupAutoTui(fake.context, AUTO, { pollMs: 5, log: () => {} });
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.deepEqual(fake.calls.get, ["ses_a"]);
     auto.dispose();
@@ -273,7 +309,7 @@ describe("a plain window (no variable) takes the mark off the session it opens",
   it("polls the route on its own, so that a session picked after the start is seen too, and stops when it is disposed", async () => {
     // A plain `opencode` often starts on the home screen and the session is picked from the list: only the poll sees that route.
     const fake = fakeTui({ sessions: { ses_a: { metadata: { apana: { auto: {} } } }, ses_b: { metadata: { apana: { auto: {} } } } } });
-    const auto = await setupAutoTui(fake.context, PLAIN, { pollMs: 5 });
+    const auto = await setupAutoTui(fake.context, PLAIN, { pollMs: 5, log: () => {} });
     await new Promise((resolve) => setTimeout(resolve, 20));
     fake.state.route = open("ses_a");
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -340,6 +376,67 @@ describe("following a handoff", () => {
     fake.metadataEvent("ses_b", { apana: { auto: { chain: 1 }, next: "ses_c" } });
     assert.deepEqual(fake.calls.navigate.map((n) => n.sessionID), ["ses_b", "ses_c"]);
     auto.dispose();
+  });
+  it("follows a session that was handed off before this window opened it", async () => {
+    // Seen 2026-11-26 on 2.4.2 (n=2): after a handoff the window stayed on the old session, whose tool calls the server then refused. The logs of
+    // one case fit a window restarted before the handoff that opened the old session after its event (not proven: the TUI part logged nothing then).
+    const fake = fakeTui({ route: open("ses_x"), sessions: { ses_x: {}, ses_a: { metadata: { apana: { auto: {}, next: "ses_b" } } } } });
+    const auto = await start(fake);
+    await auto.check();
+    fake.state.route = open("ses_a");
+    await auto.check();
+    await flush();
+    assert.deepEqual(fake.calls.navigate, [open("ses_b")]);
+    assert.deepEqual(fake.calls.archive.map((call) => call.sessionID), ["ses_a"]);
+    assert.match(fake.calls.toast.at(-1).message, /moved to the new session/);
+    auto.dispose();
+  });
+  it("follows a `next` whose event never came, at the first read after the retry delay", async () => {
+    let t = 1_000;
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });
+    const auto = await start(fake, AUTO, { now: () => t, retryMs: 5_000 });
+    await auto.check();
+    fake.store.get("ses_a").metadata.apana.next = "ses_b";
+    t += 4_999;
+    await auto.check();
+    assert.deepEqual(fake.calls.navigate, [], "no read before the delay");
+    t += 1;
+    await auto.check();
+    assert.deepEqual(fake.calls.navigate, [open("ses_b")]);
+    auto.dispose();
+  });
+  it("logs its start, a move, and a failed move once although every read tries again; a plain window logs nothing", async () => {
+    let t = 1_000;
+    const lines = [];
+    const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: { metadata: { apana: { auto: {}, next: "ses_b" } } } } });
+    fake.state.failNavigate = true;
+    const auto = await start(fake, AUTO, { now: () => t, retryMs: 5_000, log: (line) => lines.push(line) });
+    await flush();
+    t += 5_000;
+    await auto.check();
+    fake.state.failNavigate = false;
+    t += 5_000;
+    await auto.check();
+    assert.deepEqual(lines, ["automatic window started", "could not move the window from ses_a to ses_b (injected)", "moved the window from ses_a to ses_b"]);
+    auto.dispose();
+    const plainLines = [];
+    const plain = await start(fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } }), {}, { log: (line) => plainLines.push(line) });
+    await plain.check();
+    assert.deepEqual(plainLines, []);
+    plain.dispose();
+  });
+  it("writes its lines to auto.log under XDG_STATE_HOME when no log is given", async () => {
+    const state = mkdtempSync(join(tmpdir(), "apana-auto-tui-"));
+    try {
+      const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: { metadata: { apana: { auto: {}, next: "ses_b" } } } } });
+      const auto = await setupAutoTui(fake.context, { ...AUTO, XDG_STATE_HOME: state }, { pollMs: 0 });
+      await flush();
+      const text = readFileSync(join(state, "opencode", "apana", "auto", "auto.log"), "utf8");
+      assert.match(text, new RegExp(`^\\S+Z tui ${process.pid}: automatic window started\\n\\S+Z tui ${process.pid}: moved the window from ses_a to ses_b\\n$`));
+      auto.dispose();
+    } finally {
+      rmSync(state, { recursive: true, force: true });
+    }
   });
   it("does not throw into OpenCode when the move fails", async () => {
     const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });

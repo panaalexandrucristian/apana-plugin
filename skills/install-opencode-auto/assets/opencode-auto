@@ -11,7 +11,7 @@
 #   APANA_OPENCODE_AUTO_TOKENS         context size at which a session is handed off (default 200000; never above OpenCode's compaction ceiling minus the margin)
 #   APANA_OPENCODE_AUTO_PRETOOL_MARGIN a tool call is refused and the handoff starts this many tokens earlier (default 15000)
 #   APANA_OPENCODE_AUTO_DEFER_EXTRA    running subagents hold the handoff back by up to this many extra tokens (default 30000)
-#   APANA_OPENCODE_AUTO_COOLDOWN       seconds between two handoffs (default 60)
+#   APANA_OPENCODE_AUTO_COOLDOWN       seconds between handoffs in the same chain (default 60)
 #   APANA_OPENCODE_AUTO_MAX            handoffs in a chain, 0 for no limit (default 0)
 #   APANA_OPENCODE_AUTO_SKILLS         skills the new session reloads: none, all, or names separated by commas (default none; caveman is kept when it was loaded)
 #   APANA_OPENCODE_AUTO_DIR            folder for the handoff notes (default ~/.local/share/opencode/apana/handoffs/auto)
