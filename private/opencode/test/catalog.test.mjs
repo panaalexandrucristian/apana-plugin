@@ -40,6 +40,8 @@ describe("the text of a skill in OpenCode", () => {
     assert.ok(harness.content.includes(`python3 "${join(dir, "scripts", "setup.py")}" check`));
     const sync = skills.find((s) => s.id === "opencode-plugin-skills-sync");
     assert.ok(sync.content.includes(`python3 -I "${join(ROOT, "skills", "opencode-plugin-skills-sync", "scripts", "install.py")}" --check`));
+    const guard = skills.find((s) => s.id === "opencode-shell-guard");
+    assert.ok(guard.content.includes(`node "${join(ROOT, "skills", "opencode-shell-guard", "scripts", "shell-guard.mjs")}" --check`));
   });
   it("says what the Claude tool names, $ARGUMENTS and the frontmatter mean here", async () => {
     const { skills } = await loadCatalog();
