@@ -40,6 +40,9 @@ jobs:
         run: npm run test:code-rag-setup
       - name: Harness² installer (offline Python suite)
         run: npm run test:harness2
+      # Throw-away homes only: job files for all three systems, no launchctl, systemctl or schtasks.
+      - name: OpenCode plugin skills sync (offline Python suite)
+        run: npm run test:opencode-plugin-skills-sync
       # Test dependencies only; no torch, embedding model or installer execution.
       - name: Install code-rag test dependencies
         run: python3 -m pip install -c skills/code-rag-setup/scripts/requirements.txt numpy scipy bm25s llama-index-core tree-sitter tree-sitter-language-pack

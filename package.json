@@ -23,6 +23,7 @@
     "test:claude-copilot": "python3 -B -m unittest discover -s skills/claude-copilot/scripts -p 'test_*.py'",
     "test:code-rag-setup": "python3 -B -W ignore -m unittest discover -s skills/code-rag-setup/scripts -p 'test_*.py'",
     "test:harness2": "python3 -B -m unittest discover -s skills/harness2/scripts -p 'test_*.py'",
+    "test:opencode-plugin-skills-sync": "python3 -B -m unittest discover -s skills/opencode-plugin-skills-sync/scripts -p 'test_*.py'",
     "test:code-rag": "python3 -B -W ignore -c \"import sys, unittest; suite = unittest.defaultTestLoader.discover('skills/code-rag/scripts', pattern='test_*.py'); result = unittest.TextTestRunner(verbosity=2).run(suite); sys.exit(not result.wasSuccessful() or bool(result.skipped) or result.testsRun == 0)\"",
     "test:opencode-auto": "node --test private/opencode-auto/test/*.mjs && python3 -B -W ignore skills/install-opencode-auto/scripts/test_setup.py",
     "test:opencode-runtime": "APANA_OPENCODE_RUNTIME=1 node --test --test-timeout=300000 private/opencode/test/runtime.test.mjs private/opencode-auto/test/runtime.test.mjs",

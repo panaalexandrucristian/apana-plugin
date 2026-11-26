@@ -38,6 +38,8 @@ describe("the text of a skill in OpenCode", () => {
     const dir = join(ROOT, "skills", "harness2");
     assert.equal(harness.path, join(dir, "SKILL.md"));
     assert.ok(harness.content.includes(`python3 "${join(dir, "scripts", "setup.py")}" check`));
+    const sync = skills.find((s) => s.id === "opencode-plugin-skills-sync");
+    assert.ok(sync.content.includes(`python3 -I "${join(ROOT, "skills", "opencode-plugin-skills-sync", "scripts", "install.py")}" --check`));
   });
   it("says what the Claude tool names, $ARGUMENTS and the frontmatter mean here", async () => {
     const { skills } = await loadCatalog();
