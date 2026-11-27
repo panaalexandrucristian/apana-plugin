@@ -1,5 +1,5 @@
 // The rules of opencode-shell-guard and OpenCode's way of matching them, shared by the OpenCode plugin that applies them
-// (plugin/server.js) and by shell-guard.mjs, which sets the plugin up. No imports, so the plugin loads it as it is.
+// (plugin/server.js) and by shell-guard.mjs, which sets the plugin up. No imports, so the plugin can load its text as a data: URL.
 
 /** In order, the last matching rule wins: one deny for any command whose text holds `grep `, then the commands that may hold the text without running grep. */
 export const RULES = Object.freeze([
@@ -23,6 +23,15 @@ export function decide(rules, command) {
   return rules.findLast((rule) => valid(rule) && match("shell", rule.action) && match(command, rule.resource))?.effect ?? "allow";
 }
 
+/**
+ * Whether the plugin refuses one shell command: the rules refuse it, and still do with every `pgrep` in it set aside (upper case, which
+ * the case-sensitive match does not take for grep). So pgrep inside another command (`ps -p $(pgrep x)`, refused live) passes, while a
+ * pgrep only lifts a refusal: `pgrep -f 'grep x'` stays allowed by its own rule, `ps -p $(pgrep x) $(grep -l y f)` stays refused.
+ */
+export function refuses(command) {
+  return decide(RULES, command) === "deny" && decide(RULES, command.replaceAll("pgrep", "PGREP")) === "deny";
+}
+
 /** What a refused command gets back, instead of OpenCode's bare `Permission denied: shell`. */
 export function refusal(command) {
   const shown = command.length > 120 ? `${command.slice(0, 117)}...` : command;
@@ -36,7 +45,7 @@ export function refusal(command) {
 /** The plugin's permission.evaluate hook: a shell request with one denied command is refused, with the reason as its message. */
 export function evaluate(event) {
   if (event?.action !== "shell" || event.effect === "deny" || !Array.isArray(event.resources)) return;
-  const denied = event.resources.find((command) => typeof command === "string" && decide(RULES, command) === "deny");
+  const denied = event.resources.find((command) => typeof command === "string" && refuses(command));
   if (denied === undefined) return;
   event.effect = "deny";
   event.message = refusal(denied);

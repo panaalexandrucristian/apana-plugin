@@ -12,7 +12,7 @@ One setting in OpenCode's global config, a plugin linked beside it and a note, a
 
   | Rule | Effect |
   | --- | --- |
-  | `*grep *` | refuse: any part whose text holds `grep ` anywhere or ends in `grep`, also inside `bash -c '...'`, `xargs`, `find -exec`, `/usr/bin/grep`, `egrep`, `fgrep` |
+  | `*grep *` | refuse: any part whose text holds `grep ` anywhere or ends in `grep`, also inside `bash -c '...'`, `xargs`, `find -exec`, `/usr/bin/grep`, `egrep`, `fgrep`; a part refused only for a `pgrep` in it passes, so `ps -p $(pgrep x)` runs and `ps -p $(pgrep x) $(grep -l y f)` does not |
   | `git *grep *`, `pgrep *`, `rg *` | allow |
   | `echo *`, `printf *`, `cat *`, `tee *`, `gh *`, `python3 *`, `node *`, `sed *`, `perl *` | allow: they may carry the text `grep ` without running grep |
 
@@ -54,10 +54,11 @@ One setting in OpenCode's global config, a plugin linked beside it and a note, a
 
 ## Limits
 
-- The refusal matches the text of a command. A command that is not in the allow list and holds `grep ` as text is refused too, for example `jq` or `awk` with `grep ` in an argument.
+- The refusal matches the text of a command. A command that is not in the allow list and holds `grep ` as text is refused too, for example `jq` or `awk` with `grep ` in an argument, or `sqlite3` with `like '%grep %'` in its query (refused live).
 - grep started from inside an allowed program (`python3 -c "import subprocess; subprocess.run(['grep', ...])"`) or written to dodge the match (`gr""ep`, a tab after `grep`) is not caught. It is a guard against habit, not a sandbox.
 - If OpenCode does not load the plugin (a load error, or an OpenCode with another plugin API), grep is not refused at all. The plugin then prints a warning that starts with `[opencode-shell-guard]` on OpenCode's console, which `--check` cannot see; the `echo hi | grep hi` test in step 1 shows it.
-- The plugin also refuses where a session's own rules allow the command: it overrode the allow of the global rules (n=1). For the sessions that `oc.sh` (the `opencode` skill) creates with an allow-all rule of their own, the same is expected but was not tried.
+- The plugin also refuses where a session's own rules allow the command: it overrode the allow of the global rules (n=1), and the allow-all rule of a session that `oc.sh` (the `opencode` skill) created (n=1).
+- A change to `scripts/rules.mjs` alone does not reach a running OpenCode. On 2.4.2 it reloads the plugin when `plugin/server.js` changes, not when the rules do, so after editing the rules touch `plugin/server.js`; the next reload takes them (seen live, n=1).
 - A command OpenCode cannot parse (`eval`, broken syntax): with no shell deny rule left in `"permissions"`, OpenCode asks for approval of the whole command instead of failing, and the plugin checks its whole text as one part (read in the 2.4.2 binary, not tried). A shell deny rule of the user's own makes it fail as before.
 - The note reaches only OpenCode sessions that read the global `AGENTS.md`. On OpenCode 2.4.2, a session already running when the note was written got it as changed instructions at its next step, without a restart (seen once, n=1, a `claude-agent/*` session); other providers are not verified.
 - Windows is refused: OpenCode's shell there is not bash by default.

@@ -2,7 +2,7 @@
 // that applies them, shell-guard.mjs that sets it up, and the skill package. Node stdlib.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
@@ -14,6 +14,11 @@ const SKILL = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = join(SKILL, "scripts", "shell-guard.mjs");
 const PLUGIN = join(SKILL, "plugin");
 const BASH = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/usr/bin/bash", "/bin/bash"].find((path) => existsSync(path));
+/** A Bun on PATH, as OpenCode 2.4.2 runs in: bun, or the opencode binary, which is Bun with BUN_BE_BUN=1. Told apart by Bun's revision (1.4.4+38afee6c8). */
+const bunOf = (command, env) => /^\d+\.\d+\.\d+\+[0-9a-f]+$/.test(spawnSync(command, ["--revision"], { encoding: "utf8", env, timeout: 10_000 }).stdout?.trim() ?? "")
+  && { name: `Bun through ${command}`, command, env };
+const RUNTIMES = [{ name: "Node", command: process.execPath, env: process.env },
+  bunOf("bun", process.env) || bunOf("opencode", { ...process.env, BUN_BE_BUN: "1" }) || { name: "Bun", skip: "no Bun on PATH: neither bun nor opencode" }];
 const temporaries = [];
 const temp = () => {
   const dir = mkdtempSync(join(tmpdir(), "shell-guard-"));
@@ -86,6 +91,21 @@ describe("the plugin", () => {
     assert.equal(asked.effect, "deny");
   });
 
+  it("decides the commands met live in OpenCode 2.4.2 as they reached the plugin; a pgrep inside another command only lifts a refusal", () => {
+    const refusedOf = (resources) => {
+      const e = event(resources);
+      evaluate(e);
+      return e.effect === "deny" ? e.message : undefined;
+    };
+    const sqlite = `sqlite3 -readonly opencode.db "select count(*), sum(json_extract(data,'$.input.command') like '%grep %'), sum(json_extract(data,'$.input.command') like '%rg %') from session_part where session_id='$S' and time_created>$T and type='tool' and json_extract(data,'$.input.command') is not null"`;
+    const denied = [[["echo hi", "grep hi"], "grep hi"], [["bash -c 'echo hi | grep -c hi'"]], [[sqlite]],
+      [["bash -c 'pgrep -x node | grep -c x'"]], [["ps -p $(pgrep -x node) $(grep -l x f)"]]];
+    for (const [resources, part = resources[0]] of denied) assert.equal(refusedOf(resources), refusal(part), part);
+    const allowed = [["ps -o pid,lstart,command -p $(pgrep -d, -f 'opencode') 2>/dev/null"], ["echo hi", "rg hi"], ["pgrep -x opencode >/dev/null", 'echo "pgrep ok"'],
+      ["git grep -c realpathSync -- skills/opencode-shell-guard/plugin"], ['echo "nu folosi grep aici"'], ["kill $(pgrep -f 'opencode serve')"], ["pgrep -f 'grep -c x'"]];
+    for (const resources of allowed) assert.equal(refusedOf(resources), undefined, resources.join(" | "));
+  });
+
   it("leaves alone other commands, other permissions, a request already refused and a malformed event", () => {
     for (const e of [event(["rg x", "git grep y", "echo 'grep z'"]), event(["grep x"], { action: "edit" }), event(["grep x"], { effect: "deny", message: "theirs" }), event("grep x"), event([42])]) {
       const before = JSON.stringify(e);
@@ -131,6 +151,35 @@ describe("the plugin", () => {
     assert.equal(ran.status, 0, ran.stderr);
     assert.deepEqual(JSON.parse(ran.stdout), ["evaluate"]);
   });
+
+  // OpenCode 2.4.2 runs in Bun, whose module cache is not Node's: a `?v=` query in the URL brought back the old module in Bun and a new
+  // one in Node. So the reload runs under Bun too when one is on PATH.
+  for (const runtime of RUNTIMES) {
+    it(`takes changed rules at the next setup, as OpenCode reloads the plugin without dropping the modules it imported (${runtime.name})`, { skip: runtime.skip }, () => {
+      const copy = join(temp(), "opencode-shell-guard");
+      cpSync(PLUGIN, join(copy, "plugin"), { recursive: true });
+      cpSync(join(SKILL, "scripts", "rules.mjs"), join(copy, "scripts", "rules.mjs"));
+      const rules = JSON.stringify(join(copy, "scripts", "rules.mjs"));
+      const probe = join(copy, "probe.mjs");
+      writeFileSync(probe, `import { readFileSync, writeFileSync } from "node:fs";
+        const { default: plugin } = await import(${JSON.stringify(pathToFileURL(join(copy, "plugin", "server.js")).href)});
+        const messageAfterSetup = async () => {
+          let hook;
+          await plugin.setup({ permission: { hook: async (name, callback) => ((hook = callback), { dispose() {} }) } });
+          const e = ${JSON.stringify(event(["grep x"]))};
+          hook(e);
+          return e.message;
+        };
+        const first = await messageAfterSetup();
+        writeFileSync(${rules}, readFileSync(${rules}, "utf8").replace("opencode-shell-guard refused ", "opencode-shell-guard v2 refused "));
+        console.log(JSON.stringify([first, await messageAfterSetup()]));`);
+      const ran = spawnSync(runtime.command, [probe], { encoding: "utf8", env: runtime.env });
+      assert.equal(ran.status, 0, ran.stderr);
+      const [first, second] = JSON.parse(ran.stdout);
+      assert.match(first, /^opencode-shell-guard refused /);
+      assert.match(second, /^opencode-shell-guard v2 refused /);
+    });
+  }
 });
 
 describe("the AGENTS.md note", () => {
