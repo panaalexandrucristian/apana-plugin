@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Sets up opencode-shell-guard in OpenCode's global config folder: bash as "shell" in the config, the plugin that refuses grep in shell
-// commands and says why linked into plugins/, and a marked note in the AGENTS.md beside the config. It also removes the 13 grep rules that
+// Sets up opencode-shell-guard in OpenCode's global config folder: bash as "shell" in the config, the plugin that refuses grep and find in
+// shell commands linked into plugins/, and a marked note in the AGENTS.md beside the config. It also removes the 13 grep rules that
 // earlier versions wrote into "permissions": a rule there that denies ends OpenCode's check before any plugin runs, so the refusal would
 // name no reason. The config is edited as text, so comments and the order of the other keys stay; it is read as OpenCode reads it (JSONC:
 // comments, trailing commas). Node stdlib only.
@@ -11,15 +11,15 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RULES, decide } from "./rules.mjs";
+import { FD_EXAMPLE, FIND_SAMPLE, RULES, decide } from "./rules.mjs";
 
 /** Commands the plugin refuses; the check warns when "permissions" refuses one itself, before the plugin can say why. */
-export const SAMPLES = Object.freeze(["grep -n x file", "bash -c 'echo hi | grep hi'", "/usr/bin/grep x file"]);
+export const SAMPLES = Object.freeze(["grep -n x file", "bash -c 'echo hi | grep hi'", "/usr/bin/grep x file", FIND_SAMPLE]);
 
 const NOTE_START = "<!-- opencode-shell-guard -->";
 const NOTE_END = "<!-- /opencode-shell-guard -->";
 
-/** The block written to AGENTS.md next to the config, so the model rewrites a grep before it is refused, not after. */
+/** The block written to AGENTS.md next to the config, so the model uses rg and fd from the first call. */
 export const NOTE = [
   NOTE_START,
   "- OpenCode refuses every shell command that runs grep: any part of it whose text contains `grep ` (grep and a space), also after `|`",
@@ -28,6 +28,8 @@ export const NOTE = [
   "  repository, or the `grep` tool. In `rg`, `-E` is the encoding, not extended regex: `grep -E 'a|b' f` is `rg 'a|b' f`. Commands that",
   "  start with `rg`, `git`, `pgrep`, `echo`, `printf`, `cat`, `tee`, `gh`, `python3`, `node`, `sed` or `perl` may contain the text `grep `,",
   "  for example in a quoted argument.",
+  "- For filesystem searches, use `fd`. OpenCode refuses `find` as a command, including through `command`, `env`, `timeout`, `xargs`",
+  `  and literal commands in \`bash -c\` or \`sh -c\`. For example, rewrite \`${FIND_SAMPLE}\` as \`${FD_EXAMPLE}\`.`,
   NOTE_END,
 ].join("\n");
 
@@ -284,7 +286,7 @@ function replaceLink(link, target, out) {
 
 function reportNote(configDir, out) {
   const agents = join(configDir, "AGENTS.md");
-  if (!existsSync(agents)) return out("warn", `${agents} does not exist, so the model is not told before its first grep that grep is refused and to use rg`);
+  if (!existsSync(agents)) return out("warn", `${agents} does not exist, so the model is not told to use rg and fd`);
   const text = readFileSync(agents, "utf8");
   let at;
   try {
@@ -292,19 +294,19 @@ function reportNote(configDir, out) {
   } catch (error) {
     return out("fail", `${agents}: ${error.message}`);
   }
-  if (!at) out("warn", `${agents} has no note telling the model that grep is refused and to use rg`);
+  if (!at) out("warn", `${agents} has no note telling the model to use rg and fd`);
   else if (text.slice(at.start, at.end) !== NOTE) out("warn", `the note in ${agents} is not the current one`);
-  else out("ok", `${agents} tells the model that grep is refused and to use rg`);
+  else out("ok", `${agents} tells the model to use rg instead of grep and fd instead of find`);
 }
 
 function reportPlugin(link, source, out) {
   const state = linkState(link);
-  if (state.kind === "missing") return out("warn", `${link} is missing, so OpenCode does not refuse grep in shell commands`);
+  if (state.kind === "missing") return out("warn", `${link} is missing, so OpenCode does not refuse grep or find in shell commands`);
   if (state.kind === "other") return out("fail", `${link} exists and is not a link`);
   const target = resolve(dirname(link), state.target);
-  if (!existsSync(join(target, "server.js"))) return out("warn", `${link} points to ${state.target}, which has no server.js, so OpenCode does not refuse grep in shell commands`);
+  if (!existsSync(join(target, "server.js"))) return out("warn", `${link} points to ${state.target}, which has no server.js, so OpenCode does not refuse grep or find in shell commands`);
   if (realpathSync(target) !== realpathSync(source)) return out("warn", `${link} points to ${state.target}, not to ${source}`);
-  out("ok", `${link} -> ${state.target}: OpenCode refuses grep in shell commands and says to use rg`);
+  out("ok", `${link} -> ${state.target}: plugin files for the grep and find refusals are linked`);
 }
 
 function report(config, file, configDir, link, source, out) {
@@ -323,7 +325,7 @@ function report(config, file, configDir, link, source, out) {
   if (leftover) out("warn", `"permissions" still holds ${leftover} of the ${RULES.length} grep rules that earlier versions of this skill wrote; the plugin applies them now`);
   const early = SAMPLES.filter((command) => decide(rules, command) === "deny");
   if (early.length) out("warn", `"permissions" refuses ${early.map((command) => JSON.stringify(command)).join(", ")} itself, before the plugin runs, so the refusal says only \`Permission denied: shell\``);
-  if (!leftover && !early.length) out("ok", `"permissions" leaves grep to the plugin`);
+  if (!leftover && !early.length) out("ok", `"permissions" leaves the grep and find samples to the plugin`);
   if (config.permission !== undefined) out("warn", `the deprecated V1 key "permission" is set too; its rules were not checked`);
   const other = join(configDir, basename(file) === "opencode.jsonc" ? "opencode.json" : "opencode.jsonc");
   if (existsSync(other)) {
@@ -416,7 +418,7 @@ export function run(argv, { env = process.env, platform = process.platform, home
   }
   if (noteChanged) {
     const how = agentsText === null ? "a new file with the note" : findNote(agentsText) ? "the note is replaced by the current one" : "the note is added at the end";
-    out("info", `${agents}: ${how} (grep is refused, use rg); the rest of the file stays`);
+    out("info", `${agents}: ${how} (use rg and fd); the rest of the file stays`);
   }
   if (args.dryRun) {
     if (noteChanged) for (const line of NOTE.split("\n")) out("info", `| ${line}`);

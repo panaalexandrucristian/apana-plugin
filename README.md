@@ -37,7 +37,7 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:uninstall-claude-copilot` | Preview and remove only its owned launcher/alias, retaining credentials, state, native plugin and dependencies. |
 | `apana:harness2` | Install and run pinned Harness² on Apple Silicon from OpenCode or Claude Code; OpenCode is the only internal agent. |
 | `apana:opencode-plugin-skills-sync` | Set up, check or repair a background job (LaunchAgent, systemd user unit or scheduled task) that keeps one link per skill of every enabled Claude Code plugin except apana in OpenCode's config folder, so plugin updates reach OpenCode by themselves. |
-| `apana:opencode-shell-guard` | Check, preview or write bash as OpenCode's shell (zsh does not split an unquoted variable), a linked OpenCode plugin that refuses `grep` in its shell commands with a reason that says to use `rg` (`rg`, `git grep` and `pgrep` stay allowed), and a marked note in the `AGENTS.md` beside the config; removes the 13 `permissions` rules of earlier versions, which refused without a reason, and keeps the config's comments, the user's own rules and the rest of `AGENTS.md`. |
+| `apana:opencode-shell-guard` | Check, preview or set bash as OpenCode's shell, link a plugin that refuses `grep` with advice to use `rg` and `find` with advice to use `fd`, and write a marked note in the `AGENTS.md` beside the config. Removes the old grep `permissions` rules and keeps the user's own rules and the rest of `AGENTS.md`. |
 
 OpenCode: see [OpenCode](#opencode) below. The skills that manage Claude Code itself (the launchers and their uninstallers, `install-claude-auto`, `improve-skill`, `update-sessions`) are Claude Code only.
 

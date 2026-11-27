@@ -106,6 +106,59 @@ describe("the plugin", () => {
     for (const resources of allowed) assert.equal(refusedOf(resources), undefined, resources.join(" | "));
   });
 
+  it("refuses direct and delegated find invocations and gives an fd example", () => {
+    const commands = [
+      ["find"], ["/usr/bin/find ."], ["LABEL='x y' '/usr/bin/find' ."], ['2>"error log" find .'],
+      ["printf x", "find ."], ["command find ."], ["command -- find ."], ["env find ."], ["env LABEL=x find ."],
+      ["timeout 5 find ."], ["printf '.\\n'", "xargs find"], ["bash -c 'find .'"], ["bash -c 'printf x | find .'"],
+      [`sh -c 'find . -type f -name "*.kt"'`], ["env -u LABEL timeout -k 1s 5s /usr/bin/find ."],
+      ["xargs -0 -I{} /usr/bin/find {}"], [`bash -lc 'printf "%s\\n" x && command find .'`],
+    ];
+    for (const resources of commands) {
+      const e = event(resources);
+      evaluate(e);
+      assert.equal(e.effect, "deny", resources.join(" | "));
+      assert.ok(e.message.startsWith(`opencode-shell-guard refused \`${resources.at(-1)}\`: find is not allowed`), e.message);
+      assert.ok(e.message.includes("`fd -HI -s -t f -g '*.kt' .`"), e.message);
+    }
+  });
+
+  it("allows find as an argument, an option operand, a redirect target or literal script text", () => {
+    const allowed = [
+      "fd -HI -s -t f -g '*.kt' .", 'echo "find ."', `bash -c 'echo "find ."'`, "sh -c 'printf %s find'",
+      "cat ./find", ">find printf ok", "command -v find", "env LABEL=find printf ok", "env -u find printf ok",
+      "timeout 5 echo find", "xargs echo find", "xargs -I find printf ok",
+      'bash -c \'echo "; find ."; printf "%s" find\'', "bash -c '# find .\n echo ok'", "cat <<'EOF'\nfind .\nEOF",
+      'printf x "2>file" find', 'bash -c \'echo "$1"\' -- find',
+    ];
+    for (const command of allowed) {
+      const e = event([command]);
+      evaluate(e);
+      assert.equal(e.effect, "allow", command);
+      assert.equal(e.message, undefined, command);
+    }
+  });
+
+  it("explains both rules for a mixed resource, chooses the first denied resource, and preserves existing denials", () => {
+    const mixed = event(["find . -exec grep -c x {} \\;"]);
+    evaluate(mixed);
+    assert.equal(mixed.effect, "deny");
+    assert.match(mixed.message, /find is not allowed.*`fd`.*grep is not allowed.*`rg`/s);
+    assert.doesNotMatch(mixed.message, /fd[^`]*-exec/);
+
+    for (const resources of [["find .", "grep x f"], ["grep x f", "find ."]]) {
+      const e = event(resources);
+      evaluate(e);
+      assert.equal(e.effect, "deny");
+      assert.ok(e.message.startsWith(`opencode-shell-guard refused \`${resources[0]}\``), e.message);
+      assert.ok(e.message.includes(`${resources[0].split(" ")[0]} is not allowed`), e.message);
+    }
+    const refused = event(["find ."], { effect: "deny", message: "theirs" });
+    const before = structuredClone(refused);
+    evaluate(refused);
+    assert.deepEqual(refused, before);
+  });
+
   it("leaves alone other commands, other permissions, a request already refused and a malformed event", () => {
     for (const e of [event(["rg x", "git grep y", "echo 'grep z'"]), event(["grep x"], { action: "edit" }), event(["grep x"], { effect: "deny", message: "theirs" }), event("grep x"), event([42])]) {
       const before = JSON.stringify(e);
@@ -135,7 +188,7 @@ describe("the plugin", () => {
     } finally {
       console.warn = warn;
     }
-    assert.match(warned[0], /^\[opencode-shell-guard\] .*grep is not refused/);
+    assert.match(warned[0], /^\[opencode-shell-guard\] .*grep and find are not refused/);
   });
 
   it("registers the hook when loaded through the link with the link's path in import.meta.url, as OpenCode 2.4.2 loads it", () => {
@@ -352,13 +405,26 @@ describe("shell-guard.mjs", { skip: !BASH && "no bash on this machine" }, () => 
 
   it("replaces an older note in place and keeps the text around it", () => {
     const dir = temp();
-    const agents = write(dir, "# Rules\n<!-- opencode-shell-guard -->\nuse rg\n<!-- /opencode-shell-guard -->\n- after\n", "AGENTS.md");
-    const stale = run(["--config-dir", dir, "--check"]);
+    assert.equal(guard(dir).code, 0);
+    const config = readFileSync(join(dir, "opencode.jsonc"), "utf8");
+    const link = readlinkSync(linkOf(dir));
+    const oldNote = "# Rules\n<!-- opencode-shell-guard -->\nuse rg\n<!-- /opencode-shell-guard -->\n- after\n";
+    const agents = write(dir, oldNote, "AGENTS.md");
+    const stale = guard(dir, "--check");
+    assert.equal(stale.code, 1, stale.output);
     assert.match(stale.output, /^warn the note in .* is not the current one$/m);
+    const preview = guard(dir, "--dry-run");
+    assert.equal(preview.code, 0, preview.output);
+    assert.match(preview.output, /^info \| .*\buse `fd`/m);
+    assert.equal(readFileSync(agents, "utf8"), oldNote);
+    assert.deepEqual(backups(dir), []);
     const result = guard(dir);
     assert.equal(result.code, 0, result.output);
     assert.match(result.output, /the note is replaced by the current one/);
     assert.equal(readFileSync(agents, "utf8"), `# Rules\n${NOTE}\n- after\n`);
+    assert.equal(readFileSync(join(dir, "opencode.jsonc"), "utf8"), config);
+    assert.equal(readlinkSync(linkOf(dir)), link);
+    assert.equal(guard(dir, "--check").code, 0);
   });
 
   it("writes through a symlinked AGENTS.md and keeps the link", () => {
@@ -394,7 +460,7 @@ describe("shell-guard.mjs", { skip: !BASH && "no bash on this machine" }, () => 
     const before = run(["--config-dir", dir, "--check"]);
     assert.equal(before.code, 1, before.output);
     assert.match(before.output, /^warn "shell" is \/bin\/zsh, not bash$/m);
-    assert.match(before.output, /^warn .*opencode-shell-guard is missing, so OpenCode does not refuse grep in shell commands$/m);
+    assert.match(before.output, /^warn .*opencode-shell-guard is missing, so OpenCode does not refuse grep or find in shell commands$/m);
     assert.match(before.output, /^warn "permissions" still holds 13 of the 13 grep rules/m);
     assert.match(before.output, /^warn "permissions" refuses "grep -n x file", .* itself, before the plugin runs, so the refusal says only `Permission denied: shell`$/m);
     assert.equal(readFileSync(file, "utf8"), original);
@@ -413,6 +479,18 @@ describe("shell-guard.mjs", { skip: !BASH && "no bash on this machine" }, () => 
     assert.equal(result.code, 0, result.output);
     assert.deepEqual(load(file).permissions, [mine]);
     assert.match(result.output, /^warn "permissions" refuses "grep -n x file" itself, before the plugin runs/m);
+  });
+
+  it("keeps a find rule of the user's own and warns that it refuses before the plugin", () => {
+    const dir = temp();
+    const mine = { action: "shell", resource: "find *", effect: "deny" };
+    const file = write(dir, JSON.stringify({ shell: BASH, permissions: [mine] }));
+    const result = guard(dir);
+    assert.equal(result.code, 0, result.output);
+    assert.deepEqual(load(file).permissions, [mine]);
+    const check = guard(dir, "--check");
+    assert.equal(check.code, 1, check.output);
+    assert.match(check.output, /^warn "permissions" refuses "find \. -type f -name '\*\.kt'" itself, before the plugin runs/m);
   });
 
   it("points a link to another folder at the plugin, and --check warns about it and about a dangling one", () => {
