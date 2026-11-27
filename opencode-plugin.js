@@ -1,4 +1,4 @@
-// OpenCode server entry of apana (OpenCode 2.3.0; Claude Code uses its own manifest and hooks, see .claude-plugin/ and hooks/).
+// OpenCode server entry of apana (OpenCode 2.4.x; Claude Code uses its own manifest and hooks, see .claude-plugin/ and hooks/).
 // logic-test-debug is set up on its own: a failure of the larger integration below must not take it away, and the other way round.
 // A failure is isolated in each part: a separate dynamic import, a fixed diagnostic and no raw error text.
 export default {

@@ -11,6 +11,10 @@ Skills and hooks that do not need the jev plugin, split out of `panaalexandrucri
 
 ### Plugin version
 
+`0.24.0` for OpenCode 2.4.x support in both plugins, numbered session titles in automatic handoffs (see «opencode-auto»), and the `android-emulator-tuning` skill (see «Android emulator tuning»).
+
+*Combined release checks, measured on 2026-11-27 (n=1 run per suite):* `npm test` passed 1,384 tests; `npm run test:claude-auto` passed 172 tests (calculated from 115 wrapper, 15 managed mode and 42 installer tests); `npm run test:opencode-runtime` passed all 20 tests on OpenCode 2.4.2 without skips.
+
 `0.23.0` adds `find` → `fd` guidance and refusals in `opencode-shell-guard` (see «opencode-shell-guard») and fixes following a background handoff when the owner returns to its old session in the OpenCode TUI (see «opencode-auto»).
 
 `0.22.2` for two new skills, `opencode-shell-guard` (OpenCode runs its shell commands with bash, and a linked OpenCode plugin refuses grep in them with a reason that says to use rg; see «opencode-shell-guard») and `opencode-plugin-skills-sync` (it keeps the skills of enabled Claude Code plugins linked in OpenCode's config folder; see its `SKILL.md`), and parallel handoffs in `opencode-auto` (see «opencode-auto»). `0.22.0` and `0.22.1` were set on `main` and never released.
@@ -534,6 +538,22 @@ The shared skill verifies a pinned Harness² installation, runs the local creden
 **A background handoff remains followable (`0.23.0`).** When another tab is active, the automatic window still notifies the owner about a handoff it observed. The notification does not mark the source as followed or archive it. Returning to that source, including after a TUI restart, lets the window follow the stored successor and archive the old session after the route changes.
 
 *Measured on 2026-11-27 (OpenCode 2.4.2, isolated service and local stand-in provider, n=1 run of each scenario):* the successor's response appeared in the terminal and the old session was archived only after the move, both on returning in the same window and on opening the old session after restarting the TUI. The regression cases failed before the fix and passed after it (n=2 cases).
+
+**OpenCode 2.4.x support (`0.24.0`).** Both `apana` and `opencode-auto` now target the 2.4.x line. The compatibility work was first verified separately as `0.23.1`, which was not released. It keeps the background-handoff fix.
+
+*Measured on 2026-11-27, n=1 run per suite:* `npm test`, run alone, passed 1,373 tests (real OpenCode suites intentionally disabled there); `npm run test:opencode-auto` passed 121 Node and 54 Python tests, including the background-handoff regressions and installer fixtures. On the same OpenCode 2.4.2 executable, with isolated profiles and a local stand-in provider, `npm run test:opencode-runtime` passed all 18 tests without skips, including loading `apana` from an extracted package and `opencode-auto` through the installer-style link. `live_check.py` passed `auto`, `plain` and `parallel` in real terminal windows on that executable (n=1 run per scenario).
+
+*Installer check:* the real binary printed `opencode v2.4.2` (measured, n=1 sample). With isolated HOME folders and that same binary, the previous installer printed `measured on 2.3.x only` and returned exit 1 after installing; the revised installer reported `ok opencode 2.4.2` and returned exit 0 (measured, n=1 install per revision). With a fake binary and a temporary HOME, the test fixtures confirmed exit 0 for 2.4.0 and 2.4.2, and the `measured on 2.4.x only` warning with exit 1 for 2.3.2 (measured, n=1 fixture per version). Compatibility on real binaries other than 2.4.2 was not checked in this migration.
+
+**Numbered titles at handoff (`0.24.0`).** The server sets the successor's title at creation from the latest source title and the existing chain counter. It replaces a trailing numeric suffix, preserves other parentheses and fork labels, and appends the title as a JSON string to the first message sent to the successor. A missing or empty title leaves that message unchanged so OpenCode can generate the successor's title itself.
+
+*Measured on 2026-11-27 before combining the release:* on OpenCode 2.4.2 with a local stand-in provider, the title persisted after each continuation and matched the title in the first user message (n=1 chain, n=2 handoffs). The empty-title case omitted the title line and triggered native naming from that message (n=1 separate handoff). A read-only before/after comparison (n=1,162 stored source sessions, first-handoff counter) found the expected title additions on 1,151 destinations and identical requests for 11 untitled sources. ` (2)` and ` (3)` occurred once each; both were replaced by the calculated first-handoff suffix ` (2)`. All other parenthetical text was retained.
+
+## Android emulator tuning
+
+**`android-emulator-tuning` (`0.24.0`).** Explains where to find the Android Emulator source, audits the launcher's SDK and the AVD's effective GPU, boot and resource settings, and documents updating only the SDK emulator package. The bundled headless boot check runs on macOS and Linux with a disposable AVD, without an APK or a project checkout. The Windows workflow uses Device Manager.
+
+*Measured on 2026-11-27 by the implementing session:* on macOS with Android Emulator 37.3.10, the helper verified boot and handled a timeout from outside a project with a temporary Pixel_4 profile and a custom `ANDROID_AVD_HOME` (n=1 run per scenario). The original profile and other devices were unchanged in those runs. An earlier boot with `-read-only` touched QCOW2 timestamps (n=1 run), so the skill documents using a disposable test profile. The helper was not run on Linux.
 
 ## opencode-shell-guard
 

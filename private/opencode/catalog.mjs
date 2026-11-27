@@ -9,7 +9,7 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Skills that run in OpenCode. A new directory under skills/ must be added here or to CLAUDE_ONLY_SKILLS (a test enforces it). */
 export const OPENCODE_SKILLS = Object.freeze([
-  "android-ui-step", "assess-complexity", "class-graph", "code-rag", "code-rag-setup", "compact-handoff", "compact-session",
+  "android-emulator-tuning", "android-ui-step", "assess-complexity", "class-graph", "code-rag", "code-rag-setup", "compact-handoff", "compact-session",
   "explica-clar", "harness2", "install-opencode-auto", "jev-decision-loop", "logic-test-debug", "opencode-plugin-skills-sync", "opencode-shell-guard",
   "pr-convention-check", "review-diff", "review-plan", "scope", "uninstall-opencode-auto", "variant-check",
 ]);
@@ -97,7 +97,7 @@ const COMPACT_SESSION = [
   "closed.",
   "",
   "If the replacement would not be smaller, or anything fails, the context stays as it is and no summarizer runs. OpenCode",
-  "2.3.0 has no result for \"verified, nothing to do\", so it records such a run as a failed compaction; the report you may",
+  "2.4.2 has no result for \"verified, nothing to do\", so it records such a run as a failed compaction; the report you may",
   "receive on the next turn says which of success, no-op and failure it was. That report describes a finished run, not a",
   "request to run it again. If you are reading this because the user only mentioned the skill, tell them to run the command.",
   "",

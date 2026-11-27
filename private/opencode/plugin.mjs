@@ -1,5 +1,5 @@
 // apana on OpenCode: the skills and commands of catalog.mjs, the modes of modes.mjs and the compaction of compaction.mjs.
-// Verified on OpenCode 2.3.0 only (see PRIVATE.md, "OpenCode"). Setup is all or nothing for this part: every registration is
+// Supports OpenCode 2.4.x (verified on 2.4.2; see PRIVATE.md, "OpenCode"). Setup is all or nothing for this part: every registration is
 // remembered, and when one step fails the others are undone and the error is thrown, so that no skill that depends on a hook
 // is ever offered without it. (opencode-plugin.js then leaves the independent logic-test-debug adapter running.)
 import { loadCatalog } from "./catalog.mjs";

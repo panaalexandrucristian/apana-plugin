@@ -1,4 +1,4 @@
-// TUI entry of apana-auto (OpenCode 2.3.0): marks the sessions of a TUI that `opencode-auto` started and follows them to the new session after a handoff.
+// TUI entry of apana-auto (OpenCode 2.4.x): marks the sessions of a TUI that `opencode-auto` started and follows them to the new session after a handoff.
 // Thin on purpose, like server.js: the logic is in private/opencode-auto/tui.mjs, and a failure is a fixed diagnostic with no raw error text.
 // The id differs from the server entry's, as in the probe that was measured.
 // The sidebar line is optional: if its module does not load, marking and following work without it.

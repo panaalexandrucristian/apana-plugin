@@ -1,4 +1,4 @@
-// opencode-auto, server part (OpenCode 2.3.0): hands a marked session off to a new one before its context fills up.
+// opencode-auto, server part (OpenCode 2.4.x): hands a marked session off to a new one before its context fills up.
 // The TUI part (tui.mjs) marks the sessions of a TUI that was started by `opencode-auto` (metadata apana.auto, which carries the settings)
 // and follows `apana.next` to the new session; this part never sees the TUI's environment, so the mark is the only thing it goes by.
 // What it relies on was measured, not read: see PRIVATE.md, "opencode-auto". In short: there is one instance of this plugin per location and
@@ -349,13 +349,15 @@ export function createAuto(ctx, options = {}) {
       if (disposed) return;
       const note = result.code === 0 ? parseHandoff(result.stdout) : null;
       if (!note) throw new Error(`make_context.py exit ${result.code}: ${(result.stderr || result.stdout).slice(-300).trim()}`);
-      // Read again: the TUI or the user may have changed the metadata while the note was written, and an update replaces it as a whole.
+      // The title or metadata may have changed while the note was written.
       const fresh = (await getInfo(sessionID)) ?? info;
       if (disposed) return;
       const apana = { ...(fresh.metadata?.apana ?? {}) };
       delete apana.next;
       const auto = { ...(apana.auto && typeof apana.auto === "object" ? apana.auto : {}), chain: settings.chain + 1 };
+      const title = fresh.title ? `${fresh.title.replace(/ \([0-9]+\)$/, "")} (${auto.chain + 1})` : undefined;
       made = await ctx.session.create({
+        ...(title ? { title } : {}),
         ...(fresh.agent ? { agent: fresh.agent } : {}),
         ...(fresh.model ? { model: fresh.model } : {}),
         ...(fresh.location ? { location: fresh.location } : {}),
@@ -369,7 +371,8 @@ export function createAuto(ctx, options = {}) {
       if (settings.cooldown > 0) share.cooldowns.set(made.id, { until: Infinity, seconds: settings.cooldown });
       submitted = true;
       inFlight.delete(sessionID); // dispose must not release a claim once submission starts
-      await ctx.session.prompt({ sessionID: made.id, text: note.prompt + continuation(total, busy) });
+      const titleLine = title ? `\n\nTitlul sesiunii noi: ${JSON.stringify(title)}` : "";
+      await ctx.session.prompt({ sessionID: made.id, text: note.prompt + continuation(total, busy) + titleLine });
       accepted = true;
       if (settings.cooldown > 0) share.cooldowns.set(made.id, { until: now() + settings.cooldown * 1000, seconds: settings.cooldown });
       handedTo.set(sessionID, made.id);

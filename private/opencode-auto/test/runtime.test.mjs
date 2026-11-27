@@ -1,4 +1,4 @@
-// opencode-auto on a real OpenCode 2.3.x: a private server (own HOME and XDG folders), the plugin folder reached through a link in
+// opencode-auto on a real OpenCode 2.4.x: a private server (own HOME and XDG folders), the plugin folder reached through a link in
 // plugins/ as the installer makes it, a stand-in provider that reports the token usage a test chooses, no credentials, no cost.
 // Off unless APANA_OPENCODE_RUNTIME=1, and only for the release line it was written for: a run that skips proves nothing about OpenCode.
 import assert from "node:assert/strict";
@@ -10,7 +10,7 @@ import { tempDir } from "../../opencode/test/support/fake-ctx.mjs";
 import { opencodeVersion, startRuntime, textOfRole } from "../../opencode/test/support/runtime.mjs";
 
 const version = process.env.APANA_OPENCODE_RUNTIME === "1" ? opencodeVersion() : null;
-const reason = process.env.APANA_OPENCODE_RUNTIME !== "1" ? "set APANA_OPENCODE_RUNTIME=1 to run the tests on a real OpenCode" : !/^v?2\.3\./.test(version ?? "") ? `written for OpenCode 2.3.x, found ${version}` : false;
+const reason = process.env.APANA_OPENCODE_RUNTIME !== "1" ? "set APANA_OPENCODE_RUNTIME=1 to run the tests on a real OpenCode" : !/^v?2\.4\./.test(version ?? "") ? `written for OpenCode 2.4.x, found ${version}` : false;
 
 // The stand-in provider's model has a window of 100000 tokens: OpenCode's compaction ceiling is then 84000 (100000 - max(15%, 16000)),
 // and a session marked with `tokens: 60000` hands off at the end of a step at 60000 and before a tool call at 45000.
@@ -73,8 +73,21 @@ const notes = (rt) => {
   return existsSync(dir) ? readdirSync(dir).map((name) => join(dir, name)) : [];
 };
 const allSessions = async (rt) => (await rt.api("GET", "/api/session")).json?.data ?? [];
+const nextSession = async (rt, id) => {
+  const source = await until(`session ${id} never got \`next\``, () => getSession(rt, id), (s) => typeof s?.metadata?.apana?.next === "string");
+  return source.metadata.apana.next;
+};
+const firstUserText = (rt, id) => until(
+  `session ${id} never received its first message`,
+  async () => {
+    const result = await rt.api("GET", `/api/session/${id}/message?type=user&order=asc&limit=1`);
+    assert.equal(result.status, 200, result.text);
+    return result.json.data[0]?.text;
+  },
+  (text) => typeof text === "string",
+);
 
-describe("opencode-auto on a real OpenCode 2.3.x", { skip: reason, timeout: 600000 }, () => {
+describe("opencode-auto on a real OpenCode 2.4.x", { skip: reason, timeout: 600000 }, () => {
   it("hands a marked session off once the stand-in provider reports a context over the threshold: a note, a new session with the same agent, model and directory, and `next` on the old one", async () => {
     const rt = await start({ usage: { prompt: 70_000, completion: 10 } });
     const id = await rt.session("marked", { agent: "plan", metadata: { apana: { auto: MARK } } }); // not the default agent: a lost agent must show
@@ -101,6 +114,47 @@ describe("opencode-auto on a real OpenCode 2.3.x", { skip: reason, timeout: 6000
     assert.equal((log.match(/handoff \(step\)/g) ?? []).length, 1, log);
     assert.match(log, /limit of 1 handoffs is reached/);
     assert.equal((await allSessions(rt)).filter((s) => s.metadata?.apana?.auto).length, 2, "the old session and one new one");
+  });
+
+  it("keeps the numbered title in the session and the first message across two consecutive handoffs", async () => {
+    const rt = await start({ usage: { prompt: 70_000, completion: 10 } });
+    const id = await rt.session("X", { metadata: { apana: { auto: { ...MARK, max: 2 } } } });
+    await rt.prompt(id, "do the task");
+    const second = await nextSession(rt, id);
+    const third = await nextSession(rt, second);
+    await until("the second successor never reached the handoff limit", async () => autoLog(rt), (log) => log.includes(`${third} 70010 tokens but the limit of 2 handoffs is reached`));
+    for (const [destination, title] of [[second, "X (2)"], [third, "X (3)"]]) {
+      const saved = await until(`session ${destination} never finished its turn`, () => getSession(rt, destination), (s) => s?.time?.idle !== undefined);
+      const text = await firstUserText(rt, destination);
+      const sections = text.split("\n\nTitlul sesiunii noi: ");
+      assert.equal(sections.length, 2);
+      const [continuation, titleData] = sections;
+      assert.match(continuation, /^Citește .*\/HANDOFF\.md mai întâi/);
+      assert.match(continuation, /reia imediat lucrul/);
+      assert.equal(saved.title, title);
+      assert.equal(JSON.parse(titleData), saved.title);
+    }
+    assert.equal((await getSession(rt, id)).title, "X");
+    assert.equal((await getSession(rt, third)).metadata.apana.next, undefined);
+    assert.equal((await allSessions(rt)).filter((s) => s.metadata?.apana?.auto).length, 3);
+  });
+
+  it("leaves the title line out for an empty source title and lets OpenCode name the destination from its first message", async () => {
+    const rt = await start({ usage: { prompt: 70_000, completion: 10 } });
+    const id = await rt.session("", { metadata: { apana: { auto: MARK } } });
+    assert.equal((await getSession(rt, id)).title, "");
+    await rt.prompt(id, "do the task");
+    const destination = await nextSession(rt, id);
+    const text = await firstUserText(rt, destination);
+    assert.match(text, /^Citește .*\/HANDOFF\.md mai întâi/);
+    assert.match(text, /reia imediat lucrul/);
+    assert.doesNotMatch(text, /Titlul sesiunii noi:/);
+    const titleInput = `Here is the first message of the conversation:\n\n<message>\n${text}\n</message>\n\nReply with only the title.`;
+    await until("OpenCode never requested a title from the first message", async () => rt.requests(), (requests) =>
+      requests.some((r) => !r.body.tools?.length && textOfRole(r, "user") === titleInput));
+    const title = "Scope: stub. Method: stub. Result: stub reply, nothing was run.";
+    await until("OpenCode never saved the generated title", () => getSession(rt, destination), (s) => s?.title === title);
+    assert.equal((await getSession(rt, id)).title, "");
   });
 
   it("hands a session off once when the server has two locations for one folder: the folder named directly and through a link", async () => {

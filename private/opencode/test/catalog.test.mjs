@@ -18,6 +18,16 @@ describe("which skills run in OpenCode", () => {
     assert.deepEqual(skills.map((s) => s.id).sort(), [...OPENCODE_SKILLS].sort());
     for (const id of CLAUDE_ONLY_SKILLS) assert.ok(!skills.some((s) => s.id === id), id);
   });
+  it("exposes emulator tuning to the model and resolves its bundled source guide and boot check", async () => {
+    const { skills } = await loadCatalog();
+    const skill = skills.find((s) => s.id === "android-emulator-tuning");
+    assert.ok(skill?.autoinvoke);
+    const dir = join(ROOT, "skills", skill.id);
+    for (const path of [join(dir, "reference", "architecture.md"), join(dir, "scripts", "boot-check.py")]) {
+      assert.ok(skill.content.includes(path), path);
+      assert.ok(readFileSync(path, "utf8").trim(), path);
+    }
+  });
   it("refuses a skill directory that is in neither list", async () => {
     const root = tempDir();
     cpSync(join(ROOT, "skills"), join(root, "skills"), { recursive: true });

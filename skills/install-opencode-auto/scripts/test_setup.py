@@ -38,7 +38,7 @@ def files_only(root):
 
 
 class Setup(unittest.TestCase):
-    version = "2.3.2"
+    version = "2.4.2"
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -100,7 +100,7 @@ class Install(Setup):
         rc = self.read_rc().decode()
         self.assertEqual(rc.count(START), 1)
         self.assertIn('export PATH="$HOME/.config/opencode/opencode-auto:$PATH"', rc)
-        self.assertIn("opencode 2.3.2", out)
+        self.assertIn("opencode 2.4.2", out)
         self.assertIn("200000 tokens", out)                     # the threshold is read from the server part
 
     def test_second_run_changes_nothing(self):
@@ -238,11 +238,11 @@ class Install(Setup):
         self.assertIn("`python3` is not on PATH", out)
 
     def test_an_opencode_release_other_than_the_measured_one_is_reported(self):
-        for version in ("2.4.0", "3.0.1", "2.2.9"):
+        for version in ("2.3.2", "3.0.1", "2.2.9"):
             self.fake_opencode(version)
             out = self.ok(self.install(), 1)
-            self.assertIn("measured on 2.3.x only", out, version)
-        self.fake_opencode("2.3.0")
+            self.assertIn("measured on 2.4.x only", out, version)
+        self.fake_opencode("2.4.0")
         self.ok(self.install())
 
     def test_a_plain_folder_where_the_link_goes_is_left_alone(self):

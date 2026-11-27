@@ -1,4 +1,4 @@
-// Server entry of apana-auto (OpenCode 2.3.0): the plugin folder that `opencode-auto` registers, apart from the apana plugin (opencode-plugin.js).
+// Server entry of apana-auto (OpenCode 2.4.x): the plugin folder that `opencode-auto` registers, apart from the apana plugin (opencode-plugin.js).
 // Thin on purpose: the logic is in private/opencode-auto/server.mjs. The folder may be reached through a link; import.meta.url is the real path
 // of this file then (measured), so the relative import below finds the repository.
 // A failure must not take OpenCode down: a fixed diagnostic, no raw error text, and setupAuto has already undone what it registered.

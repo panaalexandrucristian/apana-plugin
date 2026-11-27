@@ -1,6 +1,6 @@
 # Working in this repository
 
-The `apana` plugin for Claude Code and for OpenCode 2.3.0 (the skills and modes they share; what manages Claude Code itself stays Claude-only): skills and hooks that do not need the jev plugin. Split out of `jev-mcp-private` (the `jev` plugin) at `1a047da` on 2026-10-19. One developer, several sessions working at the same time.
+The `apana` plugin for Claude Code and for OpenCode 2.4.x (the skills and modes they share; what manages Claude Code itself stays Claude-only): skills and hooks that do not need the jev plugin. Split out of `jev-mcp-private` (the `jev` plugin) at `1a047da` on 2026-10-19. One developer, several sessions working at the same time.
 
 Do not read `PRIVATE.md` whole (about 73,000 characters: a design and measurement log, mostly history). Run `grep -n '^## ' PRIVATE.md` and read the one section you need.
 

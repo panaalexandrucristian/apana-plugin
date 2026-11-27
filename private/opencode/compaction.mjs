@@ -1,6 +1,6 @@
-// compact-session on OpenCode 2.3.0. The user's command asks OpenCode for a compaction (the request is only admitted, not done);
+// compact-session on OpenCode 2.4.x. The user's command asks OpenCode for a compaction (the request is only admitted, not done);
 // the `compaction` hook then supplies, in place of a model summary, the verified transcript that compact.py prepares. Nothing
-// here ever falls back to the model's summarizer: a failure throws, which 2.3.0 records as a failed compaction and which keeps
+// here ever falls back to the model's summarizer: a failure throws, which 2.4.2 records as a failed compaction and which keeps
 // the whole history. Per session, in plugin storage: requested -> preparing -> installed | noop | failed -> reported.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -75,7 +75,7 @@ const successText = (s) =>
 const unconfirmedText = (s) =>
   `The verified replacement was prepared (characters, measured; n=1: ${s.before} -> ${s.after}) but OpenCode did not record it, so the context is unchanged. The prepared files are in ${s.artifact}.`;
 const noopText = (s) =>
-  `Context unchanged: the verified replacement would not reduce context. Prepared transcript characters (measured; n=1): ${s.before} -> ${s.after}. The current context was kept. OpenCode 2.3.0 has no result for a verified no-op, so it records this run as a failed compaction.`;
+  `Context unchanged: the verified replacement would not reduce context. Prepared transcript characters (measured; n=1): ${s.before} -> ${s.after}. The current context was kept. OpenCode 2.4.2 has no result for a verified no-op, so it records this run as a failed compaction.`;
 const failedText = (s) =>
   `Context unchanged: the compact-session replacement could not be prepared${s.reason ? ` (${s.reason})` : ""}. No model summary was requested; OpenCode records this run as a failed compaction.`;
 

@@ -16,7 +16,7 @@ credentials or network beyond 127.0.0.1 are involved, so it costs nothing):
      handoff (a plain window cannot follow one, and the old session would refuse every tool call).
 
 It starts processes and uses a terminal of 45x160, so it is not part of `npm test`; run it after a change to the TUI part or to the launcher.
-Exit codes: 0 every check passed, 1 a check failed, 2 it could not run (no opencode, not 2.3.x, no free port, the server did not start).
+Exit codes: 0 every check passed, 1 a check failed, 2 it could not run (no opencode, not 2.4.x, no free port, the server did not start).
 """
 import argparse, base64, fcntl, json, os, pty, re, select, shlex, shutil, signal, socket, struct, subprocess, sys, tempfile, termios, threading, time
 import urllib.request
@@ -372,8 +372,8 @@ def main():
         return 2
     BINARY = os.path.abspath(BINARY)
     found = re.search(r"(\d+)\.(\d+)\.(\d+)", subprocess.run([BINARY, "--version"], capture_output=True, text=True, timeout=60).stdout)
-    if not found or (int(found.group(1)), int(found.group(2))) != (2, 3):
-        say("fail", "written for OpenCode 2.3.x, found %s" % (found.group(0) if found else "no version"))
+    if not found or (int(found.group(1)), int(found.group(2))) != (2, 4):
+        say("fail", "written for OpenCode 2.4.x, found %s" % (found.group(0) if found else "no version"))
         return 2
 
     for name, scenario in (("auto", auto_window), ("plain", plain_window), ("parallel", parallel_windows)):

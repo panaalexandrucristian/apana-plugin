@@ -1,4 +1,4 @@
-// The plugin on a real OpenCode 2.3.0: a private server (own HOME and XDG folders), a stand-in provider on 127.0.0.1 that records
+// The plugin on a real OpenCode 2.4.x: a private server (own HOME and XDG folders), a stand-in provider on 127.0.0.1 that records
 // every request and calls the tools a test scripts, no credentials, no cost. Off unless APANA_OPENCODE_RUNTIME=1, and only for
 // the version it was written for: a run that skips proves nothing about OpenCode.
 import assert from "node:assert/strict";
@@ -11,7 +11,7 @@ import { tempDir } from "./support/fake-ctx.mjs";
 import { opencodeVersion, startRuntime, textOfRole } from "./support/runtime.mjs";
 
 const version = process.env.APANA_OPENCODE_RUNTIME === "1" ? opencodeVersion() : null;
-const reason = process.env.APANA_OPENCODE_RUNTIME !== "1" ? "set APANA_OPENCODE_RUNTIME=1 to run the tests on a real OpenCode" : !/^v?2\.3\./.test(version ?? "") ? `written for OpenCode 2.3.x, found ${version}` : false;
+const reason = process.env.APANA_OPENCODE_RUNTIME !== "1" ? "set APANA_OPENCODE_RUNTIME=1 to run the tests on a real OpenCode" : !/^v?2\.4\./.test(version ?? "") ? `written for OpenCode 2.4.x, found ${version}` : false;
 const JEV = join(ROOT, "skills", "jev-decision-loop", "scripts", "jev.mjs");
 
 const open = [];
@@ -47,7 +47,7 @@ const stateFiles = (rt, name) => {
   }
 };
 
-describe("on a real OpenCode 2.3.0", { skip: reason, timeout: 600000 }, () => {
+describe("on a real OpenCode 2.4.x", { skip: reason, timeout: 600000 }, () => {
   it("registers the OpenCode skills and their commands, and none of the tools of Claude Code", { timeout: 90000 }, async () => {
     const rt = await start({});
     const ids = (await rt.skills()).map((s) => s.id);

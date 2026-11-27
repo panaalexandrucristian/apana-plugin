@@ -180,16 +180,36 @@ describe("the handoff at the end of a step", () => {
     await flush();
     assert.equal(silent.fake.calls.create.length, 1);
   });
-  it("reads the metadata again after the note is written: the TUI or the user may have changed it meanwhile", async (t) => {
+  it("reads the title and metadata again after the note is written: the TUI or the user may have changed them meanwhile", async (t) => {
     const s = setup(t, {
+      root: marked(undefined, { title: "Before" }),
       handler: (args, { fake }) => {
-        fake.sessions.get("ses_root").metadata.late = "added while the note was written";
-        return { code: 0, stdout: args.includes("--list-skills") ? LISTED() : BUILT, stderr: "" };
+        if (args.includes("--list-skills")) return { code: 0, stdout: LISTED(), stderr: "" };
+        const source = fake.sessions.get("ses_root");
+        source.title = "After";
+        source.metadata.late = "added while the note was written";
+        return { code: 0, stdout: BUILT, stderr: "" };
       },
     });
     await s.step(200_000);
     assert.equal(s.fake.calls.create[0].metadata.late, "added while the note was written");
     assert.equal(s.fake.calls.update[0].metadata.late, "added while the note was written");
+    assert.equal(s.fake.calls.create[0].title, "After (2)");
+    assert.equal(s.fake.calls.prompt[0].text, NOTE + continuation(200_000) + '\n\nTitlul sesiunii noi: "After (2)"');
+    assert.equal(s.fake.sessions.get("ses_root").title, "After");
+  });
+  it("uses the original title snapshot if reading the source again fails", async (t) => {
+    const s = setup(t, { root: marked(undefined, { title: "Snapshot" }) });
+    const get = s.fake.ctx.session.get;
+    let reads = 0;
+    s.fake.ctx.session.get = async (input) => {
+      if (++reads === 2) throw new Error("source unavailable");
+      return get(input);
+    };
+    await s.step(200_000);
+    assert.equal(s.fake.calls.create[0].title, "Snapshot (2)");
+    assert.equal(s.fake.calls.prompt[0].text, NOTE + continuation(200_000) + '\n\nTitlul sesiunii noi: "Snapshot (2)"');
+    assert.equal(s.fake.sessions.get("ses_root").metadata.apana.next, "ses_new1");
   });
   it("uses the 100k window of the model: the handoff starts at 69,000, not at 200,000", async (t) => {
     const s = setup(t, { models: SMALL });
@@ -241,6 +261,42 @@ describe("the handoff at the end of a step", () => {
     await s.step(220_000);
     assert.equal(s.fake.calls.create.length, 1, "the session was handed off and stays so");
   });
+});
+
+describe("the destination title and first handoff message", () => {
+  const cases = [
+    { name: "numbers a plain title", title: "X", chain: 0, expected: "X (2)" },
+    { name: "replaces a terminal numeric suffix", title: "X (2)", chain: 1, expected: "X (3)" },
+    { name: "uses the reset chain rather than the old suffix", title: "X (7)", chain: 0, expected: "X (2)" },
+    { name: "preserves a fork suffix", title: "X (fork #2)", chain: 0, expected: "X (fork #2) (2)" },
+    { name: "preserves other parentheses", title: "X (2) in progress (draft)", chain: 0, expected: "X (2) in progress (draft) (2)" },
+    { name: "preserves the timestamp in a stored default title", title: "New session - 2026-11-27T12:34:56.000Z", chain: 0, expected: "New session - 2026-11-27T12:34:56.000Z (2)" },
+    { name: "serializes quotes and newline as title data", title: 'X "quoted"\nsecond line', chain: 0, expected: 'X "quoted"\nsecond line (2)' },
+    { name: "omits a missing title", chain: 0 },
+    { name: "omits an empty title", title: "", chain: 0 },
+  ];
+  for (const { name, chain, expected, ...fields } of cases) {
+    it(name, async (t) => {
+      const s = setup(t, { root: marked({ tokens: 200_000, chain }, fields) });
+      await s.step(200_000);
+      const [created] = s.fake.calls.create;
+      const [prompt] = s.fake.calls.prompt;
+      const prefix = NOTE + continuation(200_000);
+      assert.equal(prompt.sessionID, "ses_new1");
+      assert.equal(Object.hasOwn(created, "title"), expected !== undefined);
+      assert.equal(created.title, expected);
+      if (expected === undefined) {
+        assert.equal(prompt.text, prefix);
+      } else {
+        const label = prefix + "\n\nTitlul sesiunii noi: ";
+        assert.ok(prompt.text.startsWith(label));
+        assert.equal(JSON.parse(prompt.text.slice(label.length)), expected);
+      }
+      const source = s.fake.sessions.get("ses_root");
+      assert.equal(source.title, fields.title);
+      assert.equal(source.metadata.apana.next, "ses_new1");
+    });
+  }
 });
 
 describe("the handoff before a tool call", () => {

@@ -1,4 +1,4 @@
-// A plugin context for OpenCode 2.3.0 made of plain objects: storage over a Map, a skill registry, hook and command recorders,
+// A plugin context for OpenCode 2.4.x made of plain objects: storage over a Map, a skill registry, hook and command recorders,
 // and calls that record what they were given. `failAt` names a call that throws; `missing` names a capability to leave out.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

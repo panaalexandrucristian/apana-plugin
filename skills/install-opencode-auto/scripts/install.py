@@ -24,7 +24,7 @@ ASSETS = os.path.join(os.path.dirname(HERE), "assets")
 OWN_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 SOURCE_FILES = ("opencode-auto/server.js", "opencode-auto/tui.js", "private/opencode-auto/server.mjs",
                 "private/opencode-auto/tui.mjs", "skills/compact-handoff/scripts/make_context.py")
-MEASURED = (2, 3)                       # the OpenCode release line the plugin was measured on
+MEASURED = (2, 4)                       # the OpenCode release line the plugin was measured on
 ENC = dict(encoding="utf-8", errors="surrogateescape", newline="")   # keep every byte and line ending of the rc as is
 
 problems = []

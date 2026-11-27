@@ -1,4 +1,4 @@
-// opencode-auto, TUI part (OpenCode 2.3.0): marks the sessions of a TUI that `opencode-auto` started and follows them to the new session.
+// opencode-auto, TUI part (OpenCode 2.4.x): marks the sessions of a TUI that `opencode-auto` started and follows them to the new session.
 // The launcher sets APANA_OPENCODE_AUTO for the TUI process only; the server never sees it (measured, also with a TUI connected to a separate
 // server), so the mark on the session (metadata apana.auto, which carries the settings) is the only way the server part learns which sessions are
 // automatic. Without the variable it marks nothing and follows nothing, and it takes the mark off a session it opens: the mark outlives the
