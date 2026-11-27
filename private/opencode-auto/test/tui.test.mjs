@@ -332,15 +332,24 @@ describe("following a handoff", () => {
     assert.match(fake.calls.toast[0].message, /moved to the new session/);
     auto.dispose();
   });
-  it("only tells the user, and does not move, when the handed-off session is not the open one", async () => {
+  it("notifies once in the background and follows the handoff when the user returns", async () => {
     const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {}, ses_b: {} } });
     const auto = await start(fake);
     await auto.check();
     fake.state.route = open("ses_b");
-    fake.metadataEvent("ses_a", { apana: { next: "ses_c" } });
+    await auto.check();
+    const metadata = { apana: { next: "ses_c" } };
+    fake.store.get("ses_a").metadata = metadata;
+    fake.metadataEvent("ses_a", metadata);
+    fake.metadataEvent("ses_a", metadata);
     assert.deepEqual(fake.calls.navigate, []);
     assert.equal(fake.calls.toast.length, 1);
     assert.match(fake.calls.toast[0].message, /handed off to ses_c/);
+
+    fake.state.route = open("ses_a");
+    await auto.check();
+    assert.deepEqual(fake.calls.navigate, [open("ses_c")]);
+    assert.deepEqual(fake.calls.archive.map((call) => call.route), [open("ses_c")]);
     auto.dispose();
   });
   it("ignores a session that was never open in this window, events without `next`, and bad events", async () => {
@@ -458,15 +467,23 @@ describe("archiving the session that was handed off", () => {
     assert.deepEqual(fake.calls.archive, [{ sessionID: "ses_a", archived: true, metadata: undefined, route: open("ses_b") }], "the window was already on the new session when the old one was archived");
     auto.dispose();
   });
-  it("archives it too when the window is on another session", async () => {
+  it("leaves a background handoff available for a new TUI to follow before archiving it", async () => {
     const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {}, ses_b: {} } });
     const auto = await start(fake);
     await auto.check();
     fake.state.route = open("ses_b");
-    fake.metadataEvent("ses_a", { apana: { next: "ses_c" } });
-    await flush();
-    assert.deepEqual(fake.calls.archive.map((a) => a.sessionID), ["ses_a"]);
+    const metadata = { apana: { next: "ses_c" } };
+    fake.store.get("ses_a").metadata = metadata;
+    fake.metadataEvent("ses_a", metadata);
+    assert.deepEqual(fake.calls.archive, []);
     auto.dispose();
+
+    fake.state.route = open("ses_a");
+    const reopened = await start(fake);
+    await flush();
+    assert.deepEqual(fake.calls.navigate, [open("ses_c")]);
+    assert.deepEqual(fake.calls.archive.map((a) => a.sessionID), ["ses_a"]);
+    reopened.dispose();
   });
   it("leaves it alone when the window could not be moved off it: the user would lose the session on screen", async () => {
     const fake = fakeTui({ route: open("ses_a"), sessions: { ses_a: {} } });

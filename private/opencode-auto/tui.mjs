@@ -83,7 +83,8 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
   const retryAt = new Map();
   const working = new Set(); // sessions being marked right now: a slow server must not get the same write twice
   const seen = new Set(); // sessions opened in this TUI: only those are followed (by an automatic window; a plain one follows nothing)
-  const followed = new Set();
+  const notified = new Set(); // sessions whose handoff happened while this window was elsewhere
+  const followed = new Set(); // sessions this window navigated away from to their successor
   const stuck = new Set(); // sessions whose failed move is already in the log: check() tries again at every read
   const pending = new Map();
   let opening;
@@ -179,15 +180,11 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
       }
       return;
     }
-    if (!current) return;
-    rememberFollowed(sessionID);
+    if (!current || notified.has(sessionID)) return;
+    // Keep the source available for check() to follow when this window returns to it.
+    notified.add(sessionID);
+    cap(notified);
     context.ui.toast.show({ message: `apana auto: a session was handed off to ${next}`, variant: "info" });
-    void archive(sessionID);
-  }
-
-  function rememberFollowed(sessionID) {
-    followed.add(sessionID);
-    cap(followed);
   }
 
   function follow(sessionID, next) {
@@ -206,7 +203,8 @@ export async function setupAutoTui(context, env = process.env, options = {}) {
       return;
     }
     log(`moved the window from ${sessionID} to ${next}`);
-    rememberFollowed(sessionID);
+    followed.add(sessionID);
+    cap(followed);
     opening = undefined;
     void archive(sessionID);
     context.ui.toast.show({ message: "apana auto: moved to the new session", variant: "info" });
