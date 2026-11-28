@@ -150,6 +150,27 @@ class Fidelity(unittest.TestCase):
         c, b, p = cc.read_out(str(folder))
         return cc.expand_text(c, b, p), b
 
+    def test_advisor_moves_only_the_native_tool_catalog_into_a_blob(self):
+        title = 'The Code Mode tool catalog has changed.'
+        catalog = title + '\n\nNew tools are available:\n- CAT_PAYLOAD'
+        self.database([
+            ('user', {'text': title + '\nUSER_QUOTE'}, 2),
+            ('system', {'text': catalog}, 1),
+            ('system', {'text': 'OTHER_NOTICE'}, 0),
+        ])
+        regular = self.cli(out='regular')
+        advisor = self.cli('--advisor', out='advisor')
+        self.assertEqual(regular.returncode, 0, regular.stderr)
+        self.assertEqual(advisor.returncode, 0, advisor.stderr)
+        expanded, blobs = self.archive('advisor')
+        self.assertEqual(expanded, self.archive('regular')[0])
+        self.assertEqual(len(blobs), 1)
+        self.assertIn(catalog, next(iter(blobs.values())))
+        inline = (self.root / 'advisor' / 'HANDOFF.md').read_text()
+        self.assertNotIn('CAT_PAYLOAD', inline)
+        self.assertIn('USER_QUOTE', inline)
+        self.assertIn('OTHER_NOTICE', inline)
+
     def test_user_files_and_skill_history_survive(self):
         self.database()
         result = self.cli()
@@ -308,8 +329,8 @@ class Fidelity(unittest.TestCase):
         bootstrap = '''import runpy,sys
 sys.path.insert(0,sys.argv[1]);import opencode_source as oc
 original=oc.render
-def damaged(conn,sid):
-    rendered=original(conn,sid)
+def damaged(conn,sid,**kwargs):
+    rendered=original(conn,sid,**kwargs)
     if mode=="file": rendered.attachments.clear()
     elif mode=="order": rendered.skills=dict(reversed(list(rendered.skills.items())))
     else:
@@ -357,10 +378,10 @@ mode=sys.argv[2];sys.argv=sys.argv[3:];runpy.run_path(sys.argv[0],run_name="__ma
         bootstrap = '''import runpy,sys,sqlite3
 sys.path.insert(0,sys.argv[1]);import opencode_source as oc
 original=oc.render;database=sys.argv[2]
-def changed(conn,sid):
+def changed(conn,sid,**kwargs):
     writer=sqlite3.connect(database)
     writer.execute("delete from session_message where session_id=?",(sid,));writer.commit();writer.close()
-    return original(conn,sid)
+    return original(conn,sid,**kwargs)
 oc.render=changed
 sys.argv=sys.argv[3:];runpy.run_path(sys.argv[0],run_name="__main__")
 '''

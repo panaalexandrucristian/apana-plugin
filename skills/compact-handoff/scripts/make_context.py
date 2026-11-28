@@ -431,7 +431,7 @@ def build_opencode(db, session, rest, skills_opt=None, list_sk=False):
             conn.execute("BEGIN")
             sid = oc.pick_session(conn, session)
             inventory = oc.source_inventory(conn, sid)
-            R = oc.render(conn, sid)
+            R = oc.render(conn, sid, archive_catalog="--advisor" in rest)
         finally: conn.close()
     except (oc.OpenCodeError, oc.sqlite3.Error) as e: sys.exit(str(e))
     if not R.recs: sys.exit("session %s has no messages in session_message" % sid)

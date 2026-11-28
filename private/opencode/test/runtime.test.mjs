@@ -3,7 +3,7 @@
 // the version it was written for: a run that skips proves nothing about OpenCode.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { CLAUDE_ONLY_SKILLS, OPENCODE_SKILLS, ROOT } from "../catalog.mjs";
@@ -25,6 +25,15 @@ after(async () => {
   for (const rt of open) await rt.close();
 });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function until(check, message) {
+  const end = Date.now() + 30_000;
+  while (Date.now() < end) {
+    const result = await check();
+    if (result) return result;
+    await wait(100);
+  }
+  throw new Error(message);
+}
 /** Waits until the stand-in provider has had `n` requests that offered tools and then stays quiet for a moment. */
 async function settle(rt, n, ms = 30000) {
   const end = Date.now() + ms;
@@ -83,6 +92,110 @@ describe("on a real OpenCode 2.4.x", { skip: reason, timeout: 600000 }, () => {
     const text = textOfRole(rt2.mainRequests()[0], "user");
     assert.ok(text.includes("/apana:variant-check src/**/*.kt"));
     assert.ok(text.includes("OpenCode adapter. The tool names") && text.includes(`${join(ROOT, "skills", "variant-check")}/scripts/variants.mjs`), "the skill's adapted text came with the message");
+  });
+
+  it("Advisor waits for the in-flight read and delivers one native reply before the next inference", { timeout: 90000 }, async () => {
+    const path = tempDir("apana-advisor-plugin-");
+    const inTool = join(path, "in-tool");
+    const release = join(path, "release");
+    writeFileSync(join(path, "server.js"), `
+      import { existsSync, writeFileSync } from "node:fs";
+      import apana from ${JSON.stringify(join(ROOT, "opencode-plugin.js"))};
+      export default { id: "apana-advisor-test", async setup(ctx) {
+        const dispose = await apana.setup(ctx);
+        await ctx.tool.hook("execute.before", async (event) => {
+          if (event.tool !== "read") return;
+          writeFileSync(${JSON.stringify(inTool)}, "");
+          while (!existsSync(${JSON.stringify(release)})) await new Promise(resolve => setTimeout(resolve, 10));
+        });
+        return dispose;
+      }};
+    `);
+    const rt = await start({
+      plugin: path,
+      script: [{ name: "read", args: { path: "fixture.txt" } }, { name: "apana_advisor_archive", args: { path: "blobs/R0000.txt" } }],
+      env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { stub: { models: {
+        m: { variants: { deep: { reasoningEffort: "high" } } },
+        alternative: { name: "Alternative", tool_call: true, limit: { context: 80_000, output: 4_000 } },
+      } } } }) },
+      setup: (sub) => writeFileSync(sub("ws/fixture.txt"), `${"SOURCE_FILE_RESULT\n".repeat(90)}LAST_LINE_OF_ARCHIVED_RESULT\n`),
+    });
+    const source = await rt.session("Source");
+    const rpc = (method, input = {}) => rt.api("POST", `/api/rpc/apana-advisor/${method}`, { input: { sessionID: source, ...input } });
+    const models = await rpc("options");
+    assert.equal(models.status, 200, `${models.text}\n${rt.log().slice(-10000)}`);
+    assert.equal(models.json.output.models.find(({ providerID }) => providerID === "stub").id, "alternative", "ranks a different model ahead of the source default");
+    assert.ok(models.json.output.models.find(({ id }) => id === "m").variants.includes("deep"));
+    await rt.prompt(source, "SOURCE_CONVERSATION");
+    await until(() => existsSync(inTool), "source read did not start");
+    const consultation = rpc("consult", { providerID: "stub", modelID: "m", variant: "deep", question: "ADVISOR_QUESTION" });
+    try {
+      await until(async () => {
+        const check = await rpc("consult", { providerID: "stub", modelID: "missing", question: "" });
+        return check.text.includes("already running");
+      }, "consultation did not register");
+      assert.equal(rt.mainRequests().length, 1);
+    } finally {
+      writeFileSync(release, "");
+    }
+    const result = await consultation;
+    assert.equal(result.status, 200, result.text);
+    assert.equal(result.json.output.ok, true, `${result.text}\n${rt.log().slice(-5000)}`);
+    const requests = await until(() => rt.mainRequests().length >= 4 && rt.mainRequests(), "source did not resume");
+    const [primary, advisor, afterRead, resumed] = requests;
+    assert.match(textOfRole(primary, "user"), /SOURCE_CONVERSATION/);
+    assert.match(textOfRole(advisor, "user"), /ADVISOR_QUESTION/, JSON.stringify(requests.map((req) => ({
+      user: textOfRole(req, "user"), tools: req.body.tools.map((tool) => tool.function.name),
+      results: toolResults(req).join("\n").slice(0, 300), effort: req.body.reasoning_effort,
+    }))));
+    assert.equal(advisor.body.reasoning_effort, "high");
+    assert.deepEqual(advisor.body.tools.map((tool) => tool.function.name).sort(), ["apana_advisor_archive", "glob", "grep", "read"]);
+    for (const name of ["glob", "grep", "read"]) {
+      const original = primary.body.tools.find(({ function: tool }) => tool.name === name).function;
+      const advertised = advisor.body.tools.find(({ function: tool }) => tool.name === name).function;
+      assert.deepEqual(advertised.parameters, original.parameters);
+      assert.ok(advertised.description.length < original.description.length, `${name} kept its full description`);
+    }
+    assert.match(textOfRole(advisor, "user"), /SOURCE_CONVERSATION/);
+    assert.match(textOfRole(advisor, "user"), /MARKER-PAIR:/);
+    assert.match(textOfRole(advisor, "user"), /Each Rnnnn marker previews one record/);
+    const archive = toolResults(afterRead).join("\n");
+    assert.match(archive, /"next": null/);
+    assert.match(archive, /1: SOURCE_FILE_RESULT\n2: SOURCE_FILE_RESULT/);
+    assert.match(archive, /LAST_LINE_OF_ARCHIVED_RESULT/);
+    assert.match(toolResults(resumed).join("\n"), /SOURCE_FILE_RESULT/);
+    assert.equal((textOfRole(resumed, "user").match(/<background-result\b/g) ?? []).length, 1);
+    await until(async () => JSON.stringify(await rt.messages(source)).includes("<background-result"), "native reply did not reach history");
+    assert.equal((JSON.stringify(await rt.messages(source)).match(/<background-result\b/g) ?? []).length, 1);
+    const notes = join(rt.dir, "data", "opencode", "apana", "handoffs", "advisor");
+    const folder = join(notes, readdirSync(notes)[0]);
+    const blobs = join(folder, "blobs");
+    assert.ok(readdirSync(blobs).some((name) => readFileSync(join(blobs, name), "utf8").includes("SOURCE_FILE_RESULT")), "archive contains the completed read output");
+  });
+
+  it("Advisor includes a medium transcript in one inference and wakes the idle source", { timeout: 90000 }, async () => {
+    const rt = await start({});
+    const source = await rt.session("Idle source");
+    const consult = (sessionID, modelID = "m") => rt.api("POST", "/api/rpc/apana-advisor/consult", { input: { sessionID, providerID: "stub", modelID, question: "" } });
+    const invalid = await consult(source, "unknown-model");
+    assert.deepEqual(invalid.json.output, { ok: false, message: "That model or effort is no longer available. Choose again." });
+    const empty = await consult(source);
+    assert.deepEqual(empty.json.output, { ok: false, message: "The verified handoff could not be prepared." });
+    assert.equal(rt.requests().length, 0, "failed handoff did not call a provider");
+    await rt.prompt(source, `${"Earlier notes about the integration decision.\n".repeat(300)}IDLE_SOURCE_EVIDENCE`);
+    const end = await rt.api("POST", `/api/experimental/session/${source}/wait`, {});
+    assert.equal(end.status, 204, end.text);
+    const result = await consult(source);
+    assert.equal(result.json.output.ok, true, `${result.text}\n${rt.log().slice(-5000)}`);
+    const requests = await until(() => rt.mainRequests().length >= 3 && rt.mainRequests(), "the idle source did not wake");
+    const advisor = requests.filter((req) => req.body.tools.some((tool) => tool.function.name === "apana_advisor_archive"));
+    assert.equal(advisor.length, 1);
+    assert.match(textOfRole(advisor[0], "user"), /IDLE_SOURCE_EVIDENCE/);
+    assert.match(textOfRole(advisor[0], "user"), /The verified HANDOFF\.md follows/);
+    assert.doesNotMatch(textOfRole(advisor[0], "user"), /MARKER-PAIR:|Each Rnnnn marker previews one record/);
+    assert.doesNotMatch(textOfRole(advisor[0], "user"), /Ce faci după ce l-ai citit/);
+    assert.match(textOfRole(requests.at(-1), "user"), /<background-result\b/);
+    assert.doesNotMatch(textOfRole(requests.at(-1), "user"), /The verified HANDOFF\.md/);
   });
 
   it("loads Harness² and runs its read-only check through the bundled helper", { timeout: 90000 }, async () => {

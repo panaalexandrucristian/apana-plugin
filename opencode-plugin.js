@@ -10,13 +10,25 @@ export default {
     } catch {
       console.warn("[logic-test-debug] activation unavailable");
     }
+    let apana;
+    let advisor;
     try {
       const { setupApana } = await import("./private/opencode/plugin.mjs");
-      const apana = await setupApana(ctx, process.env);
-      return () => apana.dispose();
+      apana = await setupApana(ctx, process.env, { onContext: (event) => advisor?.onContext(event) });
     } catch {
       // setupApana has already undone what it registered: no skill is left without the hooks it needs.
       console.warn("[apana] the OpenCode integration is unavailable; nothing of it was left registered");
+      return;
     }
+    try {
+      const { setupAdvisor } = await import("./private/opencode/advisor.mjs");
+      advisor = await setupAdvisor(ctx, process.env);
+    } catch {
+      console.warn("[apana] Advisor is unavailable");
+    }
+    return async () => {
+      apana.dispose();
+      await advisor?.dispose();
+    };
   },
 };

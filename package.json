@@ -5,7 +5,8 @@
   "type": "module",
   "description": "The apana plugin for Claude Code and OpenCode: shared skills, commands and native hooks.",
   "exports": {
-    ".": "./opencode-plugin.js"
+    ".": "./opencode-plugin.js",
+    "./tui": "./opencode-tui.js"
   },
   "license": "MIT",
   "author": "Alexandru-Cristian Pana",

@@ -47,6 +47,7 @@ export async function setupApana(ctx, env = process.env, options = {}) {
     await keep(ctx.session.hook("prompt", modes.onPrompt));
     await keep(
       ctx.session.hook("context", async (event) => {
+        await options.onContext?.(event);
         const notes = await modes.onContext(event);
         const latest = event.messages.findLast((m) => m?.role === "user" && typeof m.id === "string")?.id;
         try {

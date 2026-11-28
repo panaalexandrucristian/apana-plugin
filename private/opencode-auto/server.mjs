@@ -5,13 +5,15 @@
 // every instance receives the events of every location (so an instance acts only on its own location's sessions); metadata is replaced
 // as a whole on update; interrupt ends a running tool and the step at once but not the background subagents; the handoff must precede
 // OpenCode's own compaction, which starts at the next turn once the context reaches its ceiling.
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HANDOFF_TIMEOUT_MS, parseHandoff, runHandoffScript } from "../opencode/handoff.mjs";
 import { goalHandoff, pausedByInterrupt, sameGoal, samePause } from "./goal-handoff.mjs";
+
+export { parseHandoff, unquote } from "../opencode/handoff.mjs";
 
 // import.meta.url is the real path of the file, also when the plugin folder is reached through a link (measured).
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -28,10 +30,8 @@ const ENDED = new Set(["session.execution.succeeded", "session.execution.failed"
 
 export const DEFAULTS = Object.freeze({ tokens: 200_000, margin: 15_000, deferExtra: 30_000, cooldown: 60, max: 0, skills: "none" });
 const RETRY_MS = 60_000;
-const SCRIPT_TIMEOUT_MS = 90_000;
 const LIST_TIMEOUT_MS = 30_000;
 const INTERRUPT_WAIT_MS = 10_000;
-const MAX_OUTPUT = 4 * 1024 * 1024;
 const TRACKED = 2000;
 // OpenCode's own compaction ceiling: window - max(15% of the window, 16k when the window is at least 32k) (source of 2.3.0 and a measured bracket).
 const RESERVE_SHARE = 0.15;
@@ -87,33 +87,6 @@ export function settingsOf(raw) {
   };
 }
 
-/** A shell-quoted word as Python's shlex.quote writes it (a bare word, or single-quoted parts) -> the word; null when it is not closed. */
-export function unquote(text) {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    if (c === "'" || c === '"') {
-      const end = text.indexOf(c, i + 1);
-      if (end < 0) return null;
-      out += text.slice(i + 1, end);
-      i = end + 1;
-    } else {
-      out += c;
-      i += 1;
-    }
-  }
-  return out;
-}
-
-/** The two things make_context.py prints for OpenCode that the new session needs: the note and the prompt it suggests. Null when either is missing. */
-export function parseHandoff(stdout) {
-  const ready = /^ready: (.+)$/m.exec(stdout)?.[1];
-  const quoted = /^[ \t]*opencode --prompt (.+)$/m.exec(stdout)?.[1];
-  const prompt = quoted === undefined ? null : unquote(quoted.trim());
-  return ready && prompt ? { ready: ready.trim(), prompt } : null;
-}
-
 /** What the new session is told after the note's own prompt: keep working (the note itself says "answer and wait"), and who was still running. */
 export function continuation(tokens, running = []) {
   return (
@@ -140,27 +113,6 @@ const real = (path) => {
   }
 };
 
-/** Runs make_context.py. `children` collects the processes so that unloading the plugin can end them. Never rejects. */
-function runScript(script, args, timeoutMs, { env = process.env, children = new Set() } = {}) {
-  return new Promise((resolve) => {
-    const child = spawn("python3", ["-I", "-B", script, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
-    children.add(child);
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    const keep = (current, data) => (current.length < MAX_OUTPUT ? current + data.toString("utf8") : current);
-    child.stdout.on("data", (data) => (stdout = keep(stdout, data)));
-    child.stderr.on("data", (data) => (stderr = keep(stderr, data)));
-    const finish = (code) => {
-      clearTimeout(timer);
-      children.delete(child);
-      resolve({ code, stdout, stderr });
-    };
-    child.on("error", () => finish(-1));
-    child.on("close", (code) => finish(code ?? -1));
-  });
-}
-
 // What stops a second handoff of a session is shared by the instances of one real directory: a directory reached by two paths has two instances.
 const shares = (globalThis[Symbol.for("apana-auto.shares")] ??= new Map()); // on globalThis: the loader may give each instance its own copy of this module
 const shareOf = (key) => {
@@ -186,7 +138,7 @@ export function createAuto(ctx, options = {}) {
   const pause = options.pause ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const waitMs = options.waitMs ?? INTERRUPT_WAIT_MS;
   const processes = new Set();
-  const run = options.run ?? ((args, timeoutMs) => runScript(script, args, timeoutMs, { env, children: processes }));
+  const run = options.run ?? ((args, timeoutMs) => runHandoffScript(script, args, timeoutMs, { env, children: processes }));
   const log =
     options.log ??
     ((message) => {
@@ -458,7 +410,7 @@ export function createAuto(ctx, options = {}) {
       const folder = mkdtempSync(join(root, `${digest}-`));
       const skillOptions = await skillsArgs(settings.skills, sessionID);
       if (stoppedWork()) return;
-      const result = await run(["--opencode", db, folder, "--session", sessionID, ...skillOptions], SCRIPT_TIMEOUT_MS);
+      const result = await run(["--opencode", db, folder, "--session", sessionID, ...skillOptions], HANDOFF_TIMEOUT_MS);
       if (stoppedWork()) return;
       const note = result.code === 0 ? parseHandoff(result.stdout) : null;
       if (!note) throw new Error(`make_context.py exit ${result.code}: ${(result.stderr || result.stdout).slice(-300).trim()}`);

@@ -14,7 +14,7 @@ LAUNCHER = os.path.join(ASSETS, "opencode-auto")
 START, END = "# >>> opencode-auto >>>", "# <<< opencode-auto <<<"
 ORIGINALS = [b"", b"a\n", b"a", b"a\n\n", b"a\nb\n", b"a\r\nb\r\n", b"\xff\xfe=\n", b"export X=1\n\n\n"]
 SOURCE_FILES = ("opencode-auto/server.js", "opencode-auto/tui.js", "private/opencode-auto/server.mjs",
-                "private/opencode-auto/tui.mjs", "skills/compact-handoff/scripts/make_context.py")
+                "private/opencode-auto/tui.mjs", "private/opencode/handoff.mjs", "skills/compact-handoff/scripts/make_context.py")
 FAKE_OPENCODE = """#!/bin/sh
 if [ "$1" = "--version" ]; then echo "opencode v%s"; exit 0; fi
 echo "auto=${APANA_OPENCODE_AUTO-unset} tokens=${APANA_OPENCODE_AUTO_TOKENS-unset}"

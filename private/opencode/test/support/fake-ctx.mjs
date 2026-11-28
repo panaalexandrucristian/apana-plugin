@@ -43,6 +43,8 @@ export function fakeCtx({ directory = tempDir("apana-ws-"), directories = {}, sk
     },
   });
   const ctx = {
+    agent: { transform: async () => registration("agent.transform") },
+    rpc: { register: async () => registration("rpc.register") },
     storage: {
       get: async (key) => (storage.has(key) ? structuredClone(storage.get(key)) : undefined),
       set: async (key, value) => {
@@ -137,6 +139,7 @@ export function fakeCtx({ directory = tempDir("apana-ws-"), directories = {}, sk
       },
     },
     tool: {
+      transform: async () => registration("tool.transform"),
       hook: async (name, callback) => {
         guard(`tool.hook:${name}`);
         const key = `tool.${name}`;

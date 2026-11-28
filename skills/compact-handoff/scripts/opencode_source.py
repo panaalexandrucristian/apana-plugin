@@ -435,7 +435,7 @@ def check_inventory(inventory, blobs, folder):
     return bad
 
 
-def render(conn, sid):
+def render(conn, sid, *, archive_catalog=False):
     """-> Rendered for the session `sid`: the records in seq order, the uuids of the read-only calls, the forced records {uuid: marker label}, the first tool calls (for the parent handoff), the original size."""
     R = Rendered()
     count = collections.Counter()
@@ -474,7 +474,9 @@ def render(conn, sid):
             if name: R.skills.setdefault(name, len(text))
         elif typ in ("system", "synthetic"):
             t = j.get("text") if isinstance(j.get("text"), str) else ""
-            add(mid, "user", "[opencode %s] %s" % (typ, t))
+            uid = add(mid, "user", "[opencode %s] %s" % (typ, t))
+            if archive_catalog and typ == "system" and t.partition("\n")[0] == "The Code Mode tool catalog has changed.":
+                R.forced[uid] = "[opencode system] Code Mode catalog change"
         elif typ == "compaction":
             add(mid, "user", "[opencode compaction summary] %s" % (j["summary"] if isinstance(j.get("summary"), str) else ""))
             if isinstance(j.get("recent"), str) and j["recent"]:
