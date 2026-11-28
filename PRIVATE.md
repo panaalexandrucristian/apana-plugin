@@ -11,6 +11,10 @@ Skills and hooks that do not need the jev plugin, split out of `panaalexandrucri
 
 ### Plugin version
 
+`0.25.0` for read-only Advisor consultations (see «OpenCode»), active goals carried across automatic handoffs (see «opencode-auto»), and retired skill removal (see «Guarded implementation tasks (historical)»).
+
+*Release checks measured on 2026-11-28 (n=1 passing run per suite):* `npm test -- --test-concurrency=4` passed 1,350 tests, `npm run test:claude-auto` passed 172 (calculated from 115 wrapper, 15 managed mode and 42 installer tests), `npm run test:claude-scope` passed 5, and `npm run test:opencode-runtime` passed all 22 on OpenCode 2.4.2. The first local `npm test` run at default concurrency had three failures, including a subprocess timeout.
+
 `0.24.0` for OpenCode 2.4.x support in both plugins, numbered session titles in automatic handoffs (see «opencode-auto»), and the `android-emulator-tuning` skill (see «Android emulator tuning»).
 
 *Combined release checks, measured on 2026-11-27 (n=1 run per suite):* `npm test` passed 1,384 tests; `npm run test:claude-auto` passed 172 tests (calculated from 115 wrapper, 15 managed mode and 42 installer tests); `npm run test:opencode-runtime` passed all 20 tests on OpenCode 2.4.2 without skips.
@@ -396,6 +400,8 @@ Measured on 2026-11-07 in the worktree of the branch `fix-install-make-context`:
 
 ## Guarded implementation tasks (historical)
 
+**Retired skills (`0.25.0`).** Removed `assess-complexity`, `code-rag`, `code-rag-setup`, `harness2`, `improve-skill`, and `scope` from the package and their active registrations. Loading the new version stops the scope gate even in sessions with saved scope state; the state and reports stay on disk. Measured on 2026-11-28 (n=1 package and catalog inventory per revision): both inventories went from 30 skills to 24.
+
 The standalone planner/launcher was followed by an in-session `/apana:scope <task>` workflow; both have been removed. The in-session workflow started read-only investigation: the model proposed exact production/test paths and test commands, the user approved the nonce, and hooks gated subsequent writes and commands. New tasks revoked prior approval. Mapping paths did not prove test semantics or prevent unrelated edits inside an approved file.
 
 The old `install-claude-scope` skill and launcher sources have been removed. The legacy uninstaller remains for old installations and does not remove runs/reports. No local installation is removed by updating these sources.
@@ -495,7 +501,7 @@ The old `install-claude-scope` skill and launcher sources have been removed. The
 
 *Handoff.* `opencode_source.py` used to refuse a session that has a `skill` message (what OpenCode appends when a skill is activated through its API, data `{skill, name, text}`). It now keeps it whole in a blob, lists the id for reloading and covers it in the independent source inventory; the test that refused it now checks that a skill message with a non-string text is refused.
 
-*Advisor.* A terminal command chooses a model and variant from the live project catalog, takes a verified snapshot at the next model-call boundary, and runs a read-only child. A linked child's native report persists and wakes an idle source. If the source request was already assembled, the context hook inserts the same report under its inbox ID; it writes nothing to session history itself. Consultation state is shared by session ID because OpenCode can load the RPC and the context hook through different aliases of the same directory. The archive tool limits file reads to the handoff and calls its bounded reader. A note that fits the selected model's inline budget goes directly in the first request; larger notes and referenced blobs use the reader.
+*Advisor (`0.25.0`).* A terminal command chooses a model and variant from the live project catalog, takes a verified snapshot at the next model-call boundary, and runs a read-only child. A linked child's native report persists and wakes an idle source. If the source request was already assembled, the context hook inserts the same report under its inbox ID; it writes nothing to session history itself. Consultation state is shared by session ID because OpenCode can load the RPC and the context hook through different aliases of the same directory. The archive tool limits file reads to the handoff and calls its bounded reader. A note that fits the selected model's inline budget goes directly in the first request; larger notes and referenced blobs use the reader.
 
 **Advisor optimization, measured on OpenCode 2.4.2** (2026-11-28, local stand-in provider, n=1 consultation per arm): for the same conversation and question, the verified note was 4,432 bytes in both arms. Reading it via the advisor's tool took two requests to the advisor model and 166 ms from consultation submission to receipt; including it in the first request took one and 107 ms. This measures an avoided provider round trip on that input, not a latency estimate for a real provider.
 
@@ -574,6 +580,8 @@ The shared skill verifies a pinned Harness² installation, runs the local creden
 **Numbered titles at handoff (`0.24.0`).** The server sets the successor's title at creation from the latest source title and the existing chain counter. It replaces a trailing numeric suffix, preserves other parentheses and fork labels, and appends the title as a JSON string to the first message sent to the successor. A missing or empty title leaves that message unchanged so OpenCode can generate the successor's title itself.
 
 *Measured on 2026-11-27 before combining the release:* on OpenCode 2.4.2 with a local stand-in provider, the title persisted after each continuation and matched the title in the first user message (n=1 chain, n=2 handoffs). The empty-title case omitted the title line and triggered native naming from that message (n=1 separate handoff). A read-only before/after comparison (n=1,162 stored source sessions, first-handoff counter) found the expected title additions on 1,151 destinations and identical requests for 11 untitled sources. ` (2)` and ` (3)` occurred once each; both were replaced by the calculated first-handoff suffix ` (2)`. All other parenthetical text was retained.
+
+**Active goals at handoff (`0.25.0`).** When an automatic handoff pauses a running goal and it is still in that same pause before submission, the successor starts a native goal with the same objective and the handoff note available from its first turn. User-paused, completed and cleared goals remain inactive.
 
 ## Android emulator tuning
 
