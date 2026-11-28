@@ -21,12 +21,9 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:explica-clar` | A mode, switched on by the user, in which every explanation is clear. |
 | `apana:android-emulator-tuning` | Find Android Emulator source, audit effective AVD settings, tune graphics and boot, or update the SDK emulator package and verify boot. |
 | `apana:android-ui-step` | Taps a label on an Android emulator and prints a digest of the new screen. |
-| `apana:scope` | Investigate a coding task, ask about unclear intent, then gate edits to exact paths after explicit user approval. |
 | `apana:review-diff` | Ask what to review (uncommitted changes, a commit, a PR) when given no argument; a fresh reviewer subagent, without the conversation that produced the code, challenges every changed hunk and every new class of the diff (why, necessary, aligned with the project standard, in the right place, optimal) in one report; the main agent applies its exact edits only on the state the reviewer saw, then has a fresh reviewer check the result in a full pass or a targeted confirmation. A bundled read-only script (`diff-target.mjs`) lists the files and hunks of the target, takes and verifies a snapshot of the reviewed state, and checks a batch of edits against it before any write. |
 | `apana:review-plan` | Ask what plan to review when given no argument; four subagents first (one finds written project standards, one looks up official best practices, one finds the most recently introduced comparable implementations with `git log`, one maps the application's layers), then a fresh reviewer subagent without the planning conversation checks each proposal across the layers it affects and challenges every step of the plan, every new class or file it adds and what it leaves out (why, necessary, aligned with the project standard, holds, in the right place, optimal); the plan text, never the code, is fixed and the pass repeated. |
 | `apana:pr-convention-check` | Read-only check of a diff against the conventions of the repository: splits it into features and technical decisions, compares each decision with the 3-4 most recent comparable commits of a reference branch you name, and classifies deviations as justified, to fix or to decide. |
-| `apana:assess-complexity` | Before a plan or code change is implemented: rates its size and blast radius and, separately, its Cynefin domain, then recommends the process (recon, steps, gates) and the model and effort per phase, with the cost at API rate. |
-| `apana:improve-skill` | Digests the Claude Code transcripts of this laptop into per-skill usage records (all skills, not only apana), merges digests from several laptops and checks evidence-backed reports that propose changes to a skill. Local files by default; publishing to a private repository is opt-in. |
 | `apana:update-sessions` | Updates the apana plugin on disk, then types `/reload-plugins` at the empty prompt of every idle Claude Code session in iTerm2 and checks each `Reloaded:` line. Started by hand only; other terminals are skipped with the command to type. |
 | `apana:uninstall-claude-scope` | Remove an old standalone launcher and its marked PATH block without removing reports or unrelated files. |
 | `apana:jev-decision-loop` | A mode, switched on by the user, in which Jev picks every next step of the session from 2-5 options the model writes. |
@@ -36,31 +33,24 @@ Update on each machine: `claude plugin marketplace update apana-private && claud
 | `apana:uninstall-claude-openai` | Preview and remove the owned launcher and shell alias, keeping credentials, state and shared dependencies. |
 | `apana:claude-copilot` | Install or verify a separate GitHub Copilot subscription launcher with fresh account models and a fail-closed model guard. |
 | `apana:uninstall-claude-copilot` | Preview and remove only its owned launcher/alias, retaining credentials, state, native plugin and dependencies. |
-| `apana:harness2` | Install and run pinned Harness² on Apple Silicon from OpenCode or Claude Code; OpenCode is the only internal agent. |
 | `apana:opencode-plugin-skills-sync` | Set up, check or repair a background job (LaunchAgent, systemd user unit or scheduled task) that keeps one link per skill of every enabled Claude Code plugin except apana in OpenCode's config folder, so plugin updates reach OpenCode by themselves. |
 | `apana:opencode-shell-guard` | Check, preview or set bash as OpenCode's shell, link a plugin that refuses `grep` with advice to use `rg` and `find` with advice to use `fd`, and write a marked note in the `AGENTS.md` beside the config. Removes the old grep `permissions` rules and keeps the user's own rules and the rest of `AGENTS.md`. |
 
-OpenCode: see [OpenCode](#opencode) below. The skills that manage Claude Code itself (the launchers and their uninstallers, `install-claude-auto`, `improve-skill`, `update-sessions`) are Claude Code only.
+OpenCode: see [OpenCode](#opencode) below. The skills that manage Claude Code itself (the launchers and their uninstallers, `install-claude-auto`, `update-sessions`) are Claude Code only.
 
 ## OpenCode
 
 The supported line is OpenCode **2.4.x**, verified on **2.4.2** (the V2 plugin API; V1 is not supported). Either clone this repository and list the folder (a folder, not `opencode-plugin.js`) in `plugins` of `opencode.json` or `opencode.jsonc`, or use OpenCode's own Git install with your own Git credentials (`opencode plugin add github:panaalexandrucristian/apana-plugin`; the tests of this repository load the folder and an extracted `npm pack`, not a Git install). Restart OpenCode (or update the package) after a change: the text of the skills and commands is read when the plugin is set up, not watched.
 
-**What runs there.** `android-emulator-tuning`, `android-ui-step`, `assess-complexity`, `class-graph`, `code-rag`, `code-rag-setup`, `compact-handoff`, `compact-session`, `explica-clar`, `harness2`, `install-opencode-auto`, `jev-decision-loop`, `logic-test-debug`, `opencode-plugin-skills-sync`, `opencode-shell-guard`, `pr-convention-check`, `review-diff`, `review-plan`, `scope`, `uninstall-opencode-auto`, `variant-check`, and the command `explica-optiuni`, each as `/apana:<name> <arguments>` (the arguments reach the skill untouched as the text after the command name). `compact-session` is explicit-only and is not offered to the model. The text of each skill gets a short note that maps Claude's tool names to OpenCode's; `allowed-tools` and `hooks` in a skill's frontmatter are not applied, and OpenCode's own permissions decide what runs (nothing here grants or lifts one).
+**What runs there.** `android-emulator-tuning`, `android-ui-step`, `class-graph`, `compact-handoff`, `compact-session`, `explica-clar`, `install-opencode-auto`, `jev-decision-loop`, `logic-test-debug`, `opencode-plugin-skills-sync`, `opencode-shell-guard`, `pr-convention-check`, `review-diff`, `review-plan`, `uninstall-opencode-auto`, `variant-check`, and the command `explica-optiuni`, each as `/apana:<name> <arguments>` (the arguments reach the skill untouched as the text after the command name). `compact-session` is explicit-only and is not offered to the model. The text of each skill gets a short note that maps Claude's tool names to OpenCode's; `allowed-tools` and `hooks` in a skill's frontmatter are not applied, and OpenCode's own permissions decide what runs (nothing here grants or lifts one).
 
-**The modes.** They are switched on by the user's command, from the admitted message, not from the text of a prompt that may never be admitted: `/apana:scope <task>` (then `/apana:scope approve <nonce>`), `/apana:jev-decision-loop` (or `@jev-decision-loop`; a skill load by the model also starts it) and the bare `/apana:class-graph`. Scope allows reads and the proposal, then exactly the approved files and test commands; every other tool, Code Mode (`execute`), MCP tools and subagents included, is refused; a shell command must run in the project directory in the foreground. Jev needs one `GO` per tool call, refuses Code Mode, checks the end of a turn once, and `jev.mjs --off` ends it. **Scope and Jev cannot be on in the same session** (the second is refused and nothing changes; scope has no off switch, use another session). A fork does not inherit a mode, and a session moved to another directory is refused by its scope until a new task. Their state is kept under `$XDG_STATE_HOME/opencode/apana/`, apart from Claude Code's. These are tool gates, not an operating-system sandbox; tools that the model provider runs itself are outside them.
+**The modes.** `/apana:jev-decision-loop` (or `@jev-decision-loop`) and the bare `/apana:class-graph` start their modes from the admitted message. A skill load by the model also starts the Jev loop. Jev needs one `GO` per tool call, refuses Code Mode, checks the end of a turn once, and `jev.mjs --off` ends it. A fork does not inherit a mode. State is kept under `$XDG_STATE_HOME/opencode/apana/`, apart from Claude Code's. The Jev gate applies to OpenCode tool calls; tools run by the model provider are outside it.
 
 **Compaction.** `/apana:compact-session` asks OpenCode for a compaction and supplies the same verified, deterministic transcript that Claude Code gets, in the same session, with no model summary and no recent tail beside it. If the replacement would not be smaller, or anything fails, the context is unchanged and no summarizer runs. OpenCode 2.4.2 has no result for a verified no-op, so it records such a run as a failed compaction; the report the model receives with the next prompt says which of success, no-op and failure it was, and a success is reported only when OpenCode recorded the replacement. Archives go to `~/.claude/handoffs/` as for Claude Code; do not delete them. Media and encrypted provider checkpoints are not supported and make the compaction fail closed.
 
 **Advisor.** In the terminal UI, run `/apana:advisor [question]` and choose a model and effort from the project's available text models with tool support. Apana waits at the next model-call boundary, writes a verified handoff with `make_context.py`, and starts a read-only advisor in the background. Stay in the same session: the advice appears there and reaches the agent before it continues. With no question, the advisor reviews the current decision or blocker. Use `/apana:advisor-cancel` to cancel a running consultation. Handoffs are kept under `$XDG_DATA_HOME/opencode/apana/handoffs/advisor/` (default data root: `~/.local/share`).
 
-**Configuration** is by environment only (`APANA_LOGIC_TEST_DEBUG`, `APANA_CLASS_GRAPH_NUDGE`, `APANA_SCOPE_STATE_DIR`, `APANA_CLASS_GRAPH_STATE_DIR`, `JEV_GATE_DIR`); plugin `userConfig` is a Claude Code feature. If the larger integration cannot be set up, what it had registered is undone, one warning is printed and `logic-test-debug` keeps working on its own. `logic-test-debug` keeps its in-memory state per session, so a reload in the middle of a turn can drop its directive for that turn.
-
-### Harness² on Apple Silicon
-
-On each Mac, load Apana using the [OpenCode setup above](#opencode) or an Apana plugin version containing this skill in Claude Code. For local development, Claude Code can load the checkout in an interactive session with `claude --plugin-dir /absolute/path/to/apana-plugin`. In either host, invoke `/apana:harness2` and ask to check, install, or run the demo. Prerequisites: native macOS arm64, `python3`, Git and `uv`. The installer keeps the pinned checkout and Python environment under `~/.local/share/apana/harness2`; it does not change the host configuration.
-
-The demo needs no model credentials. [JobBench on macOS](skills/harness2/reference/jobbench.md) is experimental and uses the OpenCode CLI already installed on the Mac for execution, improvement, and rubric judging. You choose the models and approve model calls separately. The skill does not install a second OpenCode or run Codex.
+**Configuration** is by environment only (`APANA_LOGIC_TEST_DEBUG`, `APANA_CLASS_GRAPH_NUDGE`, `APANA_CLASS_GRAPH_STATE_DIR`, `JEV_GATE_DIR`); plugin `userConfig` is a Claude Code feature. If the larger integration cannot be set up, what it had registered is undone, one warning is printed and `logic-test-debug` keeps working on its own. `logic-test-debug` keeps its in-memory state per session, so a reload in the middle of a turn can drop its directive for that turn.
 
 ### Same-session compaction
 
@@ -108,20 +98,6 @@ After updating the plugin and rerunning `/apana:install-claude-auto`, `claude-au
 
 Read [managed mode](skills/install-claude-auto/references/managed-mode.md) for supported flags, local commands, handoff limits and permission behavior. The default launcher is unchanged. Offline tests cover the new runtime; live CLI and organizational-policy compatibility remain unverified.
 
-### Guarded implementation tasks
-
-In a normal `claude` session with Apana enabled:
-
-    /apana:scope Fix the requested behavior and add only its regression tests
-
-The hook creates an investigation-only scope for that session and working directory. Read/Glob/Grep and user questions remain available; repository writes are denied. Claude must investigate repository-answerable questions rather than guess and ask the user about ambiguous intent. It writes a proposal with exact production paths, test paths mapped to production, and narrow test commands. Review the proposed behavior, paths and commands, then submit:
-
-    /apana:scope approve <nonce shown by the hook>
-
-Only those exact files and test commands are then permitted. Starting a new `/apana:scope <task>` revokes the previous approval; changed intent or more files require a fresh proposal and user approval. MCP and subagents are blocked while scope is active. This is opt-in, not automatic for every prompt, and does not commit changes. The old installer/launcher is no longer shipped; `/apana:uninstall-claude-scope` remains solely to remove legacy installations. Updating the plugin does not uninstall them or delete reports.
-
-**Limits:** this is a tool/path gate in the real checkout, not the old planner, temporary-clone broker, OS sandbox, automatic RED/GREEN provenance or semantic audit. Production-to-test mapping is a declaration, not proof that a test covers changed behavior: the model must explain the behavior and the user must review it. Focused assertions for changed production behavior are in scope; unrelated coverage is not. Approved test runners execute repository code with the user's rights and can have side effects. Preexisting symlink paths are rejected, but path checks and later tool execution are not atomic; concurrent changes by local processes are outside the guarantee. Hooks disabled by policy, timeout or external processes remain outside this gate's control. Unexpected scope-handler errors block prompts/tools rather than silently authorizing a task.
-
 ## Commands
 
 `/apana:explica-optiuni [subject, transcript path or session ID]` restores the context before explaining the current result and possible next steps. With no argument, it uses the current conversation. It starts with the conclusion, separates completed work from unknowns and proposals, and gives concrete alternatives with a recommendation. If the alternatives are rejected, it adapts them to the feedback rather than starting implementation.
@@ -132,11 +108,12 @@ This is an explicitly invoked Markdown command at `commands/explica-optiuni.md`,
 
 ## Hooks
 
-`hooks/hooks.json` calls `scripts/apana-hook.mjs`. Guidance hooks add context; scope can deny tool use or block a prompt:
+Once this version is loaded, `/apana:scope` no longer restricts tools in Claude Code or OpenCode, including in sessions that previously activated it. The update leaves existing scope files and reports on disk.
+
+`hooks/hooks.json` calls `scripts/apana-hook.mjs` to add guidance:
 
 - the `logic-test-debug` directive on code prompts (`APANA_LOGIC_TEST_DEBUG=off` turns it off);
 - the `class-graph` nudge after a bare `/apana:class-graph` (`APANA_CLASS_GRAPH_NUDGE=off` turns it off; `APANA_CLASS_GRAPH_STATE_DIR` moves its state).
-- the explicit `scope` gate, with session state in `~/.claude/apana-scope` (`APANA_SCOPE_STATE_DIR` overrides it).
 
 The same hook manifest also loads `hooks/compact-session.ts`, the native bridge used only after explicit activation of `compact-session`. Its Stop command is scoped to the skill, not registered globally.
 
@@ -156,7 +133,7 @@ The existing environment variables remain compatible and take precedence when ex
     npm test                  # node suite: hooks, skills, self tests, end to end
     npm run test:claude-auto  # offline Python suites of claude-auto and its installer
     npm run test:opencode-auto # offline: the opencode-auto plugin parts, and its installer, uninstaller and launcher (a fake `opencode`, a temporary HOME)
-    npm run test:claude-scope # Node scope gates and Python legacy-uninstaller tests
+    npm run test:claude-scope # offline legacy launcher uninstaller tests
     npm run test:claude-openai # offline bridge suite; proxy lifecycle skips if CLIProxyAPI is absent
     npm run test:claude-copilot # offline Copilot fixtures; no native download/login/inference
     claude plugin test .      # native compact-session hook tests on a supporting build

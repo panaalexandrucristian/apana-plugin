@@ -44,10 +44,6 @@ describe("the text of a skill in OpenCode", () => {
     for (const skill of skills) assert.ok(!skill.content.includes("${CLAUDE_"), skill.id);
     const variant = skills.find((s) => s.id === "variant-check");
     assert.ok(variant.content.includes(`node ${join(ROOT, "skills", "variant-check")}/scripts/variants.mjs`));
-    const harness = skills.find((s) => s.id === "harness2");
-    const dir = join(ROOT, "skills", "harness2");
-    assert.equal(harness.path, join(dir, "SKILL.md"));
-    assert.ok(harness.content.includes(`python3 "${join(dir, "scripts", "setup.py")}" check`));
     const sync = skills.find((s) => s.id === "opencode-plugin-skills-sync");
     assert.ok(sync.content.includes(`python3 -I "${join(ROOT, "skills", "opencode-plugin-skills-sync", "scripts", "install.py")}" --check`));
     const guard = skills.find((s) => s.id === "opencode-shell-guard");
@@ -61,11 +57,9 @@ describe("the text of a skill in OpenCode", () => {
       assert.match(skill.content, /not applied in OpenCode/, skill.id);
     }
   });
-  it("tells the review skills what their subagent tool is, and scope and Jev how they are enforced", async () => {
+  it("tells the review skills what their subagent tool is, and Jev how it is enforced", async () => {
     const byId = Object.fromEntries((await loadCatalog()).skills.map((s) => [s.id, s]));
     for (const id of ["review-diff", "review-plan"]) assert.match(byId[id].content, /use the `subagent` tool/);
-    assert.match(byId.scope.content, /does not\s+start it|loading this skill alone does not/);
-    assert.match(byId.scope.content, /not an operating-system sandbox/);
     assert.match(byId["jev-decision-loop"].content, /Code Mode \(`execute`\) is refused/);
   });
   it("replaces compact-session by the explicit-only description of what the adapter does", async () => {

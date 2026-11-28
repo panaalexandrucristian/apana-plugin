@@ -1,5 +1,5 @@
-// The modes of apana on OpenCode: scope (exact-file edit gate), the Jev decision loop (one Jev decision per tool call) and the
-// class-graph reminders. The logic is the one Claude Code runs (claude-scope-hook/core.mjs, jev-decision-loop/gate-hook.mjs,
+// The modes of apana on OpenCode: the Jev decision loop (one Jev decision per tool call) and the
+// class-graph reminders. The logic is the one Claude Code runs (jev-decision-loop/gate-hook.mjs,
 // class-graph-nudge/hook.mjs); this file only connects it to OpenCode's hooks.
 //
 // Admission is not execution. The `prompt` hook may run more than once for one prompt, and for a prompt that is never admitted,
@@ -10,7 +10,6 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { onPrompt as scopePrompt, onTool as scopeTool, proposalPath, scopeStatus } from "../claude-scope-hook/core.mjs";
 import { handleNudgeHook } from "../class-graph-nudge/hook.mjs";
 import { splitSegments } from "../class-graph-nudge/classify.mjs";
 import { extractPromptText } from "../logic-test-debug/opencode.mjs";
@@ -21,22 +20,16 @@ import { deriveIntent, storedIntent } from "./intents.mjs";
 const JEV_SCRIPT = join(ROOT, "skills", "jev-decision-loop", "scripts", "jev.mjs");
 // The only variables a command may set in front of jev.mjs (the skill documents JEV_MODEL); anything else is not a Jev call.
 const SAFE_JEV_ENV = /^(?:JEV_MODEL|JEV_PROVIDER)=[A-Za-z0-9_./:@-]+$/;
-// Tools that Claude's scope hook does not see either (its matcher lists Bash, Grep, Read, Glob, Edit, Write, AskUserQuestion,
-// Agent and MCP tools): loading a skill, fetching or searching the web. Every other tool name is gated.
-const UNGATED = new Set(["skill", "webfetch", "websearch"]);
 const GATE_NAMES = { read: "Read", grep: "Grep", glob: "Glob", question: "AskUserQuestion", edit: "Edit", write: "Write", shell: "Bash", subagent: "Agent" };
-const SKILL_OF = { scope: "scope", jev: "jev-decision-loop", "class-graph": "class-graph" };
+const SKILL_OF = { jev: "jev-decision-loop", "class-graph": "class-graph" };
 const MAX_NOTES = 8;
+// This scope-related note was stored against a Jev message, not a scope message.
+const LEGACY_JEV_SCOPE_NOTE = "Apana: the Jev decision loop cannot start while scope is on in this session; the two gates would block each other. Nothing was changed. Use another session for Jev (scope has no off switch).";
 
 export const TEXT = {
-  scopeUsage: "Apana: the scope command was not recognised, so nothing was started. Use `/apana:scope <task on one line>` or `/apana:scope approve <nonce>`.",
-  scopeVsJev: "Apana: scope cannot start while the Jev decision loop is on in this session; the two gates would block each other. Nothing was changed. Stop Jev first (`jev.mjs --off`) or use another session.",
-  jevVsScope: "Apana: the Jev decision loop cannot start while scope is on in this session; the two gates would block each other. Nothing was changed. Use another session for Jev (scope has no off switch).",
   jevOn: "Apana: the Jev decision loop is on. Every tool call needs a fresh Jev decision (`GO`), Code Mode (`execute`) is refused, and `jev.mjs --off` ends the mode.",
   notOwned: (kind) => `Apana: the skill id "${SKILL_OF[kind]}" is used by another source in this session, so the Apana ${kind} mode was not started.`,
-  movedScope: (was) => `Apana scope was started in ${was}; this session now works in another directory, so every gated tool is refused. Start a new \`/apana:scope <task>\` here.`,
   jevCode: "Apana: the Jev decision loop is on and one decision covers one call, so Code Mode (`execute`) is refused. Use the direct tools.",
-  shellPlace: "Apana scope: a shell command must run in the project directory and in the foreground.",
 };
 
 /** A name for the file-based state of the shared modules (they want a UUID v4); derived from the session id, never shared with Claude. */
@@ -51,7 +44,6 @@ export function adapterEnv(env = process.env) {
   const home = join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "opencode", "apana");
   const out = {
     ...env,
-    APANA_SCOPE_STATE_DIR: env.APANA_SCOPE_STATE_DIR || join(home, "scope"),
     APANA_CLASS_GRAPH_STATE_DIR: env.APANA_CLASS_GRAPH_STATE_DIR || join(home, "class-graph"),
     JEV_GATE_DIR: env.JEV_GATE_DIR || join(home, "jev"),
   };
@@ -93,7 +85,6 @@ export function createModes(ctx, { env, owns }) {
     if (typeof directory !== "string" || !directory) throw new Error("the session's directory is unavailable");
     return directory;
   };
-  const scopeOn = (sid) => scopeStatus(localID(sid), env) !== null;
   const jevActive = async (sid) => (await ctx.storage.get(jevKey(sid))) === true && !loopOff(localID(sid), env);
   const activateJev = async (sid) => {
     loopReset(localID(sid), env);
@@ -101,33 +92,20 @@ export function createModes(ctx, { env, owns }) {
     await ctx.storage.remove(stopKey(sid));
   };
 
-  /** Why a mode cannot start now, or null. Used before a command is sent and again when the admitted message is handled. */
-  async function refusal(kind, sid) {
-    if (kind === "scope" && (await jevActive(sid))) return TEXT.scopeVsJev;
-    if (kind === "jev" && scopeOn(sid)) return TEXT.jevVsScope;
-    return null;
-  }
-
   async function addNote(sid, note) {
     const previous = await ctx.storage.get(notesKey(sid));
     const list = Array.isArray(previous) ? previous : [];
     await ctx.storage.set(notesKey(sid), [...list, note].slice(-MAX_NOTES));
   }
 
-  /** Starts the mode a message asked for. Returns the note for the model, or null. Errors of scope and Jev propagate: a gate that cannot start must not look started. */
+  /** Starts the mode a message asked for and returns its note, if any. */
   async function applyIntent(sid, intent) {
     if (!(await owns(SKILL_OF[intent.kind]))) return TEXT.notOwned(intent.kind);
-    const refused = await refusal(intent.kind, sid);
-    if (refused) return refused;
     if (intent.kind === "jev") {
       await activateJev(sid);
       return TEXT.jevOn;
     }
     const cwd = await rootFor(sid);
-    if (intent.kind === "scope") {
-      const out = scopePrompt({ session_id: localID(sid), cwd, prompt: intent.text }, env);
-      return out?.hookSpecificOutput?.additionalContext ?? TEXT.scopeUsage;
-    }
     handleNudgeHook("UserPromptSubmit", { session_id: localID(sid), prompt: intent.text, cwd }, env);
     return null;
   }
@@ -149,7 +127,8 @@ export function createModes(ctx, { env, owns }) {
    */
   async function onContext({ sessionID: sid, messages }) {
     const users = messages.filter((m) => m?.role === "user" && typeof m.id === "string");
-    const latest = users.at(-1)?.id;
+    const latestUser = users.at(-1);
+    const latest = latestUser?.id;
     const notes = [];
     if (latest !== undefined) {
       const cursor = await ctx.storage.get(cursorKey(sid));
@@ -169,9 +148,15 @@ export function createModes(ctx, { env, owns }) {
         await ctx.storage.set(cursorKey(sid), latest);
       }
     }
-    // Notes of this turn stay while its message is the latest; one-shot notes (no `mid`) are given once.
+    // Notes of this turn stay while its message is the latest, except for notes from the removed scope mode.
+    // One-shot notes (no `mid`) are given once.
     const stored = await ctx.storage.get(notesKey(sid));
-    const kept = (Array.isArray(stored) ? stored : []).filter((n) => typeof n?.text === "string" && (n.mid === undefined || n.mid === latest));
+    const latestIsScope = latestUser?.metadata?.apana?.kind === "scope";
+    const kept = (Array.isArray(stored) ? stored : []).filter(
+      (n) => typeof n?.text === "string" && (
+        n.mid === undefined || (n.mid === latest && !latestIsScope && n.text !== LEGACY_JEV_SCOPE_NOTE)
+      ),
+    );
     for (const n of kept) notes.push(n.text);
     const next = kept.filter((n) => n.mid !== undefined);
     if (Array.isArray(stored) && (kept.length !== stored.length || next.length !== kept.length)) {
@@ -185,19 +170,6 @@ export function createModes(ctx, { env, owns }) {
   /** What each request is told about the modes that are on, read from their state (so it survives a reload and a restart). */
   async function reminders(sid) {
     const out = [];
-    const status = scopeStatus(localID(sid), env);
-    if (status) {
-      if (status.corrupt) out.push("Apana scope: its state cannot be read, so every gated tool is refused. Start a new `/apana:scope <task>`.");
-      else {
-        const cwd = await rootFor(sid);
-        if (status.root !== resolve(cwd)) out.push(TEXT.movedScope(status.root));
-        else if (status.phase === "investigating") {
-          out.push(`Apana scope is investigating only: ${status.task}. Reads, greps, globs and questions to the user are allowed; edits and shell are refused. When ready, write the proposal JSON (production_changes, test_changes with production_paths, test_commands) only to ${proposalPath(localID(sid), env)}, show the user its files, and ask them to type /apana:scope approve ${status.nonce}.`);
-        } else if (status.phase === "approved") {
-          out.push(`Apana scope is approved. Edit only: ${[...status.manifest.production_changes, ...status.manifest.test_changes].join(", ")}. Shell only for exactly: ${status.manifest.test_commands.join(" | ")}. A new file or a changed intent needs a new /apana:scope task.`);
-        }
-      }
-    }
     try {
       const reminder = handleNudgeHook("UserPromptSubmit", { session_id: localID(sid), prompt: "continue" }, env);
       if (reminder) out.push(reminder.hookSpecificOutput.additionalContext);
@@ -206,24 +178,10 @@ export function createModes(ctx, { env, owns }) {
     }
     return out;
   }
-  const gated = (event) => (UNGATED.has(event.tool) ? null : GATE_NAMES[event.tool] ?? event.tool);
-
   function toolInput(event, cwd) {
     const input = event.input ?? {};
     const file = typeof input.path === "string" ? resolve(cwd, input.path) : undefined;
     return { ...input, file_path: file, glob: input.include, "-i": input.caseSensitive === false };
-  }
-
-  /** The reason scope refuses this call, or null. */
-  function scopeReason(event, cwd, sid) {
-    const name = gated(event);
-    if (name === null) return null;
-    if (event.tool === "shell") {
-      const elsewhere = event.input?.workdir !== undefined && resolve(cwd, String(event.input.workdir)) !== resolve(cwd);
-      if (event.input?.background === true || elsewhere) return TEXT.shellPlace;
-    }
-    const out = scopeTool({ session_id: localID(sid), cwd, tool_name: name, tool_input: toolInput(event, cwd) }, env);
-    return out?.hookSpecificOutput?.permissionDecisionReason ?? null;
   }
 
   const ownJev = (input, cwd) =>
@@ -232,31 +190,21 @@ export function createModes(ctx, { env, owns }) {
   /** Tool hook, before a call: throwing refuses the call (OpenCode returns the message to the model as the tool's error). */
   async function beforeTool(event) {
     const sid = event.sessionID;
-    const scope = scopeOn(sid);
-    if (event.tool === "skill" && event.input?.id === "jev-decision-loop" && scope) throw new Error(TEXT.jevVsScope);
     const jev = await jevActive(sid);
     const searchLike = event.tool === "shell" || event.tool === "grep";
-    if (!scope && !jev && !searchLike) return;
+    if (!jev && !searchLike) return;
     let cwd;
     const sessionDir = async () => (cwd ??= await rootFor(sid));
-    if (scope || jev) {
+    if (jev) {
       const dir = await sessionDir();
-      if (scope) {
-        const status = scopeStatus(localID(sid), env);
-        if (!status.corrupt && status.root !== resolve(dir)) throw new Error(TEXT.movedScope(status.root));
-        const reason = scopeReason(event, dir, sid);
-        if (reason) throw new Error(reason);
-      }
-      if (jev) {
-        if (event.tool === "execute") throw new Error(TEXT.jevCode);
-        const own = event.tool === "shell" && ownJev(event.input, dir);
-        const name = own ? "Bash" : GATE_NAMES[event.tool] === "Bash" ? "Shell" : (GATE_NAMES[event.tool] ?? event.tool);
-        const input = { session_id: localID(sid), tool_name: name, tool_input: toolInput(event, dir) };
-        const blocked = jevGate("pre", input, env);
-        if (blocked) throw new Error(blocked.hookSpecificOutput.permissionDecisionReason);
-        // `jev.mjs --off` ends the mode here as well, so that Code Mode is allowed again.
-        if (own && jevCall(event.input.command)?.flag === "--off") await ctx.storage.remove(jevKey(sid));
-      }
+      if (event.tool === "execute") throw new Error(TEXT.jevCode);
+      const own = event.tool === "shell" && ownJev(event.input, dir);
+      const name = own ? "Bash" : GATE_NAMES[event.tool] === "Bash" ? "Shell" : (GATE_NAMES[event.tool] ?? event.tool);
+      const input = { session_id: localID(sid), tool_name: name, tool_input: toolInput(event, dir) };
+      const blocked = jevGate("pre", input, env);
+      if (blocked) throw new Error(blocked.hookSpecificOutput.permissionDecisionReason);
+      // `jev.mjs --off` ends the mode here as well, so that Code Mode is allowed again.
+      if (own && jevCall(event.input.command)?.flag === "--off") await ctx.storage.remove(jevKey(sid));
     }
     if (!searchLike) return;
     try {
@@ -274,7 +222,7 @@ export function createModes(ctx, { env, owns }) {
     if (event.status !== "completed") return;
     const sid = event.sessionID;
     if (event.tool === "skill" && event.input?.id === "jev-decision-loop") {
-      if (!scopeOn(sid) && (await owns("jev-decision-loop"))) await activateJev(sid);
+      if (await owns("jev-decision-loop")) await activateJev(sid);
       return;
     }
     if (event.tool !== "shell" || !(await jevActive(sid))) return;
@@ -299,5 +247,5 @@ export function createModes(ctx, { env, owns }) {
     } else if (stop !== undefined) await ctx.storage.remove(stopKey(sid));
   }
 
-  return { onPrompt, onContext, beforeTool, afterTool, onIdle, refusal };
+  return { onPrompt, onContext, beforeTool, afterTool, onIdle };
 }

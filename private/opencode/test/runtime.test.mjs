@@ -47,14 +47,6 @@ async function settle(rt, n, ms = 30000) {
   throw new Error(`expected ${n} requests, saw ${rt.mainRequests().length}\n${rt.log().split("\n").filter((l) => /ERROR/.test(l)).slice(-3).join("\n")}`);
 }
 const toolResults = (request) => (request.body.messages ?? []).filter((m) => m.role === "tool").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
-const stateFiles = (rt, name) => {
-  const dir = join(rt.dir, "state", "opencode", "apana", name);
-  try {
-    return readdirSync(dir).map((f) => join(dir, f));
-  } catch {
-    return [];
-  }
-};
 
 describe("on a real OpenCode 2.4.x", { skip: reason, timeout: 600000 }, () => {
   it("registers the OpenCode skills and their commands, and none of the tools of Claude Code", { timeout: 90000 }, async () => {
@@ -71,7 +63,7 @@ describe("on a real OpenCode 2.4.x", { skip: reason, timeout: 600000 }, () => {
     await rt.prompt(session, "hello there");
     await settle(rt, 1);
     const system = textOfRole(rt.mainRequests()[0], "system");
-    assert.ok(system.includes("<id>scope</id>") && system.includes("<id>variant-check</id>"));
+    assert.ok(system.includes("<id>class-graph</id>") && system.includes("<id>variant-check</id>"));
     assert.ok(!system.includes("<id>compact-session</id>"), "compact-session is explicit-only: not offered to the model");
     assert.ok(!system.includes("<id>claude-openai</id>"));
   });
@@ -196,67 +188,6 @@ describe("on a real OpenCode 2.4.x", { skip: reason, timeout: 600000 }, () => {
     assert.doesNotMatch(textOfRole(advisor[0], "user"), /Ce faci după ce l-ai citit/);
     assert.match(textOfRole(requests.at(-1), "user"), /<background-result\b/);
     assert.doesNotMatch(textOfRole(requests.at(-1), "user"), /The verified HANDOFF\.md/);
-  });
-
-  it("loads Harness² and runs its read-only check through the bundled helper", { timeout: 90000 }, async () => {
-    const helper = join(ROOT, "skills", "harness2", "scripts", "setup.py");
-    const rt = await start({ script: [{ name: "shell", args: { command: `python3 ${JSON.stringify(helper)} check` } }] });
-    const session = await rt.session();
-    assert.equal((await rt.command(session, "apana:harness2", "check")).status, 204);
-    await settle(rt, 2);
-    const [first, second] = rt.mainRequests();
-    assert.ok(textOfRole(first, "user").includes(`python3 "${helper}" check`));
-    const result = toolResults(second).join("\n");
-    assert.match(result, /Harness²: not installed|Harness² stopped .*requires native macOS arm64/);
-    assert.ok(!readdirSync(rt.home).includes(".local"), "the helper did not create its install root");
-  });
-
-  it("scope: refuses an edit while it investigates, and allows exactly the approved file after the user's approval", { timeout: 180000 }, async () => {
-    const script = [{ name: "edit", args: { path: "src/login.js", oldString: "OLD", newString: "NEW" } }];
-    const rt = await start({ script });
-    mkdirSync(join(rt.ws, "src"));
-    writeFileSync(join(rt.ws, "src", "login.js"), "OLD\n");
-    const session = await rt.session();
-    assert.equal((await rt.command(session, "apana:scope", "Fix login")).status, 204);
-    await settle(rt, 2);
-    const [first, second] = rt.mainRequests();
-    const note = textOfRole(first, "system");
-    assert.ok(note.includes("Scope mode is investigating only"), "the model is told");
-    assert.match(toolResults(second).join("\n"), /Apana scope: investigation is read-only/);
-    assert.equal(readFileSync(join(rt.ws, "src", "login.js"), "utf8"), "OLD\n", "the file was not changed");
-    const [stateFile] = stateFiles(rt, "scope").filter((f) => !f.endsWith(".proposal.json"));
-    const state = JSON.parse(readFileSync(stateFile, "utf8"));
-    assert.equal(state.phase, "investigating");
-    writeFileSync(stateFile.replace(/\.json$/, ".proposal.json"), JSON.stringify({ production_changes: [{ path: "src/login.js" }], test_changes: [{ path: "test/login.test.js", production_paths: ["src/login.js"] }], test_commands: ["node --test test/login.test.js"] }));
-    script.push({ name: "edit", args: { path: "src/login.js", oldString: "OLD", newString: "NEW" } }, { name: "edit", args: { path: "README.md", content: "x", oldString: "a", newString: "b" } });
-    await rt.command(session, "apana:scope", `approve ${state.nonce}`);
-    await settle(rt, 5);
-    assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).phase, "approved");
-    assert.equal(readFileSync(join(rt.ws, "src", "login.js"), "utf8"), "NEW\n", "the approved file was edited");
-    const last = rt.mainRequests().at(-1);
-    assert.match(toolResults(last).join("\n"), /outside the approved exact-file scope/);
-  });
-
-  it("scope: a fork does not inherit the gate of the session it was copied from", { timeout: 120000 }, async () => {
-    const script = [];
-    const rt = await start({ script, mode: "script" });
-    const session = await rt.session();
-    await rt.command(session, "apana:scope", "Fix login");
-    await settle(rt, 1);
-    assert.equal(stateFiles(rt, "scope").length, 1);
-    const fork = await rt.api("POST", `/api/session/${session}/fork`, {});
-    assert.equal(fork.status, 200, fork.text);
-    const forkID = fork.json.data.id ?? fork.json.data.sessionID;
-    script.push({ name: "write", args: { path: "free.txt", content: "hello" } });
-    await rt.prompt(forkID, "write a file");
-    await settle(rt, 3);
-    assert.equal(readFileSync(join(rt.ws, "free.txt"), "utf8"), "hello", "the fork can edit");
-    assert.equal(stateFiles(rt, "scope").length, 1, "no state was created for the fork");
-    assert.ok(!textOfRole(rt.mainRequests().at(-1), "system").includes("Apana scope"), "the fork is not told about a scope that is not its own");
-    await rt.prompt(session, "and the original?");
-    script.push({ name: "write", args: { path: "blocked.txt", content: "no" } });
-    await settle(rt, 5);
-    assert.match(toolResults(rt.mainRequests().at(-1)).join("\n"), /Apana scope: investigation is read-only/, "the original session is still gated");
   });
 
   it("Jev decision loop: refuses a call no decision allows and Code Mode, and `jev.mjs --off` ends it", { timeout: 180000 }, async () => {

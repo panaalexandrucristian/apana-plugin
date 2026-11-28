@@ -1,5 +1,5 @@
 {
-  "description": "Guidance and scope hooks through the command adapter, plus the native bridge for explicitly requested compact-session. Local work only; no model calls.",
+  "description": "Guidance hooks through the command adapter, plus the native bridge for explicitly requested compact-session. Local work only; no model calls.",
   "modules": ["./compact-session.ts"],
   "hooks": {
     "UserPromptSubmit": [
@@ -15,7 +15,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Grep|Read|Glob|Edit|Write|NotebookEdit|AskUserQuestion|Agent|mcp__.*",
+        "matcher": "Bash|Grep",
         "hooks": [
           {
             "type": "command",

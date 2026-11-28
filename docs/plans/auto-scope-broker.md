@@ -1,6 +1,6 @@
 # AutoScope Broker Implementation Plan (superseded)
 
-Historical design only. The standalone planner/launcher was removed in favor of explicit `/apana:scope` hooks in ordinary Claude sessions. Do not implement or install this plan; current behavior and limits are documented in README.md and skills/scope/SKILL.md.
+Historical design only. The standalone planner/launcher and its successor, the explicit `/apana:scope` mode, are no longer shipped. Do not implement or install this plan.
 
 > **For Hermes:** implement task-by-task with strict RED → GREEN → REFACTOR; do not commit without the user's explicit approval.
 

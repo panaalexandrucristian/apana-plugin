@@ -27,8 +27,7 @@ jobs:
       # Offline: the opencode-auto plugin parts with a fake context, and its installer, uninstaller and launcher (a fake `opencode`, a temporary HOME).
       - name: opencode-auto (offline suites)
         run: npm run test:opencode-auto
-      # Offline scope hook gates and legacy launcher removal; no OS sandbox is claimed.
-      - name: scope hooks and legacy uninstall
+      - name: Legacy scope launcher uninstall
         run: npm run test:claude-scope
       # Offline bridge tests; the real proxy lifecycle case skips when CLIProxyAPI is not installed.
       - name: subscription bridge (offline Python suite)
@@ -36,19 +35,6 @@ jobs:
       # Copilot bridge uses only offline fixtures: no native download, login or inference.
       - name: Copilot bridge (offline Python suite)
         run: npm run test:claude-copilot
-      - name: code-rag setup (offline Python suite)
-        run: npm run test:code-rag-setup
-      - name: Harness² installer (offline Python suite)
-        run: npm run test:harness2
       # Throw-away homes only: job files for all three systems, no launchctl, systemctl or schtasks.
       - name: OpenCode plugin skills sync (offline Python suite)
         run: npm run test:opencode-plugin-skills-sync
-      # Test dependencies only; no torch, embedding model or installer execution.
-      - name: Install code-rag test dependencies
-        run: python3 -m pip install -c skills/code-rag-setup/scripts/requirements.txt numpy scipy bm25s llama-index-core tree-sitter tree-sitter-language-pack
-      - name: code-rag (offline Python suite, skips fail)
-        env:
-          CODE_RAG_FAKE_EMBED: "1"
-          HF_HUB_OFFLINE: "1"
-          HF_HUB_DISABLE_TELEMETRY: "1"
-        run: npm run test:code-rag

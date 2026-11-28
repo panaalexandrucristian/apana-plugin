@@ -28,10 +28,18 @@ describe("setup", () => {
     assert.ok(!fake.registry.has("logic-test-debug"));
     assert.deepEqual(result.skills.sort(), expected);
     assert.deepEqual(fake.commands.map((c) => c.name).sort(), [...expected.map((id) => `apana:${id}`), "apana:explica-optiuni"].sort());
-    const entry = fake.registry.get("scope");
-    assert.equal(entry.path, SKILL_PATH("scope"));
+    const entry = fake.registry.get("class-graph");
+    assert.equal(entry.path, SKILL_PATH("class-graph"));
     assert.equal(entry.autoinvoke, true);
     assert.equal(fake.registry.get("compact-session").autoinvoke, false);
+  });
+  it("does not register removed skills or their commands", async () => {
+    const fake = fakeCtx();
+    await setupApana(fake.ctx, envFor());
+    for (const id of ["assess-complexity", "code-rag", "code-rag-setup", "harness2", "improve-skill", "scope"]) {
+      assert.ok(!fake.registry.has(id), id);
+      assert.ok(!command(fake, `apana:${id}`), id);
+    }
   });
   it("gives the command of the adapter's skill too when that adapter registered it from the same file", async () => {
     const fake = fakeCtx({ skills: [{ id: "logic-test-debug", path: SKILL_PATH("logic-test-debug") }] });
@@ -39,11 +47,11 @@ describe("setup", () => {
     assert.ok(command(fake, "apana:logic-test-debug"));
   });
   it("leaves a skill id that another source holds alone, and offers no command for it", async () => {
-    const other = { id: "scope", path: "/somewhere/else/SKILL.md", content: "theirs" };
+    const other = { id: "class-graph", path: "/somewhere/else/SKILL.md", content: "theirs" };
     const fake = fakeCtx({ skills: [other] });
     await setupApana(fake.ctx, envFor());
-    assert.equal(fake.registry.get("scope").content, "theirs");
-    assert.ok(!command(fake, "apana:scope"));
+    assert.equal(fake.registry.get(other.id).content, "theirs");
+    assert.ok(!command(fake, `apana:${other.id}`));
     assert.ok(command(fake, "apana:variant-check"));
   });
   it("keeps the descriptions of the commands short", async () => {
@@ -101,7 +109,7 @@ describe("opencode-plugin.js", () => {
     const { result, warnings } = await quietly(() => plugin.setup(fake.ctx));
     assert.equal(typeof result, "function");
     assert.deepEqual(warnings, []);
-    assert.ok(fake.registry.has("scope") && fake.registry.has("logic-test-debug"), "both parts registered their skills");
+    assert.ok(fake.registry.has("class-graph") && fake.registry.has("logic-test-debug"), "both parts registered their skills");
   });
   it("keeps logic-test-debug and undoes the rest when the larger integration cannot be set up, without a raw error", async () => {
     const plugin = await load();
@@ -110,7 +118,7 @@ describe("opencode-plugin.js", () => {
     assert.equal(result, undefined);
     assert.deepEqual(warnings, ["[apana] the OpenCode integration is unavailable; nothing of it was left registered"]);
     assert.ok(fake.registry.has("logic-test-debug"), "the independent adapter still works");
-    assert.ok(!fake.registry.has("scope") && fake.commands.length === 0);
+    assert.ok(!fake.registry.has("class-graph") && fake.commands.length === 0);
     assert.ok(!warnings.join("").includes("injected"));
   });
 });

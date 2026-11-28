@@ -3,14 +3,11 @@ import { describe, it } from "node:test";
 import { MAX_INTENT_TEXT, deriveIntent, storedIntent } from "../intents.mjs";
 
 describe("deriveIntent", () => {
-  it("reads the scope command with a task, with an approval, and with nothing after it", () => {
-    assert.deepEqual(deriveIntent("/apana:scope fix login"), { v: 1, kind: "scope", text: "/apana:scope fix login" });
-    assert.equal(deriveIntent("/apana:scope approve 1234-abcd").kind, "scope");
-    assert.equal(deriveIntent("  /apana:scope").kind, "scope");
-    assert.equal(deriveIntent("/apana:scope\nfix\nit").text, "/apana:scope\nfix\nit");
-  });
-  it("does not take a longer command name, or the name inside a sentence, for scope", () => {
-    for (const text of ["/apana:scoped x", "please run /apana:scope x", "scope", "/apana:scopes"]) assert.equal(deriveIntent(text), null, text);
+  it("ignores the removed scope command and old scope metadata", () => {
+    for (const text of ["/apana:scope", "/apana:scope fix login", "/apana:scope approve 1234-abcd"]) {
+      assert.equal(deriveIntent(text), null, text);
+      assert.equal(storedIntent({ apana: { v: 1, kind: "scope", text } }), null, text);
+    }
   });
   it("starts Jev by its command or by the user's attached skill, and compact-session or others by neither", () => {
     assert.equal(deriveIntent("/apana:jev-decision-loop").kind, "jev");
@@ -27,13 +24,14 @@ describe("deriveIntent", () => {
   it("gives nothing for an ordinary prompt, a non-string and a text over the limit", () => {
     assert.equal(deriveIntent("fix the bug in a.js"), null);
     assert.equal(deriveIntent(null), null);
-    assert.equal(deriveIntent(`/apana:scope ${"x".repeat(MAX_INTENT_TEXT)}`), null);
-    assert.equal(deriveIntent(`/apana:scope ${"x".repeat(MAX_INTENT_TEXT - 20)}`).kind, "scope");
+    const prefix = "/apana:jev-decision-loop ";
+    assert.equal(deriveIntent(`${prefix}${"x".repeat(MAX_INTENT_TEXT - prefix.length + 1)}`), null);
+    assert.equal(deriveIntent(`${prefix}${"x".repeat(MAX_INTENT_TEXT - prefix.length)}`).kind, "jev");
   });
 });
 
 describe("storedIntent", () => {
-  const good = { apana: { v: 1, kind: "scope", text: "/apana:scope x" } };
+  const good = { apana: { v: 1, kind: "jev", text: "/apana:jev-decision-loop" } };
   it("accepts what deriveIntent produced and returns only its fields", () => {
     assert.deepEqual(storedIntent({ apana: { ...good.apana, extra: 1 } }), good.apana);
   });

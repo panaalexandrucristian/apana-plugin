@@ -17,6 +17,6 @@ It removes only:
 - an empty `~/.claude/claude-scope/` directory;
 - the installer backup only when the rc is byte-for-byte back to its saved state.
 
-It keeps foreign files in that directory, changed rc contents, unrelated Claude files, settings, reports and runs. Broken/repeated markers or an unknown same-named launcher are warnings and are left untouched. The operation is idempotent. The installer is no longer shipped: use `/apana:scope` for the current in-session workflow. This remover does not disable the new scope hook.
+It keeps foreign files in that directory, changed rc contents, unrelated Claude files, settings, reports and runs. Broken/repeated markers or an unknown same-named launcher are warnings and are left untouched. The operation is idempotent.
 
 Options: `--dry-run`, `--no-rc`, `--rc FILE`, and `--home DIR` for an isolated target. Do not print the rc; it may contain secrets. After a real uninstall, open a new terminal or run `exec zsh` because the current shell retains its previous PATH.

@@ -10,7 +10,6 @@ const REQUIRED = [
   "session.hook", "session.get", "session.prompt", "session.compact", "session.context", "session.synthetic", "tool.hook",
   "skill.transform", "skill.list", "command.transform", "storage.get", "storage.set", "storage.remove",
 ];
-const MODE_OF = { scope: "scope", "jev-decision-loop": "jev" };
 const SHORT = 160;
 
 const has = (ctx, path) => typeof path.split(".").reduce((value, key) => value?.[key], ctx) === "function";
@@ -87,9 +86,6 @@ export async function setupApana(ctx, env = process.env, options = {}) {
             await compaction.request(sessionID, delivery);
             return;
           }
-          const kind = MODE_OF[skill.id];
-          const refused = kind ? await modes.refusal(kind, sessionID) : null;
-          if (refused) throw new Error(refused);
           const args = typeof prompt.text === "string" ? prompt.text : "";
           // The text is the command as the user typed it, so the modes (and $ARGUMENTS) read the same thing in every client.
           const text = args.trim() ? `/apana:${skill.id} ${args}` : `/apana:${skill.id}`;

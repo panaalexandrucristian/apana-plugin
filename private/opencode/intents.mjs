@@ -4,15 +4,13 @@
 import { isBareCommand } from "../class-graph-nudge/classify.mjs";
 
 export const MAX_INTENT_TEXT = 8192;
-const KINDS = Object.freeze(["scope", "jev", "class-graph"]);
+const KINDS = Object.freeze(["jev", "class-graph"]);
 
-const SCOPE = /^\s*\/apana:scope(?:\s|$)/;
 const JEV = /^\s*\/apana:jev-decision-loop(?:\s|$)/;
 
 /** {v: 1, kind, text} for a prompt that starts a mode, else null. `skills` are the ids of the skills the user attached. */
 export function deriveIntent(text, skills = []) {
   if (typeof text !== "string" || text.length > MAX_INTENT_TEXT) return null;
-  if (SCOPE.test(text)) return { v: 1, kind: "scope", text: text.trim() };
   if (JEV.test(text) || skills.includes("jev-decision-loop")) return { v: 1, kind: "jev", text: text.trim() };
   if (isBareCommand(text)) return { v: 1, kind: "class-graph", text: text.trim() };
   return null;

@@ -9,14 +9,14 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Skills that run in OpenCode. A new directory under skills/ must be added here or to CLAUDE_ONLY_SKILLS (a test enforces it). */
 export const OPENCODE_SKILLS = Object.freeze([
-  "android-emulator-tuning", "android-ui-step", "assess-complexity", "class-graph", "code-rag", "code-rag-setup", "compact-handoff", "compact-session",
-  "explica-clar", "harness2", "install-opencode-auto", "jev-decision-loop", "logic-test-debug", "opencode-plugin-skills-sync", "opencode-shell-guard",
-  "pr-convention-check", "review-diff", "review-plan", "scope", "uninstall-opencode-auto", "variant-check",
+  "android-emulator-tuning", "android-ui-step", "class-graph", "compact-handoff", "compact-session",
+  "explica-clar", "install-opencode-auto", "jev-decision-loop", "logic-test-debug", "opencode-plugin-skills-sync", "opencode-shell-guard",
+  "pr-convention-check", "review-diff", "review-plan", "uninstall-opencode-auto", "variant-check",
 ]);
 
 /** Skills that manage Claude Code itself (launchers, wrappers, its transcripts and sessions). They are never registered here. */
 export const CLAUDE_ONLY_SKILLS = Object.freeze([
-  "claude-copilot", "claude-openai", "improve-skill", "install-claude-auto", "uninstall-claude-auto", "uninstall-claude-copilot",
+  "claude-copilot", "claude-openai", "install-claude-auto", "uninstall-claude-auto", "uninstall-claude-copilot",
   "uninstall-claude-openai", "uninstall-claude-scope", "update-sessions",
 ]);
 
@@ -66,19 +66,11 @@ const SUBAGENT_NOTE = [
 const SPECIAL = {
   "review-diff": SUBAGENT_NOTE,
   "review-plan": SUBAGENT_NOTE,
-  scope: [
-    "The Apana adapter enforces this gate. It starts with the command `/apana:scope <task>`; loading this skill alone does not",
-    "start it. The adapter tells you the proposal path and the nonce in its notes. While it is on, only direct `read`, `glob`, `grep`",
-    "and `question` calls, the write of the proposal, and (after approval) `edit`/`write` on the approved paths and the approved",
-    "test commands through `shell` are allowed; Code Mode (`execute`), MCP tools, `subagent` and any other tool are refused.",
-    "A `shell` call must run in the project directory and not in the background. Jev decision loop and scope cannot be on in the",
-    "same session. This is a tool gate, not an operating-system sandbox.",
-  ].join(" "),
   "jev-decision-loop": [
     "The Apana adapter enforces this mode, not frontmatter hooks: every direct tool call needs a fresh `GO` from `jev.mjs`",
     "(one `GO`, one call), and the end of a turn is checked once. It starts with the command `/apana:jev-decision-loop`, an",
     "`@jev-decision-loop` mention, or when you load this skill because the user asked for it. Code Mode (`execute`) is refused",
-    "while it is on: use the direct tools. `jev.mjs --off` ends the mode. It cannot start while `scope` is on in the session.",
+    "while it is on: use the direct tools. `jev.mjs --off` ends the mode.",
     "Run `jev.mjs` with the `shell` tool, as one command.",
   ].join(" "),
 };
