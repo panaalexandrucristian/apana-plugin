@@ -8,7 +8,7 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
-export function startStub({ logFile, port = 0, mode = "text", skillId = "logic-test-debug", reply = "Scope: stub. Method: stub. Result: stub reply, nothing was run.", script = [], usage: initialUsage = {} }) {
+export function startStub({ logFile, port = 0, mode = "text", skillId = "logic-test-debug", reply = "Scope: stub. Method: stub. Result: stub reply, nothing was run.", script = [], usage: initialUsage = {}, respond }) {
   writeFileSync(logFile, "");
   let usage = { prompt: 1, completion: 1, ...initialUsage };
   let n = 0;
@@ -36,18 +36,19 @@ export function startStub({ logFile, port = 0, mode = "text", skillId = "logic-t
       const hasToolResult = Array.isArray(body?.messages) && body.messages.some((m) => m?.role === "tool");
       const wantsSkill = mode === "load-skill" && !calledSkill && !hasToolResult && tools.includes("skill");
       // mode "script": one scripted tool call per main request (a request that offers tools), then plain text.
-      const scripted = mode === "script" && tools.length > 0 && scriptIndex < script.length ? script[scriptIndex++] : null;
+      const response = respond?.({ body, tools });
+      const scripted = response?.tool ?? (mode === "script" && tools.length > 0 && scriptIndex < script.length ? script[scriptIndex++] : null);
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       const chunk = (delta, finish = null) => res.write(`data: ${JSON.stringify({ id: `stub-${n}`, object: "chat.completion.chunk", created: 0, model: body?.model ?? "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
       if (scripted) {
-        chunk({ role: "assistant", content: null, tool_calls: [{ index: 0, id: `call_script_${scriptIndex}`, type: "function", function: { name: scripted.name, arguments: JSON.stringify(scripted.args) } }] });
+        chunk({ role: "assistant", content: null, tool_calls: [{ index: 0, id: `call_script_${n}`, type: "function", function: { name: scripted.name, arguments: JSON.stringify(scripted.args) } }] });
         chunk({}, "tool_calls");
       } else if (wantsSkill) {
         calledSkill = true;
         chunk({ role: "assistant", content: null, tool_calls: [{ index: 0, id: "call_stub_1", type: "function", function: { name: "skill", arguments: JSON.stringify({ id: skillId }) } }] });
         chunk({}, "tool_calls");
       } else {
-        chunk({ role: "assistant", content: reply });
+        chunk({ role: "assistant", content: response?.text ?? reply });
         chunk({}, "stop");
       }
       const reported = { prompt_tokens: usage.prompt, completion_tokens: usage.completion, total_tokens: usage.prompt + usage.completion };

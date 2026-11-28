@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import { ROOT } from "../../opencode/catalog.mjs";
 import { tempDir } from "../../opencode/test/support/fake-ctx.mjs";
 import { opencodeVersion, startRuntime, textOfRole } from "../../opencode/test/support/runtime.mjs";
@@ -19,13 +20,19 @@ const MARK = { tokens: 60_000, cooldown: 0, max: 1 };
 const open = [];
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** A server whose plugins/ folder holds the link to opencode-auto/ and whose state has the `enabled` file (unless `enabled` is false). */
-const start = async ({ enabled = true, ...options } = {}) => {
+const start = async ({ enabled = true, entry, ...options } = {}) => {
   const rt = await startRuntime({
     dir: join(tempDir("apana-auto-rt-"), "run"),
     plugin: null,
     setup: (sub) => {
       mkdirSync(join(sub("config/opencode"), "plugins"), { recursive: true });
-      symlinkSync(join(ROOT, "opencode-auto"), join(sub("config/opencode"), "plugins", "apana-auto"));
+      const path = join(sub("config/opencode"), "plugins", "apana-auto");
+      if (entry) {
+        mkdirSync(path);
+        writeFileSync(join(path, "server.js"), entry);
+      } else {
+        symlinkSync(join(ROOT, "opencode-auto"), path);
+      }
       if (enabled) {
         mkdirSync(join(sub("state"), "opencode", "apana", "auto"), { recursive: true });
         writeFileSync(join(sub("state"), "opencode", "apana", "auto", "enabled"), "");
@@ -50,6 +57,11 @@ after(async () => {
 });
 
 const getSession = async (rt, id) => (await rt.api("GET", `/api/session/${id}`)).json?.data;
+async function getGoal(rt, sessionID) {
+  const result = await rt.api("POST", "/api/rpc/opencode.goal/get", { input: { sessionID } });
+  assert.equal(result.status, 200, result.text);
+  return result.json.output;
+}
 /** Waits until `check(value)` is true for `read()`, or fails with `what` and the last value. */
 async function until(what, read, check, ms = 60000) {
   const end = Date.now() + ms;
@@ -87,7 +99,139 @@ const firstUserText = (rt, id) => until(
   (text) => typeof text === "string",
 );
 
+// Use the real plugin with a test barrier before durable inbox admission or immediately after it, before the plugin writes its receipt.
+function stoppedGoalEntry(phase, barrier) {
+  const server = pathToFileURL(join(ROOT, "private", "opencode-auto", "server.mjs"));
+  return `
+    import { writeFileSync } from "node:fs";
+    import { setupAuto } from ${JSON.stringify(server.href)};
+    export default {
+      id: "apana-auto",
+      async setup(ctx) {
+        const stop = (id) => {
+          writeFileSync(${JSON.stringify(barrier)}, id);
+          return new Promise(() => {});
+        };
+        const auto = await setupAuto({
+          ...ctx,
+          session: { ...ctx.session, hook: (name, callback) => ctx.session.hook(name, async (event) => {
+            await callback(event);
+            if (${phase === "before"} && name === "prompt" && event.metadata?.apanaGoalHandoff) await stop(event.sessionID);
+          }) },
+          storage: { ...ctx.storage, set: async (key, value) => {
+            if (${phase === "after"} && key.startsWith("goal-handoff/") && value.phase === "accepted") await stop(value.destinationID);
+            await ctx.storage.set(key, value);
+          } },
+        });
+        return () => auto.dispose();
+      },
+    };`;
+}
+
 describe("opencode-auto on a real OpenCode 2.4.x", { skip: reason, timeout: 600000 }, () => {
+  it("carries the exact goal twice, then the native reviewer has the agent read the note and completes the goal", async () => {
+    const objective = '"Check <proof> & keep the quotes.\nRead the note and verify the result."';
+    const evidence = "Verified by reading the handoff note.";
+    const rt = await start({
+      usage: { prompt: 70_000, completion: 10 },
+      respond({ body, tools }) {
+        const request = { body };
+        const user = textOfRole(request, "user");
+        const system = textOfRole(request, "system");
+        if (user.includes("Reply with exactly one line of JSON")) {
+          const done = textOfRole(request, "assistant").includes(evidence);
+          return { text: JSON.stringify({
+            verdict: done ? "done" : "continue",
+            reason: done ? "The note was read and verified." : "The note still needs to be read.",
+            ...(done ? {} : { next_step: "GOAL-READ-NOTE: read the handoff note now." }),
+          }) };
+        }
+        if (tools.includes("read") && user.includes("GOAL-READ-NOTE") && system.includes('Titlul sesiunii noi: "Goal chain (3)"')) {
+          if (textOfRole(request, "tool").includes("Handoff: continuarea unei sesiuni")) return { text: evidence };
+          const path = /Citește (\S+\/HANDOFF\.md) mai întâi/.exec(system)?.[1];
+          if (path) return { tool: { name: "read", args: { path, offset: 1, limit: 24 } } };
+        }
+        return { text: "Work in progress." };
+      },
+    });
+    const source = await rt.session("Goal chain", { metadata: { apana: { auto: { ...MARK, max: 2 } } } });
+    assert.equal((await rt.command(source, "goal", `"${objective}"`)).status, 204);
+    const second = await nextSession(rt, source);
+    const third = await nextSession(rt, second);
+    const end = await until("the native reviewer did not finish the transferred goal",
+      () => getGoal(rt, third), (goal) => ["complete", "paused"].includes(goal?.status));
+    assert.equal(end.status, "complete", end.reason);
+    assert.equal(end.objective, objective);
+    assert.equal(end.rounds, 1);
+    const goals = [await getGoal(rt, source), await getGoal(rt, second), end];
+    assert.deepEqual(goals.map((goal) => goal.status), ["paused", "paused", "complete"]);
+    assert.deepEqual(goals.map((goal) => goal.objective), [objective, objective, objective]);
+    assert.equal(new Set(goals.map((goal) => goal.id)).size, 3);
+    for (const [index, destination] of [second, third].entries()) {
+      const saved = await getSession(rt, destination);
+      const kickoffs = (await rt.messages(destination)).filter((m) => m.type === "user" && m.metadata?.apanaGoalHandoff);
+      assert.equal(kickoffs.length, 1);
+      assert.equal(kickoffs[0].metadata.goalID, goals[index + 1].id);
+      assert.equal(kickoffs[0].metadata.apanaGoalHandoff, saved.metadata.apana.goalHandoff.id);
+      const request = rt.mainRequests().find((r) => textOfRole(r, "system").includes(`Titlul sesiunii noi: ${JSON.stringify(saved.title)}`));
+      assert.ok(request);
+      assert.match(textOfRole(request, "system"), /Citește .*\/HANDOFF\.md mai întâi/);
+      assert.match(textOfRole(request, "user"), /Check &lt;proof&gt; &amp; keep the quotes\.\nRead the note/);
+      assert.doesNotMatch(JSON.stringify(request.body), /apana-goal-handoff\.txt/);
+    }
+    assert.ok(rt.mainRequests().some((r) => textOfRole(r, "tool").includes("Handoff: continuarea unei sesiuni")));
+    assert.equal((await allSessions(rt)).length, 3);
+  });
+
+  for (const phase of ["before", "after"]) {
+    it(`recovers a crash ${phase} native prompt admission without submitting another goal`, async () => {
+      const root = tempDir("apana-auto-goal-recovery-");
+      const data = join(root, "data");
+      const workspace = join(root, "workspace");
+      const barrier = join(root, "barrier");
+      mkdirSync(data);
+      mkdirSync(workspace);
+      const options = { workspace, env: { XDG_DATA_HOME: data }, usage: { prompt: 70_000, completion: 10 } };
+      const first = await start({ ...options, entry: stoppedGoalEntry(phase, barrier) });
+      const source = await first.session("Goal recovery", { metadata: { keep: "source metadata", apana: { auto: MARK } } });
+      const objective = `Verify admission ${phase} a crash.`;
+      assert.equal((await first.command(source, "goal", objective)).status, 204);
+      const destination = await until("the crash barrier was not reached", async () => existsSync(barrier) && readFileSync(barrier, "utf8"), Boolean, 15000);
+      const goal = await getGoal(first, destination);
+      assert.equal(goal.objective, objective, "OpenCode has already persisted the goal");
+      const markedKickoff = async (rt) => (await rt.messages(destination)).find((m) => m.metadata?.apanaGoalHandoff);
+      if (phase === "after") {
+        const admitted = await until("the kickoff was not delivered before the crash", () => markedKickoff(first), Boolean);
+        assert.equal(admitted.metadata.goalID, goal.id);
+        await until("the admitted kickoff did not reach the model", async () => first.mainRequests(),
+          (requests) => requests.some((r) => textOfRole(r, "system").includes("HANDOFF.md")));
+      } else {
+        assert.equal(await markedKickoff(first), undefined);
+        const inbox = await first.api("GET", `/api/session/${destination}/inbox`);
+        assert.equal(inbox.status, 200, inbox.text);
+        assert.deepEqual(inbox.json.data, []);
+      }
+      assert.equal((await getSession(first, source)).metadata.apana.next, undefined);
+      open.splice(open.indexOf(first), 1);
+      await first.close(); // SIGKILL, keeping the same OpenCode database for the replacement server.
+
+      const second = await start(options);
+      if (phase === "after") {
+        assert.equal(await nextSession(second, source), destination);
+        assert.equal((await markedKickoff(second)).metadata.goalID, goal.id);
+      } else {
+        await until("recovery did not report the unadmitted kickoff", async () => autoLog(second),
+          (log) => log.includes(`${source}: goal handoff to ${destination} has no durable admission proof`));
+        assert.equal((await getSession(second, source)).metadata.apana.next, undefined);
+        assert.equal(await markedKickoff(second), undefined);
+      }
+      assert.equal((await getSession(second, source)).metadata.keep, "source metadata");
+      assert.equal((await getGoal(second, destination)).id, goal.id);
+      assert.equal((await allSessions(second)).length, 2);
+      assert.equal(second.mainRequests().length, 0);
+    });
+  }
+
   it("hands a marked session off once the stand-in provider reports a context over the threshold: a note, a new session with the same agent, model and directory, and `next` on the old one", async () => {
     const rt = await start({ usage: { prompt: 70_000, completion: 10 } });
     const id = await rt.session("marked", { agent: "plan", metadata: { apana: { auto: MARK } } }); // not the default agent: a lost agent must show

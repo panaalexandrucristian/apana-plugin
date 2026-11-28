@@ -20,12 +20,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * `script`: tool calls the stand-in provider makes, one per main request. `usage`: the token usage it reports ({ prompt, completion, cached? }).
  * `setup(sub)`: runs before the server starts, with the function that names a folder of this run.
  */
-export async function startRuntime({ dir, plugin, script = [], mode = script.length ? "script" : "text", usage, env = {}, port, setup }) {
+export async function startRuntime({ dir, plugin, script = [], mode = script.length ? "script" : "text", usage, respond, env = {}, port, setup, workspace }) {
   rmSync(dir, { recursive: true, force: true });
   const sub = (name) => join(dir, name);
   for (const name of ["config/opencode", "data", "cache", "state", "tmp", "ws", "home"]) mkdirSync(sub(name), { recursive: true });
   if (setup) await setup(sub);
-  const stub = await startStub({ logFile: sub("requests.jsonl"), mode, script, usage });
+  const stub = await startStub({ logFile: sub("requests.jsonl"), mode, script, usage, respond });
   const config = {
     plugins: plugin ? [plugin] : [],
     provider: { stub: { npm: "@ai-sdk/openai-compatible", name: "Stub", options: { baseURL: `http://127.0.0.1:${stub.port}/v1`, apiKey: "stub" }, models: { m: { name: "m", tool_call: true, limit: { context: 100000, output: 4000 } } } } },
@@ -37,7 +37,8 @@ export async function startRuntime({ dir, plugin, script = [], mode = script.len
   writeFileSync(sub("config/opencode/opencode.jsonc"), JSON.stringify(config, null, 2));
   const childEnv = { PATH: process.env.PATH, HOME: sub("home"), XDG_CONFIG_HOME: sub("config"), XDG_DATA_HOME: sub("data"), XDG_CACHE_HOME: sub("cache"), XDG_STATE_HOME: sub("state"), TMPDIR: sub("tmp"), ...env };
   const listen = port ?? 20000 + Math.floor(Math.random() * 20000);
-  const child = spawn(OPENCODE, ["serve", "--hostname", "127.0.0.1", "--port", String(listen), "--print-logs"], { cwd: sub("ws"), env: childEnv, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  const ws = workspace ?? sub("ws");
+  const child = spawn(OPENCODE, ["serve", "--hostname", "127.0.0.1", "--port", String(listen), "--print-logs"], { cwd: ws, env: childEnv, stdio: ["ignore", "pipe", "pipe"], detached: true });
   const closed = new Promise((resolve) => child.once("close", resolve));
   writeFileSync(sub("server.log"), "");
   let log = "";
@@ -69,7 +70,7 @@ export async function startRuntime({ dir, plugin, script = [], mode = script.len
     throw new Error(`OpenCode did not start:\n${log.slice(0, 1500)}`);
   }
   const base = `http://127.0.0.1:${listen}`;
-  const headers = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "content-type": "application/json", "x-opencode-directory": sub("ws") };
+  const headers = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "content-type": "application/json", "x-opencode-directory": ws };
   const api = async (method, path, body, directory) => {
     const res = await fetch(`${base}${path}`, { method, headers: directory ? { ...headers, "x-opencode-directory": directory } : headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await res.text();
@@ -83,7 +84,7 @@ export async function startRuntime({ dir, plugin, script = [], mode = script.len
   };
   const runtime = {
     dir,
-    ws: sub("ws"),
+    ws,
     home: sub("home"),
     api,
     log: () => log,

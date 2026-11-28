@@ -19,11 +19,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const marked = (auto = { tokens: 200_000 }, extra = {}) => ({ agent: "build", model: MODEL, metadata: { apana: { auto } }, ...extra });
 
 /** One auto instance over a fake context. `handler` answers make_context.py; `t` stops the event loop when the test ends. */
-function setup(t, { models = BIG, sessions = {}, enabled = true, handler, root = marked(), pause = async () => {} } = {}) {
+function setup(t, { models = BIG, sessions = {}, enabled = true, handler, configure, root = marked(), pause = async () => {} } = {}) {
   const dir = tempDir("apana-auto-");
   const directory = tempDir("apana-ws-");
   const located = (session) => ({ location: { directory }, ...session });
   const fake = fakeCtx({ directory, models, sessions: Object.fromEntries(Object.entries({ ses_root: root, ...sessions }).map(([id, s]) => [id, located(s)])) });
+  configure?.(fake);
   if (enabled) {
     mkdirSync(join(dir, "state"), { recursive: true });
     writeFileSync(join(dir, "state", "enabled"), "");
@@ -46,6 +47,7 @@ function setup(t, { models = BIG, sessions = {}, enabled = true, handler, root =
       return answer(args, { runs, fake });
     },
   });
+  if (auto.markGoalPrompt) void fake.ctx.session.hook("prompt", auto.markGoalPrompt);
   const controller = new AbortController();
   auto.start(controller.signal);
   t.after(() => controller.abort());
@@ -759,6 +761,270 @@ describe("how often, how many, and what a failure does", () => {
   });
 });
 
+describe("native goal handoff", () => {
+  const sourceID = "ses_root";
+  const objective = '"Verify <evidence> & keep both lines.\nThen report the result."';
+  const active = { id: "goal-source", status: "active", objective, updatedAt: 10 };
+  const paused = { ...active, status: "paused", reason: "Stopped by the user", updatedAt: 11 };
+  const journalKey = `goal-handoff/${sourceID}`;
+
+  function goalSetup(t, initial = active, hooks = {}) {
+    const seen = { goal: initial, reads: [], commands: [], admitted: new Map(), instructions: new Map() };
+    const s = setup(t, {
+      pause: hooks.pause,
+      configure(fake) {
+        const { ctx } = fake;
+        const get = ctx.session.get;
+        const interrupt = ctx.session.interrupt;
+        const set = ctx.storage.set;
+        hooks.seedJournal?.(fake);
+        ctx.storage.scan = async ({ prefix }) => {
+          await hooks.scan?.();
+          return {
+            entries: [...fake.storage].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value: structuredClone(value) })),
+          };
+        };
+        ctx.storage.set = async (key, entry) => {
+          await hooks.save?.(entry, seen);
+          await set(key, entry);
+        };
+        ctx.session.get = async (input) => {
+          if (!fake.sessions.has(input.sessionID)) throw Object.assign(new Error("missing session"), { _tag: "Session.NotFoundError" });
+          return get(input);
+        };
+        ctx.rpc = (definition) => ({
+          get: async ({ sessionID }) => {
+            assert.equal(definition.id, "opencode.goal");
+            assert.equal(sessionID, sourceID, "a destination goal snapshot is never admission proof");
+            seen.reads.push(structuredClone(seen.goal));
+            if (hooks.readError) throw hooks.readError;
+            return structuredClone(seen.goal);
+          },
+        });
+        ctx.session.interrupt = async (input) => {
+          const result = await interrupt(input);
+          if (result.interrupted && seen.goal?.status === "active") seen.goal = paused;
+          hooks.interrupt?.(seen);
+          return result;
+        };
+        ctx.session.instructions = { entry: { put: async ({ sessionID, key, value }) => {
+          await hooks.put?.();
+          seen.instructions.set(sessionID, { key, value });
+        } } };
+        ctx.session.context = async ({ sessionID }) => seen.admitted.has(sessionID) ? [seen.admitted.get(sessionID)] : [];
+        ctx.session.command = async (input) => {
+          seen.commands.push(input);
+          if (input.name === "goal" && input.text === "resume") return;
+          await hooks.submit?.(seen);
+          assert.ok(seen.instructions.has(input.sessionID), "the note is installed before the native kickoff");
+          assert.equal(fake.storage.get(journalKey)?.phase, "submitting");
+          const event = await fake.fire("session.prompt", {
+            sessionID: input.sessionID, prompt: { files: input.files }, metadata: { source: "goal", goalID: "goal-destination" },
+          });
+          assert.deepEqual(event.prompt.files, []);
+          seen.admitted.set(input.sessionID, { type: "user", metadata: event.metadata });
+        };
+      },
+    });
+    const restart = async () => {
+      const restarted = await setupAuto(s.fake.ctx, {}, {
+        stateDir: join(s.dir, "state"), dataDir: join(s.dir, "data"), log: (text) => s.logs.push(text), pause: async () => {},
+      });
+      await flush();
+      await restarted.dispose();
+    };
+    return { ...s, seen, restart };
+  }
+
+  it("carries the exact objective when it wins interruption, and admits only one marked kickoff", async (t) => {
+    const s = goalSetup(t);
+    await s.step(200_000);
+    assert.deepEqual(s.seen.reads, [active, paused, paused]);
+    const destination = s.fake.sessions.get(sourceID).metadata.apana.next;
+    const entry = s.fake.sessions.get(destination).metadata.apana.goalHandoff;
+    assert.equal(entry.sourceID, sourceID);
+    assert.equal(s.seen.instructions.get(destination).key, "apana-handoff");
+    assert.ok(s.seen.instructions.get(destination).value.startsWith(NOTE));
+    assert.match(s.seen.instructions.get(destination).value, /dacă nu ai parcurs-o deja/);
+    assert.deepEqual(s.seen.commands.map(({ sessionID, name, text }) => ({ sessionID, name, text })),
+      [{ sessionID: destination, name: "goal", text: `"${objective}"` }]);
+    assert.equal(s.seen.admitted.get(destination).metadata.apanaGoalHandoff, entry.id);
+    assert.deepEqual(s.fake.calls.prompt, []);
+    assert.equal(s.fake.storage.has(journalKey), false);
+  });
+
+  it("creates no destination if the user wins interruption", async (t) => {
+    const s = goalSetup(t);
+    s.fake.state.interruptResult = { interrupted: false };
+    await s.step(200_000);
+    assert.equal(s.fake.calls.create.length, 0);
+    assert.equal(s.seen.commands.length, 0);
+    assert.match(s.logs.at(-1), /did not interrupt the active goal/);
+  });
+
+  for (const [name, initial, hooks] of [
+    ["paused", { ...paused, reason: "Paused by the user" }, {}],
+    ["complete", { ...active, status: "complete" }, {}],
+    ["cleared", null, {}],
+    ["unavailable", active, { readError: { type: "rpc.unavailable" } }],
+    ["paused by the user during interruption", active, { interrupt: (seen) => { seen.goal = { ...paused, reason: "Paused by the user" }; } }],
+  ]) {
+    it(`uses the ordinary handoff for a ${name} goal`, async (t) => {
+      const s = goalSetup(t, initial, hooks);
+      await s.step(200_000);
+      assert.equal(s.seen.commands.length, 0);
+      assert.equal(s.fake.calls.prompt.length, 1);
+      assert.match(s.fake.calls.prompt[0].text, /`\/goal` din transcript sunt istoric/);
+      assert.equal(s.fake.storage.has(journalKey), false);
+    });
+  }
+
+  it("leaves the source running on an unexpected initial RPC error", async (t) => {
+    const s = goalSetup(t, active, { readError: new Error("temporary RPC error") });
+    await s.step(200_000);
+    assert.equal(s.fake.calls.interrupt.length, 0);
+    assert.equal(s.fake.calls.create.length, 0);
+    assert.match(s.logs.at(-1), /could not read the native goal/);
+  });
+
+  it("waits for the native interruption handler before it transfers the source pause", async (t) => {
+    const s = goalSetup(t, active, {
+      pause: () => new Promise((resolve) => setImmediate(resolve)),
+      interrupt: (seen) => {
+        seen.goal = active;
+        setImmediate(() => { seen.goal = paused; });
+      },
+    });
+    await s.step(200_000);
+    assert.deepEqual(s.seen.reads, [active, active, paused, paused]);
+    assert.equal(s.seen.commands.length, 1);
+    assert.equal(s.fake.sessions.get(sourceID).metadata.apana.next, s.seen.commands[0].sessionID);
+  });
+
+  for (const replacement of [active, paused]) {
+    it(`abandons the attempt when a replacement goal is ${replacement.status} after interruption`, async (t) => {
+      const s = goalSetup(t, active, { interrupt: (seen) => { seen.goal = { ...replacement, id: "replacement" }; } });
+      await s.step(200_000);
+      assert.equal(s.fake.calls.create.length, 0);
+      assert.equal(s.seen.commands.length, 0);
+      assert.match(s.logs.at(-1), /the goal changed after interruption/);
+    });
+  }
+
+  for (const [name, changed] of [
+    ["clear", null],
+    ["replace", { ...active, id: "other-goal" }],
+    ["updated pause", { ...paused, updatedAt: 12 }],
+  ]) {
+    it(`cancels and discards the provisional destination when ${name} happens before authorization`, async (t) => {
+      const s = goalSetup(t, active, { save: (entry, seen) => { if (entry.phase === "submitting") seen.goal = changed; } });
+      await s.step(200_000);
+      assert.equal(s.fake.calls.create.length, 1);
+      assert.deepEqual(s.fake.calls.remove, [{ sessionID: s.fake.calls.create[0].id }]);
+      assert.equal(s.seen.commands.length, 0);
+      assert.equal(s.fake.storage.has(journalKey), false);
+      assert.equal(s.fake.sessions.get(sourceID).metadata.apana.next, undefined);
+    });
+  }
+
+  it("does not recheck or revoke an authorized command if the source changes during dispatch", async (t) => {
+    const s = goalSetup(t, active, { submit: (seen) => { seen.goal = null; } });
+    await s.step(200_000);
+    assert.equal(s.seen.goal, null);
+    assert.deepEqual(s.seen.reads, [active, paused, paused]);
+    assert.equal(s.seen.commands.length, 1);
+    assert.equal(s.fake.sessions.get(sourceID).metadata.apana.next, s.seen.commands[0].sessionID);
+  });
+
+  it("removes an undispatched destination before resuming the same source pause after a setup failure", async (t) => {
+    const s = goalSetup(t, active, { put: () => { throw new Error("entry could not be written"); } });
+    await s.step(200_000);
+    assert.equal(s.fake.calls.remove.length, 1);
+    assert.deepEqual(s.seen.commands, [{ sessionID: sourceID, name: "goal", text: "resume" }]);
+    assert.equal(s.fake.storage.has(journalKey), false);
+  });
+
+  it("keeps the source paused and rejects another transfer if provisional cleanup fails", async (t) => {
+    const s = goalSetup(t, active, { put: () => { throw new Error("entry could not be written"); } });
+    s.fake.ctx.session.remove = async () => { throw new Error("removal not confirmed"); };
+    await s.step(200_000);
+    assert.equal(s.fake.storage.get(journalKey).phase, "prepared");
+    assert.equal(s.seen.goal, paused);
+    assert.equal(s.seen.commands.length, 0);
+    await s.restart();
+    s.clock.t += 120_000;
+    await s.step(220_000);
+    assert.equal(s.fake.calls.create.length, 1);
+    assert.match(s.logs.join("\n"), /could not recover goal handoff/);
+  });
+
+  it("keeps an unconfirmed submission across repeated reconciliation and blocks a second handoff", async (t) => {
+    const s = goalSetup(t, active, { submit: () => { throw new Error("command reply lost"); } });
+    await s.step(200_000);
+    await s.restart();
+    await s.restart();
+    s.clock.t += 120_000;
+    await s.step(220_000);
+    assert.equal(s.fake.calls.create.length, 1);
+    assert.equal(s.seen.commands.length, 1);
+    assert.equal(s.fake.calls.remove.length, 0);
+    assert.equal(s.fake.storage.get(journalKey).phase, "submitting");
+    assert.equal(s.fake.sessions.get(sourceID).metadata.apana.next, undefined);
+    assert.match(s.logs.join("\n"), /has no durable admission proof/);
+  });
+
+  it("reconciles an admitted destination before handling a threshold event or tool call at startup", async (t) => {
+    const destinationID = "ses_recovered";
+    const { promise: scanning, resolve: finishScan } = Promise.withResolvers();
+    const s = goalSetup(t, paused, {
+      scan: () => scanning,
+      seedJournal({ ctx, sessions, storage }) {
+        const id = "existing-handoff";
+        storage.set(journalKey, { id, sourceID, destinationID, directory: ctx.location.directory, phase: "accepted" });
+        sessions.set(destinationID, { id: destinationID, metadata: { apana: { goalHandoff: { id, sourceID } } } });
+      },
+    });
+    await s.step(200_000);
+    const toolRefusal = assert.rejects(s.tool(), { message: refusalAfter(destinationID) });
+    finishScan();
+    await toolRefusal;
+    await flush();
+    assert.equal(s.fake.sessions.get(sourceID).metadata.apana.next, destinationID);
+    assert.equal(s.fake.storage.has(journalKey), false);
+    assert.equal(s.fake.calls.interrupt.length, 0);
+    assert.equal(s.fake.calls.create.length, 0);
+    assert.equal(s.seen.commands.length, 0);
+  });
+
+  for (const proof of ["accepted journal", "admitted kickoff", "conflicting link"]) {
+    it(`reconciles ${proof} without sending a new goal command`, async (t) => {
+      const s = goalSetup(t, active, { save: (entry) => {
+        if (entry.phase === "accepted" && proof === "admitted kickoff") throw new Error("receipt write failed");
+      } });
+      s.fake.state.updateError = new Error("could not write next");
+      await s.step(200_000);
+      assert.equal(s.fake.sessions.get(sourceID).metadata.apana.next, undefined);
+      const destination = s.fake.storage.get(journalKey).destinationID;
+      if (proof === "accepted journal") s.seen.admitted.clear();
+      s.fake.state.updateError = null;
+      const existing = proof === "conflicting link" ? "ses_other" : undefined;
+      const source = s.fake.sessions.get(sourceID);
+      source.metadata.apana.next = existing;
+      source.metadata.keep = "late metadata";
+      s.seen.goal = null;
+      await s.restart();
+      await s.restart();
+      assert.equal(source.metadata.apana.next, existing ?? destination);
+      assert.equal(source.metadata.keep, "late metadata");
+      assert.equal(s.fake.storage.has(journalKey), Boolean(existing));
+      assert.equal(s.fake.calls.create.length, 1);
+      assert.equal(s.seen.commands.length, 1);
+      assert.equal(s.fake.calls.remove.length, 0);
+      assert.equal(s.fake.calls.update.length, existing ? 0 : 1);
+    });
+  }
+});
+
 describe("the skills of the new session", () => {
   const withSkills = (list, want) => ({ root: marked({ tokens: 200_000, ...(want ? { skills: want } : {}) }), handler: (args) => ({ code: 0, stdout: args.includes("--list-skills") ? list : BUILT, stderr: "" }) });
   it("reloads none by default", async (t) => {
@@ -879,5 +1145,15 @@ describe("setup", () => {
     await assert.rejects(setupAuto(fake.ctx, {}, {}), /injected failure at event\.subscribe/);
     assert.deepEqual(fake.disposed, ["tool.hook:execute.before"]);
     assert.equal(fake.hooks.get("tool.execute.before").length, 0);
+  });
+  it("registers and disposes the native prompt hook with the other registrations", async () => {
+    const fake = fakeCtx();
+    fake.ctx.storage.scan = async () => ({ entries: [] });
+    fake.ctx.session.command = async () => {};
+    fake.ctx.session.instructions = { entry: { put: async () => {} } };
+    const auto = await setupAuto(fake.ctx, {}, { stateDir: tempDir("apana-auto-"), dataDir: tempDir("apana-auto-") });
+    assert.equal(fake.hooks.get("session.prompt").length, 1);
+    await auto.dispose();
+    assert.equal(fake.hooks.get("session.prompt").length, 0);
   });
 });

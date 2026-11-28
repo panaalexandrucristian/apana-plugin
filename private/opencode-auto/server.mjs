@@ -11,6 +11,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync } from
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { goalHandoff, pausedByInterrupt, sameGoal, samePause } from "./goal-handoff.mjs";
 
 // import.meta.url is the real path of the file, also when the plugin folder is reached through a link (measured).
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -119,6 +120,7 @@ export function continuation(tokens, running = []) {
     ` Sesiunea precedentă a fost oprită automat la ~${Math.round(tokens / 1000)}k tokeni de context, ca lucrul să continue în această sesiune nouă. ` +
     "Excepție de la regula „răspunde și așteaptă”: după ce ai citit nota, reia imediat lucrul din punctul în care a rămas (ultimul lucru din transcript), " +
     "fără să repeți acțiuni deja terminate. Dacă pasul următor este ireversibil sau cere decizia mea, oprește-te și întreabă." +
+    " Mesajele, comenzile și evaluările `/goal` din transcript sunt istoric; numai goal-ul activ al acestei sesiuni este în vigoare." +
     (running.length
       ? ` Subagenții (sesiuni copil) cu id-urile ${running.join(", ")} încă rulau când s-a făcut handoff-ul. Continuă în fundal, dar rezultatul lor ajunge în sesiunea veche, nu în aceasta: ` +
         "verifică ce au făcut și relansează-i numai dacă lucrul lor nu e terminat și nu i-am oprit eu. Nu aștepta o notificare de la ei."
@@ -202,6 +204,9 @@ export function createAuto(ctx, options = {}) {
   const children = new Map(); // subagent session -> { parent, running }
   const share = shareOf(here);
   const { claims, failedAt, handedTo } = share; // sessions whose handoff is running or done in this process (a written `next` covers a restart), the failures, the new sessions
+  const goalJobs = (share.goalJobs ??= new Set()); // live transfers and reconciliation, including across reloads
+  const pendingGoals = (share.pendingGoals ??= new Set()); // sources whose journal still needs to be resolved
+  const goals = goalHandoff(ctx);
   const inFlight = new Set(); // the claims of this instance whose handoff has not ended: given back when the instance is disposed
   let disposed = false;
   const waiters = new Map(); // session -> resolvers waiting for the end of its execution
@@ -260,7 +265,7 @@ export function createAuto(ctx, options = {}) {
 
   /** Why a handoff must not start now (a reason), or the subagents that are running. Nothing here awaits: the claim that follows is atomic with it. */
   function admit(sessionID, total, settings, limits) {
-    if (claims.has(sessionID)) return { why: "claimed" };
+    if (claims.has(sessionID) || goalJobs.has(sessionID) || pendingGoals.has(sessionID)) return { why: "claimed" };
     const cooldown = share.cooldowns.get(sessionID);
     if (cooldown && now() < cooldown.until) return {
       why: "cooldown",
@@ -312,9 +317,92 @@ export function createAuto(ctx, options = {}) {
       waiting.cancel();
       throw error;
     }
-    if (!result?.interrupted) return waiting.cancel();
+    if (!result?.interrupted) {
+      waiting.cancel();
+      return false;
+    }
     await waiting.promise;
+    return true;
   }
+
+  async function goalAfterInterrupt(sessionID, before) {
+    // The native goal plugin handles the execution event separately from this plugin's waiter.
+    for (let remaining = waitMs; ; remaining -= 100) {
+      const current = await goals.read(sessionID);
+      if (current && !sameGoal(before, current)) throw new Error("the goal changed after interruption");
+      if (current?.status !== "active") return current;
+      if (remaining <= 0 || disposed) throw new Error("the goal stayed active after interruption");
+      await pause(Math.min(100, remaining));
+    }
+  }
+
+  async function link(sessionID, destinationID, confirm = false) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const latest = await ctx.session.get({ sessionID });
+        if (!latest) throw new Error("no source session");
+        const previous = latest.metadata?.apana?.next;
+        if (previous === destinationID) return true;
+        if (previous !== undefined) {
+          log(`${sessionID}: the new session ${destinationID} is running but \`next\` was not written (conflicting destination)`);
+          return false;
+        }
+        await ctx.session.update({ sessionID, metadata: { ...latest.metadata, apana: { ...(latest.metadata?.apana ?? {}), next: destinationID } } });
+        if (confirm && (await ctx.session.get({ sessionID })).metadata?.apana?.next !== destinationID) throw new Error("the link could not be confirmed");
+        return true;
+      } catch (error) {
+        if (attempt === 2) {
+          log(`${sessionID}: the new session ${destinationID} is running but \`next\` was not written (${describe(error)})`);
+          return false;
+        }
+        await pause(100 * (attempt + 1));
+      }
+    }
+  }
+
+  async function clearJournal(entry) {
+    await goals.remove(entry);
+    pendingGoals.delete(entry.sourceID);
+  }
+
+  async function finishGoal(entry, onAdmission = () => {}) {
+    const { sourceID, destinationID } = entry;
+    const journal = await goals.get(sourceID);
+    if (journal?.id !== entry.id || !await goals.admitted(journal)) {
+      log(`${sourceID}: goal handoff to ${destinationID} has no durable admission proof; kept for recovery`);
+      return false;
+    }
+    claims.add(sourceID);
+    handedTo.set(sourceID, destinationID);
+    onAdmission();
+    if (await link(sourceID, destinationID, true)) await clearJournal(entry);
+    return true;
+  }
+
+  async function recoverGoals() {
+    for await (const entry of goals.pending()) {
+      const { sourceID, destinationID, directory, phase } = entry;
+      if (disposed || !isOwn(directory) || goalJobs.has(sourceID)) continue;
+      goalJobs.add(sourceID);
+      pendingGoals.add(sourceID);
+      try {
+        if (phase === "prepared") {
+          const source = await ctx.session.get({ sessionID: sourceID });
+          if (source.metadata?.apana?.next !== undefined) throw new Error("the source already has a handoff destination");
+          await goals.discard(entry);
+          await clearJournal(entry);
+        } else {
+          await finishGoal(entry);
+        }
+      } catch (error) {
+        log(`${sourceID}: could not recover goal handoff to ${destinationID} (${describe(error)})`);
+      } finally {
+        goalJobs.delete(sourceID);
+      }
+    }
+  }
+  let recovery;
+  const recover = () => (recovery ??= recoverGoals().catch((error) => log(`could not scan goal handoffs (${describe(error)})`)));
 
   /** The make_context.py options for the skills: none (also unset), all, or names. A kept skill that the session loaded is always added. */
   async function skillsArgs(want, sessionID) {
@@ -331,32 +419,69 @@ export function createAuto(ctx, options = {}) {
     return chosen.length ? ["--skills", chosen.join(",")] : ["--no-skills"];
   }
 
-  /** The handoff itself. Never rejects: a failure releases the claim (a retry waits RETRY_MS) and is only logged. */
+  /** The handoff itself. An uncertain goal submission keeps its journal instead of starting a second destination. */
   async function handoff(sessionID, info, settings, total, busy, via) {
     let made = null;
+    let ownsGoalJob = false;
+    let pausedGoal;
+    let entry;
     let submitted = false;
     let accepted = false;
+    const stoppedWork = () => {
+      if (disposed && pausedGoal) throw new Error("the plugin unloaded before goal submission");
+      return disposed;
+    };
     try {
-      await interrupt(sessionID);
+      const journal = await goals.get(sessionID);
+      if (disposed || handedTo.has(sessionID)) return;
+      if (journal) {
+        pendingGoals.add(sessionID);
+        throw new Error("a goal handoff is already journaled");
+      }
+      const before = await goals.read(sessionID, true);
       if (disposed) return;
+      if (before?.status === "active") {
+        if (!goals.supported) throw new Error("OpenCode does not offer goal handoff admission and recovery");
+        goalJobs.add(sessionID);
+        ownsGoalJob = true;
+      }
+      const stopped = await interrupt(sessionID);
+      if (ownsGoalJob) {
+        if (!stopped) throw new Error("the handoff did not interrupt the active goal's execution");
+        const after = await goalAfterInterrupt(sessionID, before);
+        if (pausedByInterrupt(before, after)) pausedGoal = after;
+      }
+      if (stoppedWork()) return;
       const digest = createHash("sha256").update(sessionID).digest("hex");
       const root = settings.dir ?? join(dataDir, "handoffs", "auto");
       mkdirSync(root, { recursive: true });
       const folder = mkdtempSync(join(root, `${digest}-`));
       const skillOptions = await skillsArgs(settings.skills, sessionID);
-      if (disposed) return;
+      if (stoppedWork()) return;
       const result = await run(["--opencode", db, folder, "--session", sessionID, ...skillOptions], SCRIPT_TIMEOUT_MS);
-      if (disposed) return;
+      if (stoppedWork()) return;
       const note = result.code === 0 ? parseHandoff(result.stdout) : null;
       if (!note) throw new Error(`make_context.py exit ${result.code}: ${(result.stderr || result.stdout).slice(-300).trim()}`);
       // The title or metadata may have changed while the note was written.
       const fresh = (await getInfo(sessionID)) ?? info;
-      if (disposed) return;
+      if (stoppedWork()) return;
       const apana = { ...(fresh.metadata?.apana ?? {}) };
       delete apana.next;
+      delete apana.goalHandoff;
       const auto = { ...(apana.auto && typeof apana.auto === "object" ? apana.auto : {}), chain: settings.chain + 1 };
       const title = fresh.title ? `${fresh.title.replace(/ \([0-9]+\)$/, "")} (${auto.chain + 1})` : undefined;
+      if (pausedGoal) {
+        if (fresh.metadata?.apana?.next !== undefined) {
+          pausedGoal = undefined;
+          throw new Error("the source already has a handoff destination");
+        }
+        entry = goals.reserve(sessionID, fresh.location?.directory ?? here);
+        await goals.save(entry, "prepared");
+        pendingGoals.add(sessionID);
+        apana.goalHandoff = { id: entry.id, sourceID: sessionID };
+      }
       made = await ctx.session.create({
+        ...(entry ? { id: entry.destinationID } : {}),
         ...(title ? { title } : {}),
         ...(fresh.agent ? { agent: fresh.agent } : {}),
         ...(fresh.model ? { model: fresh.model } : {}),
@@ -364,49 +489,87 @@ export function createAuto(ctx, options = {}) {
         metadata: { ...fresh.metadata, apana: { ...apana, auto } },
       });
       if (disposed) {
+        if (entry) throw new Error("the plugin unloaded before goal submission");
         await ctx.session.remove({ sessionID: made.id }).catch(() => {});
         return;
       }
       for (const [id, { until }] of share.cooldowns) if (until <= now()) share.cooldowns.delete(id);
       if (settings.cooldown > 0) share.cooldowns.set(made.id, { until: Infinity, seconds: settings.cooldown });
-      submitted = true;
-      inFlight.delete(sessionID); // dispose must not release a claim once submission starts
+      const startCooldown = () => {
+        if (settings.cooldown > 0) share.cooldowns.set(made.id, { until: now() + settings.cooldown * 1000, seconds: settings.cooldown });
+      };
       const titleLine = title ? `\n\nTitlul sesiunii noi: ${JSON.stringify(title)}` : "";
-      await ctx.session.prompt({ sessionID: made.id, text: note.prompt + continuation(total, busy) + titleLine });
-      accepted = true;
-      if (settings.cooldown > 0) share.cooldowns.set(made.id, { until: now() + settings.cooldown * 1000, seconds: settings.cooldown });
-      handedTo.set(sessionID, made.id);
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const latest = await ctx.session.get({ sessionID });
-          if (!latest) throw new Error("no source session");
-          const previous = latest.metadata?.apana?.next;
-          if (previous === made.id) break;
-          if (previous !== undefined) {
-            log(`${sessionID}: the new session ${made.id} is running but \`next\` was not written (conflicting destination)`);
-            break;
-          }
-          await ctx.session.update({ sessionID, metadata: { ...latest.metadata, apana: { ...(latest.metadata?.apana ?? {}), next: made.id } } });
-          break;
-        } catch (error) {
-          if (attempt === 2) {
-            log(`${sessionID}: the new session ${made.id} is running but \`next\` was not written (${describe(error)})`);
-            break;
-          }
-          await pause(100 * (attempt + 1));
+      const text = note.prompt + continuation(total, busy) + titleLine;
+      if (entry) {
+        if (made.id !== entry.destinationID) throw new Error("OpenCode returned a different goal destination");
+        await ctx.session.instructions.entry.put({
+          sessionID: made.id, key: "apana-handoff",
+          value: text + " Citește nota înainte de lucru dacă nu ai parcurs-o deja integral în sesiunea aceasta.",
+        });
+        await goals.save(entry, "submitting");
+        const current = await goals.read(sessionID);
+        stoppedWork();
+        if (!samePause(pausedGoal, current)) {
+          pausedGoal = undefined;
+          throw new Error("the source goal changed before submission");
         }
+        // This read authorizes the transfer. OpenCode has no atomic compare-and-submit across sessions.
+        submitted = true;
+        inFlight.delete(sessionID);
+        try {
+          await goals.submit(entry, current.objective);
+        } catch (error) {
+          log(`${sessionID}: goal handoff to ${entry.destinationID} (${describe(error)})`);
+        }
+        if (!await finishGoal(entry, startCooldown)) {
+          claims.delete(sessionID);
+          return;
+        }
+        accepted = true;
+      } else {
+        submitted = true;
+        inFlight.delete(sessionID); // dispose must not release a claim once submission starts
+        await ctx.session.prompt({ sessionID: made.id, text });
+        accepted = true;
+        startCooldown();
+        handedTo.set(sessionID, made.id);
+        await link(sessionID, made.id);
       }
       log(`${sessionID}: ${total} tokens; handoff (${via}) to ${made.id}, note ${note.ready}${busy.length ? `, subagents left running: ${busy.join(", ")}` : ""}`);
     } catch (error) {
-      if (accepted || (disposed && !submitted)) return;
-      if (made) {
-        share.cooldowns.delete(made.id);
+      if (accepted || (disposed && !submitted && !ownsGoalJob)) return;
+      if (entry && submitted) {
+        if (!handedTo.has(sessionID)) claims.delete(sessionID);
+        log(`${sessionID}: could not finish goal handoff to ${entry.destinationID} (${describe(error)}); kept for recovery`);
+        return;
+      }
+      if (made) share.cooldowns.delete(made.id);
+      if (entry) {
+        try {
+          await goals.discard(entry);
+          await clearJournal(entry);
+        } catch (cleanupError) {
+          pendingGoals.add(sessionID);
+          claims.delete(sessionID);
+          log(`${sessionID}: could not discard goal handoff to ${entry.destinationID} (${describe(cleanupError)}); kept for recovery`);
+          return;
+        }
+      } else if (made) {
         await ctx.session.remove({ sessionID: made.id }).catch(() => {});
       }
       failedAt.set(sessionID, now());
       claims.delete(sessionID);
-      inFlight.delete(sessionID);
+      if (pausedGoal) {
+        try {
+          if (samePause(pausedGoal, await goals.read(sessionID))) await ctx.session.command({ sessionID, name: "goal", text: "resume" });
+        } catch {
+          log(`${sessionID}: could not resume the source goal after a failed handoff`);
+        }
+      }
       log(`${sessionID}: handoff failed (${describe(error)}); a retry waits ${RETRY_MS / 1000}s`);
+    } finally {
+      inFlight.delete(sessionID);
+      if (ownsGoalJob) goalJobs.delete(sessionID);
     }
   }
 
@@ -418,6 +581,8 @@ export function createAuto(ctx, options = {}) {
     last.set(data.sessionID, total);
     cap(last);
     if (!enabled()) return;
+    // Recovery can write `next`, so read the session for admission only after it finishes.
+    await recover();
     const info = await getInfo(data.sessionID);
     if (!info || !isOwn(info.location?.directory)) return;
     const settings = marked(info);
@@ -470,6 +635,8 @@ export function createAuto(ctx, options = {}) {
     if (claims.has(sessionID)) throw new Error(refusal(sessionID)); // a parallel call of the step that started the handoff, or one that came after it
     const total = last.get(sessionID);
     if (total === undefined) return;
+    await recover();
+    if (claims.has(sessionID)) throw new Error(refusal(sessionID));
     const info = await getInfo(sessionID);
     if (!info || !isOwn(info.location?.directory)) return;
     const settings = marked(info);
@@ -492,7 +659,12 @@ export function createAuto(ctx, options = {}) {
   return {
     beforeTool,
     consume,
-    start: (signal) => consume(ctx.event.subscribe({ types: [...EVENT_TYPES], signal })),
+    markGoalPrompt: goals.supported ? goals.markPrompt : undefined,
+    start(signal) {
+      const events = ctx.event.subscribe({ types: [...EVENT_TYPES], signal });
+      void recover();
+      return consume(events);
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -510,20 +682,22 @@ export async function setupAuto(ctx, env = process.env, options = {}) {
   const auto = createAuto(ctx, { env, ...options });
   const controller = new AbortController();
   const hook = await ctx.tool.hook("execute.before", auto.beforeTool);
+  let goalHook;
   let running;
   try {
+    if (auto.markGoalPrompt) goalHook = await ctx.session.hook("prompt", auto.markGoalPrompt);
     running = auto.start(controller.signal).catch(() => {});
   } catch (error) {
-    // The subscription is made when start is called, so a failure there comes out here, with the hook already registered.
+    // A failed registration or subscription is rolled back before the entry reports the plugin unavailable.
     controller.abort();
-    await hook.dispose();
+    await Promise.allSettled([hook.dispose(), goalHook?.dispose()]);
     throw error;
   }
   return {
     dispose: async () => {
       controller.abort();
       auto.dispose();
-      await Promise.allSettled([hook.dispose(), running]);
+      await Promise.allSettled([hook.dispose(), goalHook?.dispose(), running]);
     },
   };
 }
